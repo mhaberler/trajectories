@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -32,6 +33,14 @@ app = FastAPI(
         {"name": "trajectory", "description": "Compute wind trajectories"},
         {"name": "meta", "description": "Health and service metadata"},
     ],
+)
+
+# Browser UI (Vite / static host) calls this API cross-origin.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 

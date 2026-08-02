@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "bun test/integrator.test.mjs",
     "test:live": "bun test/live-smoke.mjs",
-    "deploy": "bash scripts/deploy-hetzner.sh"
+    "deploy": "bash scripts/deploy-hetzner.sh",
+    "deploy:vps": "bash scripts/deploy-vps.sh"
   },
   "devDependencies": {
     "vite": "^5.4.0"

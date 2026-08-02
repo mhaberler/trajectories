@@ -12,10 +12,13 @@ bun install
 bun run dev        # Entwicklungsserver (Vite)
 bun test           # Integrator-Tests (synthetische Windfelder, offline)
 bun run test:live  # Live-Test gegen den Server
+bun run deploy:vps # Build → https://vps.mah.priv.at/trajectories/ (Caddy Basic Auth)
 ```
 
 Die App ist reines ESM ohne Build-Zwang — jeder statische Webserver im
-Projektwurzelverzeichnis funktioniert ebenfalls.
+Projektwurzelverzeichnis funktioniert ebenfalls. VPS-Deploy und Basic Auth:
+siehe [`deploy/README.md`](deploy/README.md). Die Trajectories-HTTP-API bleibt unter
+`https://trajectory.mah.priv.at`.
 
 ## Bedienung
 

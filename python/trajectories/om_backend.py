@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import math
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +13,51 @@ from typing import Any
 import numpy as np
 
 from . import config
+
+# Process-wide warm backends (meta / grid / fs). Slabs are per-request, not cached here.
+_BACKEND_LOCK = threading.Lock()
+_BACKEND_CACHE: dict[str, "OmBackend"] = {}
+
+# Half-extent from start: characteristic wind × duration, clamped for IO.
+SLAB_SPEED_KMH = 40.0
+SLAB_PAD_KM_MIN = 50.0
+SLAB_PAD_KM_MAX = 120.0
+SLAB_LOAD_WORKERS = 8
+BAND_LOW_M = 2500.0
+BAND_HIGH_M = 6500.0
+BAND_HIGH_THRESHOLD_M = 2000.0
+
+
+def get_om_backend(model_key: str, root: Path | None = None) -> "OmBackend":
+    """Return a process-cached OmBackend for meta/grid reuse."""
+    key = f"{model_key}:{root or config.OM_ROOT}"
+    with _BACKEND_LOCK:
+        hit = _BACKEND_CACHE.get(key)
+        if hit is not None:
+            return hit
+        backend = OmBackend(model_key, root=root)
+        _BACKEND_CACHE[key] = backend
+        return backend
+
+
+def clear_om_backend_cache() -> None:
+    with _BACKEND_LOCK:
+        _BACKEND_CACHE.clear()
+
+
+def height_band_ceiling_m(max_height_m: float) -> float:
+    """AGL ceiling for slab level selection (low 2.5 km / high 6.5 km)."""
+    ceil = BAND_LOW_M if max_height_m <= BAND_HIGH_THRESHOLD_M else BAND_HIGH_M
+    return ceil
+
+
+def spatial_pad_deg(lat: float, duration_h: float, speed_kmh: float = SLAB_SPEED_KMH) -> tuple[float, float]:
+    km = speed_kmh * max(float(duration_h), 1.0)
+    km = min(max(km, SLAB_PAD_KM_MIN), SLAB_PAD_KM_MAX)
+    dlat = km / 111.0
+    coslat = max(0.2, abs(math.cos(math.radians(lat))))
+    dlon = km / (111.0 * coslat)
+    return dlat, dlon
 
 
 def _require_omfiles():
@@ -24,8 +73,36 @@ def _require_omfiles():
     return OmFileReader, OmChunkFileReader, OmChunksMeta
 
 
+@dataclass
+class OmSlab:
+    """In-memory lat/lon/time window for one trajectory compute."""
+
+    x0: int
+    x1: int  # inclusive
+    y0: int
+    y1: int  # inclusive
+    times_unix: list[float]
+    hsurf: np.ndarray  # [ny, nx]
+    hhl: np.ndarray  # [ny, nx, nHalf]
+    fields: dict[str, np.ndarray] = field(default_factory=dict)  # [ny, nx, nt]
+
+    @property
+    def ny(self) -> int:
+        return self.y1 - self.y0 + 1
+
+    @property
+    def nx(self) -> int:
+        return self.x1 - self.x0 + 1
+
+    def contains_xy(self, x: int, y: int) -> bool:
+        return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
+
+    def local_yx(self, x: int, y: int) -> tuple[int, int]:
+        return y - self.y0, x - self.x0
+
+
 class OmBackend:
-    """Point fetches from a rolling Open-Meteo timeseries tree."""
+    """Point / slab reads from a rolling Open-Meteo timeseries tree."""
 
     def __init__(self, model_key: str, root: Path | None = None):
         OmFileReader, OmChunkFileReader, OmChunksMeta = _require_omfiles()
@@ -89,9 +166,148 @@ class OmBackend:
         n = self.model["nLevels"]
         out: dict[int, float] = {}
         for level in range(1, n + 1):
-            # half-levels: index level-1 and level; full-level mid-point
             out[level] = float(0.5 * (hhl[level - 1] + hhl[level]) - hsurf)
         return out
+
+    def load_slab(
+        self,
+        lat0: float,
+        lon0: float,
+        duration_h: float,
+        start_date: str,
+        end_date: str,
+        levels: list[int],
+        vars_: list[str],
+        *,
+        t_min_ms: float | None = None,
+        t_max_ms: float | None = None,
+    ) -> OmSlab:
+        """Preload a padded spatial/time window for the given variables."""
+        dlat, dlon = spatial_pad_deg(lat0, duration_h)
+        b = self.model["bbox"]
+        corners = [
+            (min(max(lat0 - dlat, b["latMin"]), b["latMax"]), min(max(lon0 - dlon, b["lonMin"]), b["lonMax"])),
+            (min(max(lat0 - dlat, b["latMin"]), b["latMax"]), min(max(lon0 + dlon, b["lonMin"]), b["lonMax"])),
+            (min(max(lat0 + dlat, b["latMin"]), b["latMax"]), min(max(lon0 - dlon, b["lonMin"]), b["lonMax"])),
+            (min(max(lat0 + dlat, b["latMin"]), b["latMax"]), min(max(lon0 + dlon, b["lonMin"]), b["lonMax"])),
+        ]
+        xs, ys = [], []
+        for lat, lon in corners:
+            xy = self._xy(lat, lon)
+            xs.append(xy.x)
+            ys.append(xy.y)
+        x0, x1 = max(0, min(xs)), min(self.nx - 1, max(xs))
+        y0, y1 = max(0, min(ys)), min(self.ny - 1, max(ys))
+
+        if t_min_ms is not None and t_max_ms is not None:
+            t_lo = min(t_min_ms, t_max_ms) / 1000.0 - 3600.0
+            t_hi = max(t_min_ms, t_max_ms) / 1000.0 + 3600.0
+            t0 = np.datetime64(int(t_lo), "s")
+            t1 = np.datetime64(int(t_hi), "s")
+        else:
+            t0 = np.datetime64(f"{start_date}T00:00")
+            t1 = np.datetime64(f"{end_date}T23:00")
+
+        file_vars = [v for v in vars_ if not v.startswith("height_agl_level")]
+        # Always need surface/static for heights + elevation
+        with self._OmFileReader(str(self.dataset / "static" / "HSURF.om")) as reader:
+            hsurf = np.asarray(reader[y0 : y1 + 1, x0 : x1 + 1], dtype=np.float64)
+        with self._OmFileReader(str(self.dataset / "static" / "hhl.om")) as reader:
+            hhl = np.asarray(reader[y0 : y1 + 1, x0 : x1 + 1, :], dtype=np.float64)
+
+        ny_s, nx_s = y1 - y0 + 1, x1 - x0 + 1
+
+        def _load_var(var: str) -> tuple[str, np.ndarray, list[float]]:
+            var_dir = self.dataset / var
+            if not var_dir.is_dir():
+                raise RuntimeError(f"OM variable missing: {var_dir}")
+            reader = self._OmChunkFileReader(self.meta, self.fs, str(var_dir), t0, t1)
+            # load_data spatial index is (x, y); returned array is [ny, nx, nt]
+            times, data = reader.load_data((slice(x0, x1 + 1), slice(y0, y1 + 1)))
+            arr = np.asarray(data, dtype=np.float64)
+            if arr.ndim != 3:
+                raise RuntimeError(f"Unexpected slab shape for {var}: {arr.shape}")
+            if arr.shape[0] != ny_s or arr.shape[1] != nx_s:
+                if arr.shape[0] == nx_s and arr.shape[1] == ny_s:
+                    arr = np.transpose(arr, (1, 0, 2))
+                else:
+                    raise RuntimeError(
+                        f"Slab shape mismatch for {var}: {arr.shape} "
+                        f"vs ny={ny_s} nx={nx_s}"
+                    )
+            return var, arr, [_dt64_to_unix(t) for t in times]
+
+        fields: dict[str, np.ndarray] = {}
+        times_unix: list[float] | None = None
+        if file_vars:
+            workers = min(SLAB_LOAD_WORKERS, len(file_vars))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_load_var, v) for v in file_vars]
+                for fut in as_completed(futs):
+                    var, arr, times = fut.result()
+                    fields[var] = arr
+                    if times_unix is None:
+                        times_unix = times
+
+        if times_unix is None:
+            times_unix = _hourly_unix(start_date, end_date)
+
+        return OmSlab(
+            x0=x0,
+            x1=x1,
+            y0=y0,
+            y1=y1,
+            times_unix=times_unix,
+            hsurf=hsurf,
+            hhl=hhl,
+            fields=fields,
+        )
+
+    def request_from_slab(
+        self,
+        slab: OmSlab,
+        coords: list[list[float]],
+        vars_: list[str],
+        *,
+        with_meta: bool = False,
+    ) -> list[dict] | None:
+        """
+        Build HTTP-shaped point dicts from a slab.
+        Returns None if any coordinate falls outside the slab (caller falls back).
+        """
+        file_vars = [v for v in vars_ if not v.startswith("height_agl_level")]
+        height_levels = [
+            int(v.removeprefix("height_agl_level"))
+            for v in vars_
+            if v.startswith("height_agl_level")
+        ]
+        T = len(slab.times_unix)
+        out_list: list[dict] = []
+        for lat, lon in coords:
+            xy = self._xy(lat, lon)
+            if not slab.contains_xy(xy.x, xy.y):
+                return None
+            iy, ix = slab.local_yx(xy.x, xy.y)
+            elev = float(slab.hsurf[iy, ix])
+            row: dict[str, Any] = {}
+            for var in file_vars:
+                arr = slab.fields.get(var)
+                if arr is None:
+                    return None
+                series = arr[iy, ix, :]
+                row[var] = [
+                    None if not np.isfinite(v) else float(v) for v in series
+                ]
+            if height_levels:
+                hhl_col = slab.hhl[iy, ix, :]
+                for level in height_levels:
+                    h = float(0.5 * (hhl_col[level - 1] + hhl_col[level]) - elev)
+                    row[f"height_agl_level{level}"] = [h] * T
+            if with_meta:
+                row["__times"] = list(slab.times_unix)
+                row["__elevation"] = elev
+            out_list.append(row)
+        return out_list
 
     def request(
         self,
@@ -101,9 +317,14 @@ class OmBackend:
         end_date: str,
         *,
         with_meta: bool = False,
+        slab: OmSlab | None = None,
     ) -> list[dict]:
+        if slab is not None:
+            hit = self.request_from_slab(slab, coords, vars_, with_meta=with_meta)
+            if hit is not None:
+                return hit
+
         t0 = np.datetime64(f"{start_date}T00:00")
-        # inclusive end-of-day for end_date (HTTP end_date is calendar day)
         t1 = np.datetime64(f"{end_date}T23:00")
 
         file_vars = [v for v in vars_ if not v.startswith("height_agl_level")]
@@ -113,7 +334,6 @@ class OmBackend:
             if v.startswith("height_agl_level")
         ]
 
-        # One reader per variable; then sample each coordinate.
         series: dict[str, list[np.ndarray]] = {v: [] for v in file_vars}
         times_unix: list[float] | None = None
 
@@ -133,7 +353,6 @@ class OmBackend:
 
         assert times_unix is not None or not file_vars
         if times_unix is None:
-            # height-only probe: synthesize hourly stubs from date range
             times_unix = _hourly_unix(start_date, end_date)
 
         T = len(times_unix)
@@ -143,7 +362,6 @@ class OmBackend:
             row: dict[str, Any] = {}
             for var in file_vars:
                 arr = series[var][i]
-                # NaN → None to match HTTP nulls for to_array
                 row[var] = [None if not np.isfinite(v) else float(v) for v in arr]
             if height_levels:
                 profile = self.height_agl_profile(lat, lon)
@@ -176,7 +394,6 @@ class OmBackend:
 
 
 def _dt64_to_unix(t: np.datetime64) -> float:
-    # ns → seconds
     return float(t.astype("datetime64[s]").astype(np.int64))
 
 

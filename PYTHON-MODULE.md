@@ -27,7 +27,7 @@ python/
   trajectories/
     config.py             # models, methods, API/OM backend resolution
     windfield.py          # HTTP or local OM client + 4-D interpolation
-    om_backend.py         # omfiles reader for /open-meteo rolling chunks
+    om_backend.py         # omfiles reader + OmSlab preload / warm get_om_backend()
     integrator.py         # Petterssen + adaptive dt + markers
     compute.py            # height × method orchestration → FeatureCollection
     geojson_export.py     # port of web buildGeoJSON
@@ -94,18 +94,18 @@ When `/open-meteo` (or `TRAJECTORIES_OM_ROOT`) contains `dwd_icon_d2` / `dwd_ico
 - Horizontal wind already m/s (HTTP path still converts km/h).
 - `--met-extras`: local has specific humidity only — no model-level RH dirs.
 - Fidelity vs HTTP: same physics, not bit-identical (`RUN_OM_TESTS=1`).
-- I/O strategy (v1): same point-cache as HTTP — per-corner, per-variable `OmChunkFileReader` loads. **Not faster than HTTP yet** (see timing below); a domain slab preload would be the next acceleration step.
+- I/O strategy: **per-request OM slab preload** (padded bbox × tight time × height-band levels into RAM; `wind_at` served from the slab). Process-warmed `OmBackend` meta/grid via `get_om_backend()`. Outside-slab corners fall back to point-fetch.
 
 ### Timing — `basic_trajectory` inputs (2026-08-02)
 
 Stubenberg `47.23, 15.82`; ICON-D2; start `2026-08-02T11:00:00Z`; 2 h; heights 500/1500/3000 m AGL; markers 10 min; `met_extras=True`. Wall time for `compute_trajectories` only (GeoJSON dump omitted):
 
-| Backend | Wall time | Tracks |
-|---------|-----------|--------|
-| `om`    | **47.7 s** | 3 |
-| `http`  | **8.9 s**  | 3 |
+| Backend | Wall time (before slab) | Wall time (slab) |
+|---------|-------------------------|------------------|
+| `om`    | **47.7 s**              | **~8.6 s** cold / **~5.9 s** warm |
+| `http`  | **8.9 s**               | **~9.0 s**       |
 
-HTTP ~5× faster on this host for the point-wise OM reader. Opt-in fidelity tests (`RUN_OM_TESTS=1`) still pass under a multi-km same-physics bound.
+OM slab path meets the success bar (**OM ≤ HTTP** on this smoke case). Opt-in fidelity tests (`RUN_OM_TESTS=1`) still apply under a multi-km same-physics bound.
 
 ## HTTP API (`GET /v1/trajectory`)
 
@@ -168,18 +168,19 @@ sudo systemctl reload caddy
 **Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`.  
 Client example defaults to that host (`TRAJECTORIES_API_URL`).
 
-## Accelerating answer processing (design notes)
+## Accelerating answer processing
 
-Not implemented yet — guidance for a follow-up once the HTTP surface is in use.
+**Shipped (OM backend):**
 
-1. **Why point-wise OM is slow** — each grid corner × level × variable opens rolling `.om` chunks; HTTP batches corners. Measured ~48 s vs ~9 s on the `basic_trajectory` case.
-2. **Slab / bbox preload** — for a request, estimate a padded lat/lon box for the duration, load u/v/(w) + static hhl/HSURF once into RAM, serve `wind_at` from the slab (biggest win for local backend).
-3. **Precache height bands** (product assumption):
-   - **Majority of calls:** speed/direction / constant-height work **≤ 2000 m AGL** → keep model levels covering ~0–2.5 km (+ buffer).
-   - **Winter:** glider/mountain use **≤ 6000 m AGL** → deeper level set; dual cache tiers (`low` ≤2 km, `high` ≤6 km) or a season switch.
-4. **Warm workers** — long-lived uvicorn processes with `OmBackend` meta/grid already loaded; avoid per-request cold start of `meta.json` / `OmGrid`.
-5. **Response cache** — key `(model, rounded lat/lon, start time, heights, methods, duration, direction)`; TTL on the order of the OM update interval (~1–3 h).
-6. **Parallel tracks** — once a shared wind slab exists, run the height×method product in a thread pool.
+1. **Slab / bbox preload** — on `WindField.init`, pad from start (`~40 km/h × duration`, clamped 50–120 km), tight time window (±1 h around the trajectory), height band levels; parallel `OmChunkFileReader` loads into an `OmSlab`; `request` serves from RAM.
+2. **Height bands** — low **≤ 2500 m AGL** when `max_height ≤ 2000`; high **≤ 6500 m** otherwise (escalate if integrator `required_top` exceeds the low band).
+3. **Warm meta/grid** — `get_om_backend(model)` process cache (helps long-lived uvicorn workers).
+
+**Still future:**
+
+4. **Response cache** — key `(model, rounded lat/lon, start time, heights, methods, duration, direction)`; TTL ~ OM update interval.
+5. **Parallel tracks** — height×method product once the slab is shared.
+6. HTTP-side slab (not needed; API already batches).
 
 ## Test strategies
 
@@ -270,7 +271,7 @@ RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
 - VPS: systemd unit as `openmeteo-api` on `:8010`; Caddy sketch for `trajectory.mah.priv.at`.
 - Dual backend: local OM preferred when `/open-meteo` + `omfiles` available; HTTP fallback.
 - Port fidelity vs web (HTTP path): **confirmed near-exact** (0 m on sampled points for the smoke matrix).
-- OM vs HTTP: same-physics opt-in tests pass; point-wise OM I/O is currently **slower** than HTTP (~48 s vs ~9 s on `basic_trajectory` ICON-D2 case).
-- Acceleration (slab preload / height-band precache) documented above; not shipped yet.
+- OM vs HTTP: same-physics opt-in tests pass; **OM slab ≤ HTTP** on `basic_trajectory` (~8.6 s cold / ~5.9 s warm vs ~9.0 s).
+- Acceleration shipped: OM slab preload + warm meta; response cache / parallel tracks still future.
 - Windy: rough agreement only; useful for regression, not a bit-for-bit oracle.
 - Generated compare dumps live under `python/tests/artifacts/` (not committed).

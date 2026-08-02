@@ -42,10 +42,11 @@ class WindField:
         self._pending: dict[str, Any] = {}
         self.backend_kind = backend or config.resolve_backend(model_key)
         self._om = None
+        self._slab = None
         if self.backend_kind == "om":
-            from .om_backend import OmBackend
+            from .om_backend import get_om_backend
 
-            self._om = OmBackend(model_key)
+            self._om = get_om_backend(model_key)
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -57,6 +58,8 @@ class WindField:
         if self._owns_client and self._client is not None:
             self._client.close()
             self._client = None
+        # Keep process-cached OmBackend; drop per-request slab only.
+        self._slab = None
         self._om = None
 
     def __enter__(self) -> WindField:
@@ -74,10 +77,10 @@ class WindField:
     ) -> str | None:
         kind = backend or config.resolve_backend(model_key)
         if kind == "om":
-            from .om_backend import OmBackend
+            from .om_backend import get_om_backend
 
             try:
-                om = OmBackend(model_key)
+                om = get_om_backend(model_key)
             except Exception:
                 return None
             return "wind_w" if om.has_w() else None
@@ -144,20 +147,49 @@ class WindField:
         d1 = datetime.fromtimestamp((max(t_min_ms, t_max_ms) + 3600e3) / 1000, tz=timezone.utc)
         self.start_date = d0.strftime("%Y-%m-%d")
         self.end_date = d1.strftime("%Y-%m-%d")
-
-        vars_ = [f"height_agl_level{l}" for l in range(1, n + 1)]
-        probe = self.request([[lat0, lon0]], vars_)
-        h = probe[0]
+        duration_h = abs(t_max_ms - t_min_ms) / 3600e3
 
         buffer = 1200 if all(v == "height" for v in lst) else 2500
         required_top = (max_height_m + buffer) * 1.3
-        levels: list[int] = []
-        for l in range(n, 0, -1):
-            hl = first_finite(h.get(f"height_agl_level{l}"))
-            levels.append(l)
-            if hl is not None and hl >= required_top:
-                break
-        self.levels = levels
+
+        if self.backend_kind == "om" and self._om is not None:
+            from .om_backend import BAND_HIGH_M, height_band_ceiling_m
+
+            profile = self._om.height_agl_profile(lat0, lon0)
+            band_ceil = height_band_ceiling_m(max_height_m)
+            if required_top > band_ceil:
+                band_ceil = BAND_HIGH_M
+            target_top = min(required_top, band_ceil)
+            levels: list[int] = []
+            for l in range(n, 0, -1):
+                hl = profile.get(l)
+                levels.append(l)
+                if hl is not None and math.isfinite(hl) and hl >= target_top:
+                    break
+            self.levels = levels
+            # Preload padded slab for selected levels + needed vars.
+            self._slab = self._om.load_slab(
+                lat0,
+                lon0,
+                duration_h,
+                self.start_date,
+                self.end_date,
+                levels,
+                self.level_vars(),
+                t_min_ms=t_min_ms,
+                t_max_ms=t_max_ms,
+            )
+        else:
+            vars_ = [f"height_agl_level{l}" for l in range(1, n + 1)]
+            probe = self.request([[lat0, lon0]], vars_)
+            h = probe[0]
+            levels = []
+            for l in range(n, 0, -1):
+                hl = first_finite(h.get(f"height_agl_level{l}"))
+                levels.append(l)
+                if hl is not None and hl >= required_top:
+                    break
+            self.levels = levels
 
     def level_vars(self) -> list[str]:
         assert self.levels is not None
@@ -302,6 +334,7 @@ class WindField:
                 self.start_date,
                 self.end_date,
                 with_meta=with_meta,
+                slab=self._slab,
             )
 
         params = {

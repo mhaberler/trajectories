@@ -207,10 +207,8 @@ class WindField:
             if self.needs["t"]:
                 vars_.append(f"temperature_level{l}")
             if self.needs["met"]:
+                # RH is derived from q+p+T (Magnus); no model relative_humidity fetch.
                 vars_.append(f"specific_humidity_level{l}")
-                # Local OM trees have no relative_humidity_level*; HTTP keeps RH.
-                if self.backend_kind != "om":
-                    vars_.append(f"relative_humidity_level{l}")
             if self.needs["w"]:
                 vars_.append(f"{self.w_var_prefix}_level{l}")
         return vars_
@@ -428,7 +426,10 @@ class WindField:
         met = None
         if self.needs["met"]:
             t_c = TK - 273.15
-            met = {"t": t_c, "td": dewpoint_c(Q, P, t_c, RH), "rh": RH, "p": P}
+            rh = relative_humidity_pct(Q, P, t_c)
+            if rh is None and _isfinite(RH):
+                rh = RH
+            met = {"t": t_c, "td": dewpoint_c(Q, P, t_c, RH), "rh": rh, "p": P}
 
         out: dict[str, Any] = {"u": U, "v": V, "zAmsl": Z, "met": met}
         if self.needs["w"]:
@@ -621,6 +622,23 @@ def dewpoint_c(q_kgkg: float, p_hpa: float, t_c: float, rh_pct: float) -> float 
         return None
     ln = math.log(e_pa / 611.2)
     return (243.12 * ln) / (17.62 - ln)
+
+
+def relative_humidity_pct(q_kgkg: float, p_hpa: float, t_c: float) -> float | None:
+    """Relative humidity (%) over water via Magnus from specific humidity, p, T."""
+    if not (
+        _isfinite(q_kgkg)
+        and q_kgkg >= 0
+        and _isfinite(p_hpa)
+        and p_hpa > 0
+        and _isfinite(t_c)
+    ):
+        return None
+    e_pa = (q_kgkg * p_hpa * 100) / (0.622 + 0.378 * q_kgkg)
+    es_pa = 611.2 * math.exp((17.62 * t_c) / (243.12 + t_c))
+    if not (e_pa > 0 and es_pa > 0):
+        return None
+    return min(100.0, max(0.0, (100.0 * e_pa) / es_pa))
 
 
 def level_value_at_t(arr: list[float], tt: dict) -> float:

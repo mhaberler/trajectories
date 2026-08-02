@@ -39,7 +39,7 @@ trajectories ... --backend om --om-root /open-meteo
 
 Env: `TRAJECTORIES_BACKEND`, `TRAJECTORIES_OM_ROOT` (empty string disables auto-detect), `TRAJECTORIES_API_BASE`.
 
-**Note:** Local trees have model-level specific humidity but no `relative_humidity_level*`. With `--met-extras` on the OM backend, marker dewpoint uses **q** only; RH on markers may be missing/NaN.
+**Note:** With `--met-extras`, marker dewpoint and relative humidity are derived from specific humidity **q**, pressure, and temperature (Magnus over water). Model `relative_humidity_level*` is not fetched (local OM trees do not provide it).
 
 ## CLI
 

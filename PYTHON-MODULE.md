@@ -93,7 +93,7 @@ When `/open-meteo` (or `TRAJECTORIES_OM_ROOT`) contains `dwd_icon_d2` / `dwd_ico
 
 - AGL heights derived from `static/hhl.om` − `HSURF.om` (no `height_agl_*` on disk).
 - Horizontal wind already m/s (HTTP path still converts km/h).
-- `--met-extras`: local has specific humidity only — no model-level RH dirs.
+- `--met-extras`: RH and dewpoint derived from specific humidity **q**+`p`+`T` (Magnus); no model `relative_humidity_level*` fetch.
 - Fidelity vs HTTP: same physics, not bit-identical (`RUN_OM_TESTS=1`).
 - I/O strategy: **per-request OM slab preload** (padded bbox × tight time × height-band levels into RAM; `wind_at` served from the slab). Process-warmed `OmBackend` meta/grid via `get_om_backend()`. Keep-open `OmReaderCache` (mmap + per-path mutex + inotify invalidation). Outside-slab corners fall back to point-fetch.
 

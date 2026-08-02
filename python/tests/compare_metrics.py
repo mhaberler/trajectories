@@ -17,6 +17,8 @@ class Track:
     start_height: float
     t0: float  # ms
     points: list[dict]  # {lat, lon, ele?, t}
+    vertical_motion: str | None = None
+    status: str | None = None
 
 
 def haversine(a: dict, b: dict) -> float:
@@ -109,6 +111,8 @@ def parse_mine_geojson(data: dict[str, Any]) -> list[Track]:
             ),
             t0=points[0]["t"],
             points=points,
+            vertical_motion=props.get("vertical_motion"),
+            status=props.get("status"),
         ))
     return tracks
 
@@ -159,6 +163,62 @@ def pair_tracks(mine: list[Track], windy: list[Track]) -> list[tuple[Track, Trac
     w = sorted(windy, key=lambda t: t.start_height)
     n = min(len(m), len(w))
     return list(zip(m[:n], w[:n]))
+
+
+def pair_tracks_by_key(
+    a: list[Track],
+    b: list[Track],
+) -> list[tuple[Track, Track]]:
+    """Pair tracks on (start_height, vertical_motion)."""
+    def key(t: Track) -> tuple[float, str]:
+        return (round(t.start_height), t.vertical_motion or "")
+
+    index_b = {key(t): t for t in b}
+    pairs: list[tuple[Track, Track]] = []
+    for ta in sorted(a, key=key):
+        tb = index_b.get(key(ta))
+        if tb is not None:
+            pairs.append((ta, tb))
+    return pairs
+
+
+def max_separation_m(
+    a: list[Track],
+    b: list[Track],
+    minutes: list[float] | None = None,
+) -> dict[str, Any]:
+    """Near-exact port check: max haversine separation in metres per pair."""
+    minutes = minutes or list(range(0, 130, 10))
+    pairs = pair_tracks_by_key(a, b)
+    if not pairs:
+        return {"pairs": 0, "max_m": None, "per_pair": []}
+
+    all_m: list[float] = []
+    per_pair = []
+    for ta, tb in pairs:
+        dists: list[float] = []
+        for min_ in minutes:
+            pa, pb = pos_at_minutes(ta, min_), pos_at_minutes(tb, min_)
+            if pa and pb:
+                m = haversine(pa, pb)
+                dists.append(m)
+                all_m.append(m)
+        status_match = (ta.status or "") == (tb.status or "")
+        per_pair.append({
+            "a": ta.label,
+            "b": tb.label,
+            "height": ta.start_height,
+            "vertical_motion": ta.vertical_motion,
+            "max_m": max(dists) if dists else None,
+            "status_match": status_match,
+            "status_a": ta.status,
+            "status_b": tb.status,
+        })
+    return {
+        "pairs": len(pairs),
+        "max_m": max(all_m) if all_m else None,
+        "per_pair": per_pair,
+    }
 
 
 def median_separation_km(

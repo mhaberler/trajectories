@@ -29,4 +29,5 @@ include = ["trajectories*"]
 testpaths = ["tests"]
 markers = [
   "windy: Playwright visual comparison against Windy (set RUN_WINDY_TESTS=1)",
+  "web_py: Playwright web app GeoJSON vs Python (set RUN_WEB_PY_TESTS=1)",
 ]

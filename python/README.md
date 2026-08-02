@@ -9,7 +9,8 @@ Installable port of the web app compute pipeline: Open-Meteo ICON-EU / ICON-D2
 python3 -m venv python/.venv
 source python/.venv/bin/activate
 pip install -e "python/[dev]"
-playwright install chromium   # only for Windy visual tests
+playwright install chromium   # for Windy / web↔Python visual tests
+npm install                   # Vite — required for web↔Python compare
 ```
 
 ## CLI
@@ -52,4 +53,8 @@ pytest python/tests/test_integrator_unit.py
 # Driver: wind layer → model → right-click → "Wind trajectories" → capture API paths.
 RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
 # Debug UI: WINDY_HEADED=1 RUN_WINDY_TESTS=1 pytest ... -m windy
+
+# Near-exact web app GeoJSON download vs Python (≤50 m). Spawns Vite + Playwright.
+RUN_WEB_PY_TESTS=1 pytest python/tests/test_web_python.py -m web_py
+# Debug UI: WEB_PY_HEADED=1 RUN_WEB_PY_TESTS=1 pytest ... -m web_py
 ```

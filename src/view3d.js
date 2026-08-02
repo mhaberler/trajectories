@@ -200,6 +200,20 @@ function initViewer() {
     maximumRenderTimeChange: Infinity,
   });
   viewer.scene.globe.depthTestAgainstTerrain = true;
+  // Prefer markers over walls/polylines (Entity has no allowPicking).
+  viewer.screenSpaceEventHandler.setInputAction((click) => {
+    const hits = viewer.scene.drillPick(click.position, 12);
+    let marker = null;
+    for (const h of hits) {
+      const e = h.id;
+      if (e && e.description) {
+        marker = e;
+        break;
+      }
+    }
+    viewer.selectedEntity = marker;
+    viewer.scene.requestRender();
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
   const img = ["esri", "osm", "versatiles"].includes(prefs.imagery) ? prefs.imagery : "esri";
   setImagery(img);
 }
@@ -310,6 +324,8 @@ function redraw() {
       : new Cesium.PolylineOutlineMaterialProperty({
           color, outlineColor: Cesium.Color.WHITE.withAlpha(0.85), outlineWidth: 1.5,
         });
+    // Polyline/wall ignored by LEFT_CLICK drillPick (Entity has no
+    // allowPicking); only markers carry description → infoBox.
     viewer.entities.add({
       name: run.label,
       polyline: { positions, width: 5, material },
@@ -327,10 +343,11 @@ function redraw() {
         name: `${fmtTime(m.tMs)} — ${run.label}`,
         position: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, H(m.z)),
         point: {
-          pixelSize: 7,
+          pixelSize: 10,
           color: Cesium.Color.WHITE,
           outlineColor: color,
           outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         description: markerHtml(m, run.label),
       });

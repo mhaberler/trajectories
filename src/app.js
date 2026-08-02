@@ -929,18 +929,18 @@ async function runTrajectoriesViaApi({
     if (Number.isFinite(g0)) state.startElevation = g0;
     el("xsecbtn").disabled = runs.length === 0;
     el("view3dbtn").disabled = runs.length === 0;
-    setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtApiMs(ms)}`);
+    setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtMs(ms)}`);
   } catch (err) {
     const ms = performance.now() - t0;
-    setStatus(`API-Fehler: ${err.message} · ${fmtApiMs(ms)}`, true);
+    setStatus(`API-Fehler: ${err.message} · ${fmtMs(ms)}`, true);
   } finally {
     state.running = false;
     updateRunButton();
   }
 }
 
-/** Format API wall time (fetch + JSON) for status line. */
-function fmtApiMs(ms) {
+/** Format wall time for status line (API fetch or browser compute). */
+function fmtMs(ms) {
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
 }
@@ -1028,6 +1028,7 @@ async function runTrajectories() {
   state.lastRuns = null;
   state.xsec = null;
   setStatus("Berechne …");
+  const t0 = performance.now();
 
   try {
     // Im Live-Modus das Windfeld über Läufe hinweg behalten, solange die
@@ -1158,9 +1159,14 @@ async function runTrajectories() {
     // Offene 3D-Ansicht läuft mit (Live-Modus, Neuberechnung).
     el("view3dbtn").disabled = runs.length === 0;
     if (view3dMod && !el("view3d").hidden && runs.length) view3dMod.update(view3dData());
-    setStatus("");
+    // Scrub-Läufe sind sehr kurz und häufig — Zeit nur bei Full-Runs zeigen.
+    if (!scrub) {
+      setStatus(`${runs.length} Trajektorie(n) · ${fmtMs(performance.now() - t0)}`);
+    } else {
+      setStatus("");
+    }
   } catch (err) {
-    setStatus(`Fehler: ${err.message}`, true);
+    setStatus(`Fehler: ${err.message} · ${fmtMs(performance.now() - t0)}`, true);
   } finally {
     state.running = false;
     updateRunButton();

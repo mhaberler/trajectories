@@ -48,6 +48,8 @@ gj = compute_trajectories(
 ```bash
 pytest python/tests/test_integrator_unit.py
 
-# Rough visual equivalence vs Windy built-in / traj plugin (ICON-D2 + ICON-EU):
+# Rough visual equivalence vs Windy built-in trajectories (ICON-D2 + ICON-EU).
+# Driver: wind layer → model → right-click → "Wind trajectories" → capture API paths.
 RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
+# Debug UI: WINDY_HEADED=1 RUN_WINDY_TESTS=1 pytest ... -m windy
 ```

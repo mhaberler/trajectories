@@ -25,7 +25,7 @@ from windy_driver import WindyRunSpec, fetch_windy_gpx, model_heights_for_pressu
 MAX_MEDIAN_KM = 80.0
 MAX_MAX_KM = 200.0
 
-LAT, LON = 48.14, 11.57  # Munich — same as JS live-smoke
+LAT, LON = 47.23, 15.82  # Stubenberg — ICON-D2 domain
 DURATION_H = 2
 
 
@@ -74,8 +74,14 @@ def test_rough_equivalence_vs_windy(model: str, tmp_path: Path):
     mine = parse_mine_geojson(gj)
     assert len(mine) >= 1, "no trajectories from compute_trajectories"
 
-    # Windy GPX via Playwright
-    spec = WindyRunSpec(lat=LAT, lon=LON, model=model, duration_h=DURATION_H)
+    # Align Windy clock with our start time
+    t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    start_ms = t0.timestamp() * 1000
+
+    # Windy GPX via Playwright (right-click → Wind trajectories → API capture)
+    spec = WindyRunSpec(
+        lat=LAT, lon=LON, model=model, duration_h=DURATION_H, start_ms=start_ms,
+    )
     headless = os.environ.get("WINDY_HEADED", "").strip() not in ("1", "true", "yes")
     try:
         gpx_path = fetch_windy_gpx(spec, tmp_path / "dl", headless=headless)

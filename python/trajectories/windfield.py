@@ -482,9 +482,12 @@ def resolve_on_target(pt: dict, target: dict, tt: dict) -> dict:
         )
         if target["type"] == "z3d" and h_target < 0:
             return {"error": "Trajektorie erreicht den Boden"}
-        from .interp_fast import resolve_height_fast
+        try:
+            from .interp_fast import resolve_height_fast
 
-        fast = resolve_height_fast(pt, h_target, tt)
+            fast = resolve_height_fast(pt, h_target, tt)
+        except Exception:
+            fast = None
         if fast is not None and fast.get("error"):
             return fast
         if fast is not None:

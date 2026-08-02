@@ -888,11 +888,13 @@ async function runTrajectoriesViaApi({
   if (mode === "amsl") params.set("height_amsl", activeHeights.join(","));
   else params.set("height_agl", activeHeights.join(","));
 
+  const t0 = performance.now();
   try {
     const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
     if (DEBUG) console.debug("[traj] API", url);
     const resp = await fetch(url);
     const data = await resp.json();
+    const ms = performance.now() - t0;
     if (!resp.ok || data?.error) {
       throw new Error(data?.reason || `HTTP ${resp.status}`);
     }
@@ -910,13 +912,20 @@ async function runTrajectoriesViaApi({
     // Querschnitt/3D brauchen Modellgelände aus dem Windfeld — bei API aus.
     el("xsecbtn").disabled = true;
     el("view3dbtn").disabled = true;
-    setStatus(`API: ${runs.length} Trajektorie(n)`);
+    setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtApiMs(ms)}`);
   } catch (err) {
-    setStatus(`API-Fehler: ${err.message}`, true);
+    const ms = performance.now() - t0;
+    setStatus(`API-Fehler: ${err.message} · ${fmtApiMs(ms)}`, true);
   } finally {
     state.running = false;
     updateRunButton();
   }
+}
+
+/** Format API wall time (fetch + JSON) for status line. */
+function fmtApiMs(ms) {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
 }
 
 async function runTrajectories() {

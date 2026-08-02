@@ -61,3 +61,12 @@ sudo systemctl reload caddy
 curl -sS https://trajectory.mah.priv.at/health
 # Swagger: https://trajectory.mah.priv.at/docs
 ```
+
+The site block includes `encode gzip zstd` so large GeoJSON responses shrink on the wire (no FastAPI gzip). Verify:
+
+```bash
+curl -sS -D - -o /dev/null -H 'Accept-Encoding: gzip, deflate, br, zstd' \
+  'https://trajectory.mah.priv.at/v1/trajectory?latitude=47.23&longitude=15.82&models=icon_d2&time=2026-08-02T11:00:00Z&forecast_hours=2&height_agl=500&vertical_motion=height&format=geojson' \
+  | grep -i content-encoding
+# Expect: Content-Encoding: gzip  or  zstd
+```

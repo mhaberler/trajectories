@@ -8,6 +8,9 @@ trajectory.mah.priv.at {
 		header_up X-Forwarded-Host {host}
 	}
 
+	# Large GeoJSON trajectories; browsers negotiate gzip or zstd.
+	encode gzip zstd
+
 	log {
 		output file /var/log/caddy/trajectory.log
 	}

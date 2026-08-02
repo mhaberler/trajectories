@@ -8,10 +8,10 @@ bereitgestellt von Michael).
 ## Start
 
 ```bash
-npm install
-npm run dev        # Entwicklungsserver (Vite)
-npm test           # Integrator-Tests (synthetische Windfelder, offline)
-npm run test:live  # Live-Test gegen den Server
+bun install
+bun run dev        # Entwicklungsserver (Vite)
+bun test           # Integrator-Tests (synthetische Windfelder, offline)
+bun run test:live  # Live-Test gegen den Server
 ```
 
 Die App ist reines ESM ohne Build-Zwang — jeder statische Webserver im

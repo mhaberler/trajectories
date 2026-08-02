@@ -4,6 +4,7 @@ dist/
 untracked
 .venv/
 python/.venv/
+python/examples/out_example.geojson
 __pycache__/
 *.egg-info/
 .pytest_cache/

@@ -55,6 +55,9 @@ pip install -e "python/[dev]"
 playwright install chromium   # for opt-in visual tests
 npm install                   # Vite — web↔Python compare only
 
+# Standalone library example (AGL ≤3 km, 10 min markers, met extras):
+python python/examples/basic_trajectory.py
+
 trajectories \
   --lat 47.23 --lon 15.82 \
   --time 2026-08-02T11:00:00Z \

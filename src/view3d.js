@@ -1,14 +1,21 @@
+import * as Cesium from "cesium";
+import { MartiniTerrainProvider, rgbTerrainToGrid, createQuantizedMeshData } from "@macrostrat/cesium-martini";
+import Martini from "@mapbox/martini";
+import { PMTiles } from "pmtiles";
 import { fmtHeight, fmtWind } from "./units.js";
 
 // 3D-Ansicht (CesiumJS): zeichnet die zuletzt berechneten Trajektorien als
 // Höhenlinien mit halbtransparenter Wand zum Boden über gestreamtem Gelände.
-// Cesium (mehrere MB) wird erst beim ersten Öffnen vom CDN geladen, die
-// 2D-App bleibt davon unberührt.
+// Cesium + Martini werden per Vite gebündelt und erst beim ersten Öffnen
+// nachgeladen (dynamic import aus app.js); die 2D-App bleibt leicht.
 //
-// Gelände kommt als quantized-mesh-Kacheln zur Laufzeit vom gewählten Dienst:
-//  - Re:Earth (frei, ohne Token; Mapterhorn-DEM mit EGM2008 eingerechnet)
-//  - Cesium World Terrain (braucht Ion-Token, Eingabefeld im Kopf)
-//  - flach (Ellipsoid) als Fallback, auch automatisch bei Dienstausfall
+// Gelände:
+//  - Re:Earth (frei; quantized-mesh, Mapterhorn-DEM mit EGM2008)
+//  - MapTerhorn Martini (Terrarium DEM via planet.pmtiles, client-side mesh)
+//  - Cesium World Terrain (braucht Ion-Token)
+//  - flach (Ellipsoid) als Fallback
+//
+// Kartengrundlagen: Esri hybrid, OSM, VersaTiles Satellit (getrennt wählbar).
 //
 // Höhenbezug: Die Trajektorien führen Meter über NN (Geoid), Cesium rechnet
 // in Höhen über dem WGS84-Ellipsoid (~45-50 m Unterschied in den Alpen).
@@ -20,20 +27,20 @@ import { fmtHeight, fmtWind } from "./units.js";
 // auf Entities — die Trajektorienhöhen werden deshalb mit demselben Faktor
 // selbst skaliert, damit beide zusammenpassen.
 
-const CESIUM_VERSION = "1.143.0";
-const CESIUM_CDN = `https://cdn.jsdelivr.net/npm/cesium@${CESIUM_VERSION}/Build/Cesium/`;
 const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
+const MAPTERHORN_PMTILES_URL = "https://download.mapterhorn.com/planet.pmtiles";
+const VERSATILES_SAT_URL = "https://tiles.versatiles.org/tiles/satellite/{z}/{x}/{y}";
 const STORAGE_KEY = "trajectories.view3d.v1";
 
 const el = (id) => document.getElementById(id);
 
-let Cesium = null;
 let viewer = null;
 let lastData = null;   // { runs, start, modelElev }
 let zOffset = 0;       // Ellipsoid/Geoid/Modell-Abgleich (m), am Startpunkt kalibriert
 let terrainKind = "flat"; // tatsächlich aktive Quelle (nach evtl. Fallback)
 let calKey = null;     // wofür zOffset gilt: Startpunkt + Geländequelle
 let wired = false;
+let martiniProvider = null;
 
 const prefs = loadPrefs();
 
@@ -54,35 +61,105 @@ function savePrefs(patch) {
   }
 }
 
-async function loadCesium() {
-  if (window.Cesium) {
-    Cesium = window.Cesium;
-    return;
+// ─── MapTerhorn Terrarium via PMTiles + Martini (from flightreviewer) ───────
+
+class PMTilesHeightmapResource {
+  constructor({ url, tileSize = 512, maxZoom = 12, credit }) {
+    this.pmtiles = new PMTiles(url);
+    this.tileSize = tileSize;
+    this.maxZoom = maxZoom;
+    this.credit = credit;
+    this._canvasQueue = [];
   }
-  window.CESIUM_BASE_URL = CESIUM_CDN;
-  const css = document.createElement("link");
-  css.rel = "stylesheet";
-  css.href = `${CESIUM_CDN}Widgets/widgets.css`;
-  const cssReady = new Promise((resolve) => {
-    css.onload = css.onerror = resolve;
-  });
-  document.head.appendChild(css);
-  await new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = `${CESIUM_CDN}Cesium.js`;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("Cesium-Bibliothek nicht ladbar (CDN nicht erreichbar?)"));
-    document.head.appendChild(s);
-  });
-  await cssReady;
-  Cesium = window.Cesium;
+
+  _getCanvas() {
+    let ref = this._canvasQueue.pop();
+    if (!ref) {
+      const canvas = document.createElement("canvas");
+      canvas.width = this.tileSize;
+      canvas.height = this.tileSize;
+      ref = { canvas, context: canvas.getContext("2d", { willReadFrequently: true }) };
+    }
+    return ref;
+  }
+
+  async getTilePixels(coords) {
+    const resp = await this.pmtiles.getZxy(coords.z, coords.x, coords.y);
+    if (!resp?.data) return undefined;
+    const bitmap = await createImageBitmap(new Blob([resp.data], { type: "image/webp" }));
+    const ref = this._getCanvas();
+    ref.context.drawImage(bitmap, 0, 0, this.tileSize, this.tileSize);
+    const pixels = ref.context.getImageData(0, 0, this.tileSize, this.tileSize);
+    ref.context.clearRect(0, 0, this.tileSize, this.tileSize);
+    this._canvasQueue.push(ref);
+    bitmap.close();
+    return pixels;
+  }
+
+  getTileDataAvailable({ z }) {
+    return z <= this.maxZoom;
+  }
 }
 
-// Kartengrundlagen wie in 2D (app.js); Satellit ist in 3D der Standard, weil
-// das stilisierte OSM-Raster über steilem, überhöhtem Gelände stark verzerrt.
+function terrariumDecode(r, g, b, _a) {
+  return (r * 256 + g + b / 256) - 32768;
+}
+
+const martiniCache = {};
+
+class TerrariumTerrainDecoder {
+  constructor() {
+    this.inProgress = 0;
+    this.maxRequests = 6;
+  }
+
+  requestTileGeometry(coords, processFunction) {
+    if (this.inProgress > this.maxRequests) return undefined;
+    this.inProgress += 1;
+    return processFunction(coords).finally(() => { this.inProgress -= 1; });
+  }
+
+  decodeTerrain(params) {
+    const { imageData, tileSize = 256, errorLevel, maxVertexDistance } = params;
+    const arr = new Uint8Array(imageData);
+    const pixels = {
+      shape: [tileSize, tileSize, 4],
+      get(x, y, c) { return arr[(y * tileSize + x) * 4 + c]; },
+    };
+    const terrain = rgbTerrainToGrid(pixels, terrariumDecode);
+    martiniCache[tileSize] = martiniCache[tileSize] || new Martini(tileSize + 1);
+    const tile = martiniCache[tileSize].createTile(terrain);
+    const mesh = tile.getMesh(errorLevel, Math.min(maxVertexDistance, tileSize));
+    return Promise.resolve(createQuantizedMeshData(tile, mesh, tileSize, terrain));
+  }
+}
+
+async function setupMartiniTerrain() {
+  if (martiniProvider) return martiniProvider;
+  const resource = new PMTilesHeightmapResource({
+    url: MAPTERHORN_PMTILES_URL,
+    tileSize: 512,
+    maxZoom: 12,
+  });
+  const decoder = new TerrariumTerrainDecoder();
+  martiniProvider = new MartiniTerrainProvider({ resource, decoder });
+  return martiniProvider;
+}
+
+// Kartengrundlagen; Satellit ist in 3D der Standard, weil das stilisierte
+// OSM-Raster über steilem, überhöhtem Gelände stark verzerrt.
 function imageryLayers(kind) {
   if (kind === "osm") {
     return [new Cesium.OpenStreetMapImageryProvider({ url: "https://tile.openstreetmap.org/" })];
+  }
+  if (kind === "versatiles") {
+    return [
+      new Cesium.UrlTemplateImageryProvider({
+        url: VERSATILES_SAT_URL,
+        maximumLevel: 12,
+        credit: new Cesium.Credit("Copernicus Sentinel-2 via VersaTiles", true),
+      }),
+    ];
   }
   return [
     new Cesium.UrlTemplateImageryProvider({
@@ -123,7 +200,8 @@ function initViewer() {
     maximumRenderTimeChange: Infinity,
   });
   viewer.scene.globe.depthTestAgainstTerrain = true;
-  setImagery(["esri", "osm"].includes(prefs.imagery) ? prefs.imagery : "esri");
+  const img = ["esri", "osm", "versatiles"].includes(prefs.imagery) ? prefs.imagery : "esri";
+  setImagery(img);
 }
 
 // --- Kamera-Knöpfe: Orbit um den Geländepunkt in der Bildmitte --------------
@@ -143,9 +221,8 @@ function orbit(dHeading, dPitch, rangeFactor = 1) {
   scene.requestRender();
 }
 
-/** Öffnet die Ansicht (lädt Cesium beim ersten Mal) und zeichnet die Läufe. */
+/** Öffnet die Ansicht und zeichnet die Läufe (Modul wird lazy geladen). */
 export async function show(data) {
-  await loadCesium();
   if (!viewer) {
     initViewer();
     wireControls();
@@ -174,6 +251,9 @@ async function setTerrain(kind) {
     if (kind === "reearth") {
       provider = await Cesium.CesiumTerrainProvider.fromUrl(REEARTH_TERRAIN_URL);
       terrainKind = "reearth";
+    } else if (kind === "mapterhorn") {
+      provider = await setupMartiniTerrain();
+      terrainKind = "mapterhorn";
     } else if (kind === "ion") {
       const token = (prefs.ionToken || "").trim();
       if (!token) throw new Error("Ion-Token fehlt");
@@ -301,7 +381,7 @@ function wireControls() {
 
   const sel = el("v3d-terrain");
   const token = el("v3d-token");
-  if (["reearth", "ion", "flat"].includes(prefs.terrain)) sel.value = prefs.terrain;
+  if (["reearth", "mapterhorn", "ion", "flat"].includes(prefs.terrain)) sel.value = prefs.terrain;
   token.value = prefs.ionToken || "";
   token.hidden = sel.value !== "ion";
   const applyTerrain = async () => {
@@ -319,7 +399,7 @@ function wireControls() {
   });
 
   const imagery = el("v3d-imagery");
-  if (["esri", "osm"].includes(prefs.imagery)) imagery.value = prefs.imagery;
+  if (["esri", "osm", "versatiles"].includes(prefs.imagery)) imagery.value = prefs.imagery;
   imagery.addEventListener("change", () => {
     savePrefs({ imagery: imagery.value });
     setImagery(imagery.value);

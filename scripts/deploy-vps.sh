@@ -14,6 +14,13 @@ echo "==> Baue Web-Build (base=${BASE}) ..."
 cd "$PROJECT_DIR"
 bunx vite build --base="$BASE"
 
+# vite-plugin-cesium copies into dist/<base>/cesium; flatten for rsync of dist/.
+if [[ -d dist/trajectories/cesium ]]; then
+  rm -rf dist/cesium
+  mv dist/trajectories/cesium dist/cesium
+  rm -rf dist/trajectories
+fi
+
 echo "==> Synchronisiere dist/ → ${DEST}/ ..."
 if mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
   rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/dist/" "$DEST/"

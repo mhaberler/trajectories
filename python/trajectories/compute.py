@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -185,6 +186,17 @@ def compute_trajectories(
                 for fut in as_completed(futs):
                     ordered[futs[fut]] = fut.result()
                 runs = [r for r in ordered if r is not None]
+
+        # Model orography along each path (for Querschnitt / 3D after API fetch).
+        for run in runs:
+            pts = run["r"]["points"]
+            terrain: list[float | None] = []
+            for p in pts:
+                e = wf.elevation_at(p["lat"], p["lon"])
+                terrain.append(
+                    float(e) if e is not None and math.isfinite(e) else None
+                )
+            run["terrain"] = terrain
 
     return build_geojson(
         runs=runs,

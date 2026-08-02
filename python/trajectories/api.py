@@ -27,7 +27,8 @@ app = FastAPI(
     description=(
         "Petterssen ICON wind trajectories over Open-Meteo fields. "
         "Query parameters follow Open-Meteo naming; successful responses are "
-        "GeoJSON FeatureCollections (SimpleStyle)."
+        "GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
+        "properties.terrain_m (model orography m AMSL, parallel to coordinates)."
     ),
     version="0.1.0",
     openapi_tags=[

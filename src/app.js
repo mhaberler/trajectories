@@ -834,6 +834,11 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
           u, v, met,
         };
       });
+    const rawTerrain = Array.isArray(p.terrain_m) ? p.terrain_m : null;
+    const terrain = points.map((_, i) => {
+      const g = rawTerrain ? rawTerrain[i] : null;
+      return Number.isFinite(g) ? +g : null;
+    });
     runs.push({
       r: {
         points,
@@ -846,6 +851,7 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
       heightM: Number.isFinite(heightM) ? heightM : 0,
       method,
       dash,
+      terrain,
     });
   }
   return runs.sort((a, b) => a.heightM - b.heightM);
@@ -909,9 +915,20 @@ async function runTrajectoriesViaApi({
 
     state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
     el("download").disabled = false;
-    // Querschnitt/3D brauchen Modellgelände aus dem Windfeld — bei API aus.
-    el("xsecbtn").disabled = true;
-    el("view3dbtn").disabled = true;
+    // Querschnitt: terrain_m from API (model orography along each path).
+    state.xsec = {
+      runs: runs.map((run) => ({
+        ...run,
+        terrain: run.terrain || run.r.points.map(() => null),
+      })),
+      t0Ms,
+      direction,
+      overlay: compareMode,
+    };
+    const g0 = runs[0]?.terrain?.find((g) => Number.isFinite(g));
+    if (Number.isFinite(g0)) state.startElevation = g0;
+    el("xsecbtn").disabled = runs.length === 0;
+    el("view3dbtn").disabled = runs.length === 0;
     setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtApiMs(ms)}`);
   } catch (err) {
     const ms = performance.now() - t0;

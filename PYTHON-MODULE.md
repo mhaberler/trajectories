@@ -8,6 +8,7 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 - Functional parity with the browser app (`src/windfield.js`, `src/integrator.js`, `src/app.js` export).
 - Library API (`compute_trajectories`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`).
 - GeoJSON FeatureCollection with SimpleStyle (`stroke` / `marker-color`) for Placemark tools.
+- Trajectory features include `properties.terrain_m` (model orography m AMSL, parallel to coordinates) for Querschnitt / 3D after API fetch.
 - Tests that prove the port: unit (offline), near-exact vs web UI, rough vs Windy.
 
 ## Layout

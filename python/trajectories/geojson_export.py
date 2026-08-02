@@ -40,6 +40,12 @@ def build_geojson(
         label = run["label"]
         height_m = run["heightM"]
         method = run["method"]
+        n_pts = len(r["points"])
+        terrain = run.get("terrain")
+        if terrain is None or len(terrain) != n_pts:
+            terrain_m = [None] * n_pts
+        else:
+            terrain_m = [round1(e) for e in terrain]
         features.append({
             "type": "Feature",
             "geometry": {
@@ -63,6 +69,7 @@ def build_geojson(
                 "stroke": color,
                 "stroke-width": 2,
                 "times": [iso(p["tMs"]) for p in r["points"]],
+                "terrain_m": terrain_m,
             },
         })
         for m in r["markers"]:

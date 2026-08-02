@@ -13,6 +13,32 @@ playwright install chromium   # for Windy / web↔Python visual tests
 npm install                   # Vite — required for web↔Python compare
 ```
 
+For local `.om` acceleration (optional):
+
+```bash
+pip install -e "python/[om]"   # or use [dev], which includes omfiles
+```
+
+## Data backends
+
+| Mode | How |
+|------|-----|
+| `auto` (default) | Prefer local OM under `TRAJECTORIES_OM_ROOT` (default `/open-meteo` if present); else HTTP |
+| `om` | Require local files + `omfiles` |
+| `http` | Open-Meteo forecast API only |
+
+```bash
+# force HTTP even when /open-meteo exists
+trajectories ... --backend http
+
+# force local
+trajectories ... --backend om --om-root /open-meteo
+```
+
+Env: `TRAJECTORIES_BACKEND`, `TRAJECTORIES_OM_ROOT` (empty string disables auto-detect), `TRAJECTORIES_API_BASE`.
+
+**Note:** Local trees have model-level specific humidity but no `relative_humidity_level*`. With `--met-extras` on the OM backend, marker dewpoint uses **q** only; RH on markers may be missing/NaN.
+
 ## CLI
 
 ```bash
@@ -41,6 +67,7 @@ gj = compute_trajectories(
     duration_h=2,
     heights=[500, 1500],
     methods=["height"],
+    backend="auto",  # or "om" / "http"
 )
 ```
 
@@ -48,6 +75,10 @@ gj = compute_trajectories(
 
 ```bash
 pytest python/tests/test_integrator_unit.py
+pytest python/tests/test_backend_resolve.py
+
+# Local OM smoke + loose OM↔HTTP compare (needs /open-meteo + omfiles)
+RUN_OM_TESTS=1 pytest python/tests/test_om_backend.py -m om
 
 # Rough visual equivalence vs Windy built-in trajectories (ICON-D2 + ICON-EU).
 # Driver: wind layer → model → right-click → "Wind trajectories" → capture API paths.

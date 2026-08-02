@@ -22,6 +22,7 @@ class WindField:
         client: httpx.Client | None = None,
         w_var_prefix: str | None = None,
         debug: bool = False,
+        backend: str | None = None,
     ):
         if model_key not in config.MODELS:
             raise ValueError(f"Unbekanntes Modell: {model_key}")
@@ -39,6 +40,12 @@ class WindField:
         self.start_date: str | None = None
         self.end_date: str | None = None
         self._pending: dict[str, Any] = {}
+        self.backend_kind = backend or config.resolve_backend(model_key)
+        self._om = None
+        if self.backend_kind == "om":
+            from .om_backend import OmBackend
+
+            self._om = OmBackend(model_key)
 
     def _http(self) -> httpx.Client:
         if self._client is None:
@@ -50,6 +57,7 @@ class WindField:
         if self._owns_client and self._client is not None:
             self._client.close()
             self._client = None
+        self._om = None
 
     def __enter__(self) -> WindField:
         return self
@@ -61,12 +69,24 @@ class WindField:
     def detect_w_variable(
         model_key: str = "icon_eu",
         client: httpx.Client | None = None,
+        *,
+        backend: str | None = None,
     ) -> str | None:
+        kind = backend or config.resolve_backend(model_key)
+        if kind == "om":
+            from .om_backend import OmBackend
+
+            try:
+                om = OmBackend(model_key)
+            except Exception:
+                return None
+            return "wind_w" if om.has_w() else None
+
         model = config.MODELS[model_key]
         owns = client is None
         http = client or httpx.Client(timeout=60.0, trust_env=False)
         try:
-            for prefix in ("wind_w", "vertical_velocity", "w"):
+            for prefix in ("wind_w", "vertical_velocity", "w", "wind_w_component"):
                 try:
                     var_name = f"{prefix}_level{model['nLevels'] - 5}"
                     url = (
@@ -153,10 +173,10 @@ class WindField:
             if self.needs["t"]:
                 vars_.append(f"temperature_level{l}")
             if self.needs["met"]:
-                vars_.extend([
-                    f"specific_humidity_level{l}",
-                    f"relative_humidity_level{l}",
-                ])
+                vars_.append(f"specific_humidity_level{l}")
+                # Local OM trees have no relative_humidity_level*; HTTP keeps RH.
+                if self.backend_kind != "om":
+                    vars_.append(f"relative_humidity_level{l}")
             if self.needs["w"]:
                 vars_.append(f"{self.w_var_prefix}_level{l}")
         return vars_
@@ -228,6 +248,15 @@ class WindField:
             if self.units.get(f"specific_humidity_level{self.levels[0]}") == "g/kg"
             else 1
         )
+        # HTTP forecast API returns horizontal wind in km/h; local OM is m/s.
+        u_unit = (
+            1.0
+            if self.backend_kind == "om"
+            else unit_factor(self.units.get(f"wind_u_component_level{self.levels[0]}", "km/h"))
+        )
+        if self.backend_kind != "om" and u_unit == 1.0:
+            # Default HTTP path when hourly_units omitted
+            u_unit = KMH_TO_MS
         point: dict[str, Any] = {
             "elevation": r["__elevation"],
             "hAgl": [float("nan")] * L,
@@ -241,8 +270,8 @@ class WindField:
         }
         for k in range(L):
             l = self.levels[k]
-            point["u"].append(to_array(r.get(f"wind_u_component_level{l}"), T, KMH_TO_MS))
-            point["v"].append(to_array(r.get(f"wind_v_component_level{l}"), T, KMH_TO_MS))
+            point["u"].append(to_array(r.get(f"wind_u_component_level{l}"), T, u_unit))
+            point["v"].append(to_array(r.get(f"wind_v_component_level{l}"), T, u_unit))
             if point["p"] is not None:
                 point["p"].append(to_array(r.get(f"pressure_level{l}"), T, 1))
             if point["T"] is not None:
@@ -263,6 +292,18 @@ class WindField:
         vars_: list[str],
         with_meta: bool = False,
     ) -> list[dict]:
+        if self.backend_kind == "om":
+            assert self._om is not None
+            assert self.start_date and self.end_date
+            self.units.update(self._om.units_for(vars_))
+            return self._om.request(
+                coords,
+                vars_,
+                self.start_date,
+                self.end_date,
+                with_meta=with_meta,
+            )
+
         params = {
             "latitude": ",".join(str(round5(c[0])) for c in coords),
             "longitude": ",".join(str(round5(c[1])) for c in coords),

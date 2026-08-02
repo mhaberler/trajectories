@@ -72,6 +72,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Open-Meteo base URL (default: {config.API_BASE})",
     )
     p.add_argument(
+        "--om-root",
+        default=None,
+        help="Local Open-Meteo data root (default: TRAJECTORIES_OM_ROOT or /open-meteo)",
+    )
+    p.add_argument(
+        "--backend",
+        choices=("auto", "om", "http"),
+        default=None,
+        help="Wind data source: auto (local OM preferred), om, or http",
+    )
+    p.add_argument(
         "-o",
         "--output",
         default=None,
@@ -96,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
             marker_interval_min=args.marker_interval,
             met_extras=args.met_extras,
             api_base=args.api_base,
+            om_root=args.om_root,
+            backend=args.backend,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

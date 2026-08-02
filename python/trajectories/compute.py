@@ -75,6 +75,8 @@ def compute_trajectories(
     marker_interval_min: float = 60,
     met_extras: bool = False,
     api_base: str | None = None,
+    om_root: str | None = None,
+    backend: str | None = None,
     colors: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """
@@ -82,13 +84,21 @@ def compute_trajectories(
 
     ``methods`` may list several vertical modes; ``heights`` several start heights.
     All combinations are run into one FeatureCollection.
+
+    Data source: ``backend`` ``auto`` (default) prefers local Open-Meteo OM files
+    under ``om_root`` / ``TRAJECTORIES_OM_ROOT`` when available, else HTTP.
     """
     if api_base:
         config.set_api_base(api_base)
+    if om_root is not None:
+        config.set_om_root(om_root)
+    if backend is not None:
+        config.set_backend(backend)
 
     if model not in config.MODELS:
         raise ValueError(f"Unknown model: {model}")
     model_cfg = config.MODELS[model]
+    backend_kind = config.resolve_backend(model)
 
     heights = list(heights) if heights is not None else list(config.DEFAULT_HEIGHTS)
     methods = list(methods) if methods is not None else ["height"]
@@ -123,14 +133,14 @@ def compute_trajectories(
 
     w_prefix = None
     if "z3d" in methods:
-        w_prefix = WindField.detect_w_variable(model)
+        w_prefix = WindField.detect_w_variable(model, backend=backend_kind)
         if not w_prefix:
-            raise RuntimeError("Model vertical velocity (w) not available from API")
+            raise RuntimeError("Model vertical velocity (w) not available")
 
     t_end = t0_ms + direction_i * duration * 3600e3
     max_h = max(heights)
 
-    with WindField(model, w_var_prefix=w_prefix) as wf:
+    with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
         wf.init(lat, lon, max_h, t0_ms, t_end, methods, met_extras=met_extras)
         runs: list[dict] = []
         for height_m in heights:

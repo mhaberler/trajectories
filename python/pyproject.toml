@@ -13,9 +13,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+om = [
+  "omfiles[grids,fsspec]>=1.2",
+]
 dev = [
   "pytest>=8",
   "playwright>=1.40",
+  "omfiles[grids,fsspec]>=1.2",
 ]
 
 [project.scripts]
@@ -30,4 +34,5 @@ testpaths = ["tests"]
 markers = [
   "windy: Playwright visual comparison against Windy (set RUN_WINDY_TESTS=1)",
   "web_py: Playwright web app GeoJSON vs Python (set RUN_WEB_PY_TESTS=1)",
+  "om: local OM-files backend tests (set RUN_OM_TESTS=1; needs /open-meteo)",
 ]

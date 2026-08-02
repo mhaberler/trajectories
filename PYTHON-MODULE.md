@@ -17,14 +17,17 @@ python/
   pyproject.toml          # package trajectories, CLI entry, pytest markers
   README.md               # install / CLI / test recipes
   trajectories/
-    config.py             # models, methods, API base, colors
-    windfield.py          # Open-Meteo client + 4-D interpolation (httpx)
+    config.py             # models, methods, API/OM backend resolution
+    windfield.py          # HTTP or local OM client + 4-D interpolation
+    om_backend.py         # omfiles reader for /open-meteo rolling chunks
     integrator.py         # Petterssen + adaptive dt + markers
     compute.py            # height × method orchestration → FeatureCollection
     geojson_export.py     # port of web buildGeoJSON
     cli.py / __main__.py
   tests/
     test_integrator_unit.py   # fake-wind Petterssen (always on)
+    test_backend_resolve.py   # OM/HTTP resolution (always on)
+    test_om_backend.py        # local OM smoke + OM↔HTTP (opt-in)
     test_web_python.py        # web download vs Python (opt-in)
     test_windy_visual.py      # Python vs Windy paths (opt-in)
     web_driver.py             # Vite + Playwright → #download GeoJSON
@@ -51,7 +54,7 @@ Default API: `https://open-meteo.mah.priv.at` (`TRAJECTORIES_API_BASE` / `--api-
 ```bash
 python3 -m venv python/.venv
 source python/.venv/bin/activate
-pip install -e "python/[dev]"
+pip install -e "python/[dev]"   # includes optional omfiles for local .om reads
 playwright install chromium   # for opt-in visual tests
 npm install                   # Vite — web↔Python compare only
 
@@ -68,6 +71,27 @@ trajectories \
   -o out.geojson
 ```
 
+### Local OM files (preferred when present)
+
+When `/open-meteo` (or `TRAJECTORIES_OM_ROOT`) contains `dwd_icon_d2` / `dwd_icon_eu` and `omfiles` is installed, the Python package reads wind fields from local `.om` chunks instead of HTTP (`--backend auto`). Force with `--backend om` / `--backend http`.
+
+- AGL heights derived from `static/hhl.om` − `HSURF.om` (no `height_agl_*` on disk).
+- Horizontal wind already m/s (HTTP path still converts km/h).
+- `--met-extras`: local has specific humidity only — no model-level RH dirs.
+- Fidelity vs HTTP: same physics, not bit-identical (`RUN_OM_TESTS=1`).
+- I/O strategy (v1): same point-cache as HTTP — per-corner, per-variable `OmChunkFileReader` loads. **Not faster than HTTP yet** (see timing below); a domain slab preload would be the next acceleration step.
+
+### Timing — `basic_trajectory` inputs (2026-08-02)
+
+Stubenberg `47.23, 15.82`; ICON-D2; start `2026-08-02T11:00:00Z`; 2 h; heights 500/1500/3000 m AGL; markers 10 min; `met_extras=True`. Wall time for `compute_trajectories` only (GeoJSON dump omitted):
+
+| Backend | Wall time | Tracks |
+|---------|-----------|--------|
+| `om`    | **47.7 s** | 3 |
+| `http`  | **8.9 s**  | 3 |
+
+HTTP ~5× faster on this host for the point-wise OM reader. Opt-in fidelity tests (`RUN_OM_TESTS=1`) still pass under a multi-km same-physics bound.
+
 ## Test strategies
 
 ### 1. Unit — integrator (always on)
@@ -79,11 +103,26 @@ trajectories \
 
 ```bash
 pytest python/tests/test_integrator_unit.py
+pytest python/tests/test_backend_resolve.py
 ```
 
-**Result:** 5/5 passed.
+**Result:** integrator 5/5; backend resolve 8/8 passed.
 
-### 2. Near-exact — web app vs Python (opt-in)
+### 2. Local OM vs HTTP — same physics (opt-in)
+
+**File:** `python/tests/test_om_backend.py` (`@pytest.mark.om`)  
+**Gate:** `RUN_OM_TESTS=1`  
+**Needs:** `omfiles`, readable `{OM_ROOT}/dwd_icon_*`, and HTTP API for the compare leg.
+
+**Matrix:** Stubenberg; 2 h; heights `[500, 1500, 3000]`; method `height`; models `icon_d2` + `icon_eu`.
+
+```bash
+RUN_OM_TESTS=1 pytest python/tests/test_om_backend.py -m om
+```
+
+**Result (2026-08-02):** **4/4 passed** (smoke + OM↔HTTP compare). Loose bounds: median &lt; 5 km, max &lt; 15 km. Artifacts `python/tests/artifacts/om_*.geojson`, `http_*.geojson`.
+
+### 3. Near-exact — web app vs Python (opt-in)
 
 **File:** `python/tests/test_web_python.py` (`@pytest.mark.web_py`)  
 **Gate:** `RUN_WEB_PY_TESTS=1`  
@@ -105,7 +144,7 @@ RUN_WEB_PY_TESTS=1 pytest python/tests/test_web_python.py -m web_py
 
 **Result (2026-08-02 run):** **2/2 passed.** Max separation **0 m** on all three height pairs for both ICON-EU and ICON-D2 (sampled times). Artifacts under `python/tests/artifacts/` (`web_*.geojson`, `py_*.geojson`, `web-py-compare-map.html`).
 
-### 3. Rough visual — Python vs Windy (opt-in)
+### 4. Rough visual — Python vs Windy (opt-in)
 
 **File:** `python/tests/test_windy_visual.py` (`@pytest.mark.windy`)  
 **Gate:** `RUN_WINDY_TESTS=1`  
@@ -136,6 +175,8 @@ RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
 ## Status
 
 - Package usable as CLI/library; GeoJSON matches web export shape (including SimpleStyle).
-- Port fidelity vs web: **confirmed near-exact** (0 m on sampled points for the smoke matrix).
+- Dual backend: local OM preferred when `/open-meteo` + `omfiles` available; HTTP fallback.
+- Port fidelity vs web (HTTP path): **confirmed near-exact** (0 m on sampled points for the smoke matrix).
+- OM vs HTTP: same-physics opt-in tests pass; point-wise OM I/O is currently **slower** than HTTP (~48 s vs ~9 s on `basic_trajectory` ICON-D2 case).
 - Windy: rough agreement only; useful for regression, not a bit-for-bit oracle.
 - Generated compare dumps live under `python/tests/artifacts/` (not committed).

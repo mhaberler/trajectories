@@ -13,10 +13,12 @@ playwright install chromium   # for Windy / web↔Python visual tests
 npm install                   # Vite — required for web↔Python compare
 ```
 
-For local `.om` acceleration (optional):
+For local `.om` reads and/or the HTTP API (optional):
 
 ```bash
-pip install -e "python/[om]"   # or use [dev], which includes omfiles
+pip install -e "python/[om]"    # omfiles
+pip install -e "python/[api]"   # FastAPI + uvicorn
+# or: pip install -e "python/[dev]"  # includes om + api + test deps
 ```
 
 ## Data backends
@@ -71,11 +73,45 @@ gj = compute_trajectories(
 )
 ```
 
+## HTTP API (FastAPI / OpenAPI)
+
+Open-Meteo-shaped query params; response is a GeoJSON FeatureCollection.
+Errors: `{"error": true, "reason": "..."}`.
+
+```bash
+pip install -e "python/[api]"
+uvicorn trajectories.api:app --host 127.0.0.1 --port 8000
+# Swagger try-it: http://127.0.0.1:8000/docs
+# ReDoc:        http://127.0.0.1:8000/redoc
+```
+
+```bash
+curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
+  --data-urlencode 'latitude=47.23' \
+  --data-urlencode 'longitude=15.82' \
+  --data-urlencode 'models=icon_d2' \
+  --data-urlencode 'time=2026-08-02T11:00:00Z' \
+  --data-urlencode 'forecast_hours=2' \
+  --data-urlencode 'height_agl=500,1500,3000' \
+  --data-urlencode 'vertical_motion=height' \
+  --data-urlencode 'backend=http'
+```
+
+Client example (server must be running):
+
+```bash
+python python/examples/api_trajectory.py
+# local uvicorn: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
+```
+
+VPS deploy (systemd + Caddy sketch for `trajectory.mah.priv.at`): see [`deploy/README.md`](../deploy/README.md).
+
 ## Tests
 
 ```bash
 pytest python/tests/test_integrator_unit.py
 pytest python/tests/test_backend_resolve.py
+pytest python/tests/test_api.py
 
 # Local OM smoke + loose OM↔HTTP compare (needs /open-meteo + omfiles)
 RUN_OM_TESTS=1 pytest python/tests/test_om_backend.py -m om

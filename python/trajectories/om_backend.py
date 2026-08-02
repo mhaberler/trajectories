@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,16 +14,26 @@ from typing import Any
 import numpy as np
 
 from . import config
+from .om_reader_cache import (
+    SlabStaleError,
+    clear_om_reader_cache,
+    get_om_reader_cache,
+)
 
-# Process-wide warm backends (meta / grid / fs). Slabs are per-request, not cached here.
+# Process-wide warm backends (meta / grid / fs).
 _BACKEND_LOCK = threading.Lock()
 _BACKEND_CACHE: dict[str, "OmBackend"] = {}
+# Reuse identical slabs across requests (warm unique-request path).
+_SLAB_LOCK = threading.Lock()
+_SLAB_CACHE: OrderedDict[tuple, "OmSlab"] = OrderedDict()
+_SLAB_CACHE_MAX = 8
 
 # Half-extent from start: characteristic wind × duration, clamped for IO.
 SLAB_SPEED_KMH = 40.0
 SLAB_PAD_KM_MIN = 50.0
 SLAB_PAD_KM_MAX = 120.0
-SLAB_LOAD_WORKERS = 8
+SLAB_LOAD_WORKERS = 16
+SLAB_LOAD_RETRIES = 3
 BAND_LOW_M = 2500.0
 BAND_HIGH_M = 6500.0
 BAND_HIGH_THRESHOLD_M = 2000.0
@@ -43,12 +54,19 @@ def get_om_backend(model_key: str, root: Path | None = None) -> "OmBackend":
 def clear_om_backend_cache() -> None:
     with _BACKEND_LOCK:
         _BACKEND_CACHE.clear()
+    with _SLAB_LOCK:
+        _SLAB_CACHE.clear()
+    clear_om_reader_cache()
+
+
+def clear_om_slab_cache() -> None:
+    with _SLAB_LOCK:
+        _SLAB_CACHE.clear()
 
 
 def height_band_ceiling_m(max_height_m: float) -> float:
     """AGL ceiling for slab level selection (low 2.5 km / high 6.5 km)."""
-    ceil = BAND_LOW_M if max_height_m <= BAND_HIGH_THRESHOLD_M else BAND_HIGH_M
-    return ceil
+    return BAND_LOW_M if max_height_m <= BAND_HIGH_THRESHOLD_M else BAND_HIGH_M
 
 
 def spatial_pad_deg(lat: float, duration_h: float, speed_kmh: float = SLAB_SPEED_KMH) -> tuple[float, float]:
@@ -127,6 +145,7 @@ class OmBackend:
 
         self.fs = fsspec.filesystem("file")
         self._xy_cache: dict[tuple[float, float], Any] = {}
+        self._readers = get_om_reader_cache()
 
     def _discover_shape(self) -> tuple[int, int]:
         level = self.model["nLevels"]
@@ -134,8 +153,10 @@ class OmBackend:
         chunks = sorted(var_dir.glob("chunk_*.om"))
         if not chunks:
             raise RuntimeError(f"No OM chunks under {var_dir}")
-        with self._OmFileReader(str(chunks[0])) as reader:
-            ny, nx, _nt = reader.shape
+        cache = get_om_reader_cache()
+        entry = cache.get(str(chunks[0]))
+        with entry.lock:
+            ny, nx, _nt = entry.reader.shape
         return int(ny), int(nx)
 
     def has_w(self) -> bool:
@@ -153,21 +174,112 @@ class OmBackend:
 
     def elevation_at(self, lat: float, lon: float) -> float:
         xy = self._xy(lat, lon)
-        with self._OmFileReader(str(self.dataset / "static" / "HSURF.om")) as reader:
-            return float(np.asarray(reader[xy.y, xy.x]))
+        path = str(self.dataset / "static" / "HSURF.om")
+        return float(np.asarray(self._readers.read_array(path, (xy.y, xy.x))))
 
     def height_agl_profile(self, lat: float, lon: float) -> dict[int, float]:
         """Model-level AGL heights (level 1 = TOA … nLevels ≈ 10 m)."""
         xy = self._xy(lat, lon)
-        with self._OmFileReader(str(self.dataset / "static" / "HSURF.om")) as reader:
-            hsurf = float(np.asarray(reader[xy.y, xy.x]))
-        with self._OmFileReader(str(self.dataset / "static" / "hhl.om")) as reader:
-            hhl = np.asarray(reader[xy.y, xy.x, :], dtype=np.float64)
+        hsurf = float(
+            np.asarray(
+                self._readers.read_array(str(self.dataset / "static" / "HSURF.om"), (xy.y, xy.x))
+            )
+        )
+        hhl = np.asarray(
+            self._readers.read_array(str(self.dataset / "static" / "hhl.om"), (xy.y, xy.x, slice(None))),
+            dtype=np.float32,
+        )
         n = self.model["nLevels"]
         out: dict[int, float] = {}
         for level in range(1, n + 1):
             out[level] = float(0.5 * (hhl[level - 1] + hhl[level]) - hsurf)
         return out
+
+    def _load_chunk_slice(
+        self,
+        chunk_path: str,
+        chunk_index: int,
+        spatial_xy: tuple,
+        t0: np.datetime64,
+        t1: np.datetime64,
+        *,
+        ticket: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Load time-masked spatial slice from one chunk file via reader cache."""
+        chunk_times = self.meta.get_chunk_time_range(chunk_index)
+        time_mask = (chunk_times >= t0) & (chunk_times <= t1)
+        if not np.any(time_mask):
+            return np.array([], dtype="datetime64[ns]"), np.array([], dtype=np.float32)
+
+        indices = np.where(time_mask)[0]
+        time_slice = slice(int(indices[0]), int(indices[-1]) + 1)
+        x, y = spatial_xy
+        data = np.asarray(
+            self._readers.read_array(chunk_path, (y, x, time_slice), ticket=ticket),
+            dtype=np.float32,
+        )
+        times = chunk_times[time_mask]
+        if times.shape[-1] != 1 and times.shape[-1] != data.shape[-1]:
+            raise RuntimeError(
+                f"Expected {times.shape[-1]} timestamps but got {data.shape[-1]}"
+            )
+        self._readers.check_ticket(ticket)
+        return times, data
+
+    def _load_var_chunks(
+        self,
+        var: str,
+        x0: int,
+        x1: int,
+        y0: int,
+        y1: int,
+        t0: np.datetime64,
+        t1: np.datetime64,
+        *,
+        ticket: int,
+    ) -> tuple[str, np.ndarray, list[float]]:
+        var_dir = self.dataset / var
+        if not var_dir.is_dir():
+            raise RuntimeError(f"OM variable missing: {var_dir}")
+        chunk_reader = self._OmChunkFileReader(self.meta, self.fs, str(var_dir), t0, t1)
+        spatial = (slice(x0, x1 + 1), slice(y0, y1 + 1))
+        ny_s, nx_s = y1 - y0 + 1, x1 - x0 + 1
+
+        tasks = list(chunk_reader.iter_files())
+        if not tasks:
+            return var, np.zeros((ny_s, nx_s, 0), dtype=np.float32), []
+
+        parts: list[tuple[int, np.ndarray, np.ndarray]] = []
+        for chunk_index, chunk_path in tasks:
+            times, data = self._load_chunk_slice(
+                chunk_path, chunk_index, spatial, t0, t1, ticket=ticket
+            )
+            if len(times) == 0:
+                continue
+            arr = np.asarray(data, dtype=np.float32)
+            # reader[y, x, t] → [ny, nx, nt] when y,x are slices
+            if arr.ndim == 1:
+                arr = arr.reshape(1, 1, -1)
+            elif arr.ndim == 2:
+                # ambiguous; assume [n_spatial, nt] — shouldn't happen for 2D slice
+                arr = arr.reshape(arr.shape[0], 1, arr.shape[1])
+            if arr.shape[0] != ny_s or arr.shape[1] != nx_s:
+                if arr.shape[0] == nx_s and arr.shape[1] == ny_s:
+                    arr = np.transpose(arr, (1, 0, 2))
+                else:
+                    raise RuntimeError(
+                        f"Slab shape mismatch for {var} chunk {chunk_index}: "
+                        f"{arr.shape} vs ny={ny_s} nx={nx_s}"
+                    )
+            parts.append((chunk_index, times, arr))
+
+        if not parts:
+            return var, np.zeros((ny_s, nx_s, 0), dtype=np.float32), []
+
+        parts.sort(key=lambda p: p[0])
+        time_array = np.concatenate([p[1] for p in parts], axis=-1)
+        data_array = np.concatenate([p[2] for p in parts], axis=-1)
+        return var, data_array, [_dt64_to_unix(t) for t in time_array]
 
     def load_slab(
         self,
@@ -182,7 +294,61 @@ class OmBackend:
         t_min_ms: float | None = None,
         t_max_ms: float | None = None,
     ) -> OmSlab:
-        """Preload a padded spatial/time window for the given variables."""
+        """Preload a padded spatial/time window; retry if ingest invalidates files."""
+        # Approximate cache key from request geometry (exact xy after first load).
+        file_vars = tuple(v for v in vars_ if not v.startswith("height_agl_level"))
+        pre_key = (
+            self.model_key,
+            round(lat0, 3),
+            round(lon0, 3),
+            round(duration_h, 3),
+            start_date,
+            end_date,
+            None if t_min_ms is None else int(t_min_ms),
+            None if t_max_ms is None else int(t_max_ms),
+            tuple(levels),
+            file_vars,
+        )
+        with _SLAB_LOCK:
+            hit = _SLAB_CACHE.get(pre_key)
+            if hit is not None:
+                _SLAB_CACHE.move_to_end(pre_key)
+                return hit
+
+        last_err: Exception | None = None
+        for _ in range(SLAB_LOAD_RETRIES):
+            try:
+                slab = self._load_slab_once(
+                    lat0, lon0, duration_h, start_date, end_date, levels, vars_,
+                    t_min_ms=t_min_ms, t_max_ms=t_max_ms,
+                )
+                with _SLAB_LOCK:
+                    _SLAB_CACHE[pre_key] = slab
+                    _SLAB_CACHE.move_to_end(pre_key)
+                    while len(_SLAB_CACHE) > _SLAB_CACHE_MAX:
+                        _SLAB_CACHE.popitem(last=False)
+                return slab
+            except SlabStaleError as exc:
+                last_err = exc
+                clear_om_slab_cache()
+                continue
+        raise RuntimeError(
+            f"OM slab load failed after {SLAB_LOAD_RETRIES} retries: {last_err}"
+        )
+
+    def _load_slab_once(
+        self,
+        lat0: float,
+        lon0: float,
+        duration_h: float,
+        start_date: str,
+        end_date: str,
+        levels: list[int],
+        vars_: list[str],
+        *,
+        t_min_ms: float | None = None,
+        t_max_ms: float | None = None,
+    ) -> OmSlab:
         dlat, dlon = spatial_pad_deg(lat0, duration_h)
         b = self.model["bbox"]
         corners = [
@@ -209,45 +375,49 @@ class OmBackend:
             t1 = np.datetime64(f"{end_date}T23:00")
 
         file_vars = [v for v in vars_ if not v.startswith("height_agl_level")]
-        # Always need surface/static for heights + elevation
-        with self._OmFileReader(str(self.dataset / "static" / "HSURF.om")) as reader:
-            hsurf = np.asarray(reader[y0 : y1 + 1, x0 : x1 + 1], dtype=np.float64)
-        with self._OmFileReader(str(self.dataset / "static" / "hhl.om")) as reader:
-            hhl = np.asarray(reader[y0 : y1 + 1, x0 : x1 + 1, :], dtype=np.float64)
+        ticket = self._readers.begin_ticket()
+        try:
+            hsurf = np.asarray(
+                self._readers.read_array(
+                    str(self.dataset / "static" / "HSURF.om"),
+                    (slice(y0, y1 + 1), slice(x0, x1 + 1)),
+                    ticket=ticket,
+                ),
+                dtype=np.float32,
+            )
+            hhl = np.asarray(
+                self._readers.read_array(
+                    str(self.dataset / "static" / "hhl.om"),
+                    (slice(y0, y1 + 1), slice(x0, x1 + 1), slice(None)),
+                    ticket=ticket,
+                ),
+                dtype=np.float32,
+            )
 
-        ny_s, nx_s = y1 - y0 + 1, x1 - x0 + 1
+            fields: dict[str, np.ndarray] = {}
+            times_unix: list[float] | None = None
 
-        def _load_var(var: str) -> tuple[str, np.ndarray, list[float]]:
-            var_dir = self.dataset / var
-            if not var_dir.is_dir():
-                raise RuntimeError(f"OM variable missing: {var_dir}")
-            reader = self._OmChunkFileReader(self.meta, self.fs, str(var_dir), t0, t1)
-            # load_data spatial index is (x, y); returned array is [ny, nx, nt]
-            times, data = reader.load_data((slice(x0, x1 + 1), slice(y0, y1 + 1)))
-            arr = np.asarray(data, dtype=np.float64)
-            if arr.ndim != 3:
-                raise RuntimeError(f"Unexpected slab shape for {var}: {arr.shape}")
-            if arr.shape[0] != ny_s or arr.shape[1] != nx_s:
-                if arr.shape[0] == nx_s and arr.shape[1] == ny_s:
-                    arr = np.transpose(arr, (1, 0, 2))
-                else:
-                    raise RuntimeError(
-                        f"Slab shape mismatch for {var}: {arr.shape} "
-                        f"vs ny={ny_s} nx={nx_s}"
+            if file_vars:
+                # Expand to per-var tasks; each var may touch multiple chunks.
+                # Parallelize across variables (chunks inside each var stay ordered).
+                workers = min(SLAB_LOAD_WORKERS, len(file_vars))
+
+                def _job(var: str):
+                    return self._load_var_chunks(
+                        var, x0, x1, y0, y1, t0, t1, ticket=ticket
                     )
-            return var, arr, [_dt64_to_unix(t) for t in times]
 
-        fields: dict[str, np.ndarray] = {}
-        times_unix: list[float] | None = None
-        if file_vars:
-            workers = min(SLAB_LOAD_WORKERS, len(file_vars))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = [pool.submit(_load_var, v) for v in file_vars]
-                for fut in as_completed(futs):
-                    var, arr, times = fut.result()
-                    fields[var] = arr
-                    if times_unix is None:
-                        times_unix = times
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = [pool.submit(_job, v) for v in file_vars]
+                    for fut in as_completed(futs):
+                        var, arr, times = fut.result()
+                        fields[var] = arr
+                        if times_unix is None:
+                            times_unix = times
+
+            self._readers.check_ticket(ticket)
+        finally:
+            self._readers.end_ticket(ticket)
 
         if times_unix is None:
             times_unix = _hourly_unix(start_date, end_date)
@@ -336,20 +506,30 @@ class OmBackend:
 
         series: dict[str, list[np.ndarray]] = {v: [] for v in file_vars}
         times_unix: list[float] | None = None
-
-        for var in file_vars:
-            var_dir = self.dataset / var
-            if not var_dir.is_dir():
-                raise RuntimeError(f"OM variable missing: {var_dir}")
-            reader = self._OmChunkFileReader(
-                self.meta, self.fs, str(var_dir), t0, t1
-            )
-            for lat, lon in coords:
-                xy = self._xy(lat, lon)
-                times, vals = reader.load_data((xy.x, xy.y))
-                if times_unix is None:
-                    times_unix = [_dt64_to_unix(t) for t in times]
-                series[var].append(np.asarray(vals, dtype=np.float64))
+        for attempt in range(SLAB_LOAD_RETRIES):
+            ticket = self._readers.begin_ticket()
+            try:
+                series = {v: [] for v in file_vars}
+                times_unix = None
+                for var in file_vars:
+                    var_dir = self.dataset / var
+                    if not var_dir.is_dir():
+                        raise RuntimeError(f"OM variable missing: {var_dir}")
+                    for lat, lon in coords:
+                        xy = self._xy(lat, lon)
+                        _v, arr, times = self._load_var_chunks(
+                            var, xy.x, xy.x, xy.y, xy.y, t0, t1, ticket=ticket
+                        )
+                        if times_unix is None:
+                            times_unix = times
+                        series[var].append(np.asarray(arr[0, 0, :], dtype=np.float32))
+                self._readers.check_ticket(ticket)
+                break
+            except SlabStaleError:
+                if attempt + 1 >= SLAB_LOAD_RETRIES:
+                    raise
+            finally:
+                self._readers.end_ticket(ticket)
 
         assert times_unix is not None or not file_vars
         if times_unix is None:

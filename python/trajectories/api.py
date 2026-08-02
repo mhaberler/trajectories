@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
 from .compute import compute_trajectories
+from .response_cache import cache_key, get_response_cache
 
 MODELS = Literal["icon_d2", "icon_eu"]
 VERTICAL = Literal["height", "pressure", "theta", "z3d"]
@@ -234,8 +235,27 @@ def trajectory(
     except ValueError as exc:
         return _om_error(400, str(exc))
 
+    key = cache_key(
+        model=models,
+        lat=latitude,
+        lon=longitude,
+        time=t0,
+        duration=forecast_hours,
+        heights=heights,
+        methods=methods,
+        height_ref=height_ref,
+        direction=direction,
+        marker=marker_interval,
+        met_extras=met_extras,
+        backend=backend,
+    )
+    cache = get_response_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
     try:
-        return compute_trajectories(
+        result = compute_trajectories(
             lat=latitude,
             lon=longitude,
             time=t0,
@@ -255,3 +275,6 @@ def trajectory(
         return _om_error(500, str(exc))
     except Exception as exc:  # noqa: BLE001 — surface as OM error
         return _om_error(500, f"Internal error: {exc}")
+
+    cache.put(key, result)
+    return result

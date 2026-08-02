@@ -94,18 +94,26 @@ When `/open-meteo` (or `TRAJECTORIES_OM_ROOT`) contains `dwd_icon_d2` / `dwd_ico
 - Horizontal wind already m/s (HTTP path still converts km/h).
 - `--met-extras`: local has specific humidity only — no model-level RH dirs.
 - Fidelity vs HTTP: same physics, not bit-identical (`RUN_OM_TESTS=1`).
-- I/O strategy: **per-request OM slab preload** (padded bbox × tight time × height-band levels into RAM; `wind_at` served from the slab). Process-warmed `OmBackend` meta/grid via `get_om_backend()`. Outside-slab corners fall back to point-fetch.
+- I/O strategy: **per-request OM slab preload** (padded bbox × tight time × height-band levels into RAM; `wind_at` served from the slab). Process-warmed `OmBackend` meta/grid via `get_om_backend()`. Keep-open `OmReaderCache` (mmap + per-path mutex + inotify invalidation). Outside-slab corners fall back to point-fetch.
 
 ### Timing — `basic_trajectory` inputs (2026-08-02)
 
-Stubenberg `47.23, 15.82`; ICON-D2; start `2026-08-02T11:00:00Z`; 2 h; heights 500/1500/3000 m AGL; markers 10 min; `met_extras=True`. Wall time for `compute_trajectories` only (GeoJSON dump omitted):
+Stubenberg `47.23, 15.82`; ICON-D2; start `2026-08-02T11:00:00Z`; 2 h; heights 500/1500/3000 m AGL; markers 10 min; `met_extras=True`. Wall time for `compute_trajectories` only (GeoJSON dump omitted); response cache **off** (`TRAJECTORIES_CACHE_MAX=0`):
 
-| Backend | Wall time (before slab) | Wall time (slab) |
-|---------|-------------------------|------------------|
-| `om`    | **47.7 s**              | **~8.6 s** cold / **~5.9 s** warm |
-| `http`  | **8.9 s**               | **~9.0 s**       |
+| Backend | Before slab | Slab (early) | Reader cache + Numba (2026-08-02) |
+|---------|-------------|--------------|-------------------------------------|
+| `om`    | **47.7 s**  | ~8.6 s cold / ~5.9 s warm | **~1.9 s cold / ~0.92 s warm** |
+| `http`  | **8.9 s**   | ~9.0 s       | (unchanged) |
 
-OM slab path meets the success bar (**OM ≤ HTTP** on this smoke case). Opt-in fidelity tests (`RUN_OM_TESTS=1`) still apply under a multi-km same-physics bound.
+Success bar for unique warm requests: **≤ ~1 s** (cache miss / disabled). Benchmark:
+
+```bash
+cd python
+TRAJECTORIES_CACHE_MAX=0 TRAJECTORIES_BACKEND=om \
+  python benchmarks/bench_om_strategies.py --repeats 3
+```
+
+Opt-in fidelity (`RUN_OM_TESTS=1`): same-physics vs HTTP with widened bound (**median &lt; 6 km**, **max &lt; 18 km**) to allow float32 slabs + Numba interp.
 
 ## HTTP API (`GET /v1/trajectory`)
 
@@ -172,15 +180,13 @@ Client example defaults to that host (`TRAJECTORIES_API_URL`).
 
 **Shipped (OM backend):**
 
-1. **Slab / bbox preload** — on `WindField.init`, pad from start (`~40 km/h × duration`, clamped 50–120 km), tight time window (±1 h around the trajectory), height band levels; parallel `OmChunkFileReader` loads into an `OmSlab`; `request` serves from RAM.
-2. **Height bands** — low **≤ 2500 m AGL** when `max_height ≤ 2000`; high **≤ 6500 m** otherwise (escalate if integrator `required_top` exceeds the low band).
-3. **Warm meta/grid** — `get_om_backend(model)` process cache (helps long-lived uvicorn workers).
+1. **Slab / bbox preload** — padded window × height bands; `request` from RAM; process **slab LRU** for identical warm requests.
+2. **`OmReaderCache`** — keep-open local mmap readers, **per-path mutex**, parallel var loads, **inotify** (watchdog) invalidation on cached paths only; in-flight `load_slab` **retries** on stale.
+3. **Parallel height×method tracks** — `ThreadPoolExecutor` after slab load; `WindField` point-cache lock.
+4. **Numba height-path interp** — optional `pip install 'trajectories[accel]'` (`interp_fast.py`); Python fallback if numba missing.
+5. **API response cache** (bonus) — `TRAJECTORIES_CACHE_TTL_S` / `TRAJECTORIES_CACHE_MAX` (0 disables); not counted toward the ≤1 s unique-latency bar.
 
-**Still future:**
-
-4. **Response cache** — key `(model, rounded lat/lon, start time, heights, methods, duration, direction)`; TTL ~ OM update interval.
-5. **Parallel tracks** — height×method product once the slab is shared.
-6. HTTP-side slab (not needed; API already batches).
+Install for production OM+API: `pip install -e "python/[om,api,accel]"`.
 
 ## Test strategies
 

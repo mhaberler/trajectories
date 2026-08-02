@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -9,6 +10,8 @@ from . import config
 from .geojson_export import build_geojson
 from .integrator import compute_trajectory
 from .windfield import WindField
+
+TRACK_WORKERS = 8
 
 
 def _parse_time(time: str | datetime | float | int) -> float:
@@ -142,30 +145,46 @@ def compute_trajectories(
 
     with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
         wf.init(lat, lon, max_h, t0_ms, t_end, methods, met_extras=met_extras)
-        runs: list[dict] = []
+        jobs: list[tuple[float, str, str, dict, str]] = []
         for height_m in heights:
             for method in methods:
                 style = next(m for m in config.METHODS if m["key"] == method)
                 color = style["color"] if compare_mode else height_colors[height_m]
                 target, label = make_target(wf, lat, lon, height_m, height_ref, method, t0_ms)
-                r = compute_trajectory(
-                    wind_at=wf.wind_at,
-                    lat0=lat,
-                    lon0=lon,
-                    target=target,
-                    t0_ms=t0_ms,
-                    duration_hours=duration,
-                    direction=direction_i,
-                    grid_meters=model_cfg["gridMeters"],
-                    marker_interval_sec=marker_interval_sec,
-                )
-                runs.append({
-                    "r": r,
-                    "color": color,
-                    "label": label,
-                    "heightM": height_m,
-                    "method": method,
-                })
+                jobs.append((height_m, method, color, target, label))
+
+        def _run_one(job: tuple[float, str, str, dict, str]) -> dict:
+            height_m, method, color, target, label = job
+            r = compute_trajectory(
+                wind_at=wf.wind_at,
+                lat0=lat,
+                lon0=lon,
+                target=target,
+                t0_ms=t0_ms,
+                duration_hours=duration,
+                direction=direction_i,
+                grid_meters=model_cfg["gridMeters"],
+                marker_interval_sec=marker_interval_sec,
+            )
+            return {
+                "r": r,
+                "color": color,
+                "label": label,
+                "heightM": height_m,
+                "method": method,
+            }
+
+        runs: list[dict] = []
+        if len(jobs) == 1:
+            runs.append(_run_one(jobs[0]))
+        else:
+            workers = min(TRACK_WORKERS, len(jobs))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = {pool.submit(_run_one, j): i for i, j in enumerate(jobs)}
+                ordered: list[dict | None] = [None] * len(jobs)
+                for fut in as_completed(futs):
+                    ordered[futs[fut]] = fut.result()
+                runs = [r for r in ordered if r is not None]
 
     return build_geojson(
         runs=runs,

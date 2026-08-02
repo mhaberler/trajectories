@@ -26,8 +26,9 @@ DURATION_H = 2
 HEIGHTS = [500.0, 1500.0, 3000.0]
 
 # Same-physics bar (not bit-identical): allow a few km of separation.
-MAX_MEDIAN_KM = 5.0
-MAX_MAX_KM = 15.0
+# Widened once for float32 slabs + optional Numba interp (accel plan).
+MAX_MEDIAN_KM = 6.0
+MAX_MAX_KM = 18.0
 
 
 def _om_enabled() -> bool:

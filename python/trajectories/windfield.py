@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from typing import Any
 
 import httpx
@@ -40,6 +41,7 @@ class WindField:
         self.start_date: str | None = None
         self.end_date: str | None = None
         self._pending: dict[str, Any] = {}
+        self._points_lock = threading.Lock()
         self.backend_kind = backend or config.resolve_backend(model_key)
         self._om = None
         self._slab = None
@@ -221,18 +223,20 @@ class WindField:
         return math.floor(lat / g + 1e-9), math.floor(lon / g + 1e-9)
 
     def ensure_corners(self, lat: float, lon: float) -> None:
-        i_lat, i_lon = self.corner_indices(lat, lon)
-        wanted = [
-            (i_lat, i_lon),
-            (i_lat + 1, i_lon),
-            (i_lat, i_lon + 1),
-            (i_lat + 1, i_lon + 1),
-        ]
-        any_missing = any(
-            self.key(a, b) not in self.points and self.key(a, b) not in self._pending
-            for a, b in wanted
-        )
-        if any_missing:
+        with self._points_lock:
+            i_lat, i_lon = self.corner_indices(lat, lon)
+            wanted = [
+                (i_lat, i_lon),
+                (i_lat + 1, i_lon),
+                (i_lat, i_lon + 1),
+                (i_lat + 1, i_lon + 1),
+            ]
+            any_missing = any(
+                self.key(a, b) not in self.points and self.key(a, b) not in self._pending
+                for a, b in wanted
+            )
+            if not any_missing:
+                return
             g = self.model["grid"]
             b0 = self.model["bbox"]
             block: list[tuple[int, int]] = []
@@ -478,6 +482,35 @@ def resolve_on_target(pt: dict, target: dict, tt: dict) -> dict:
         )
         if target["type"] == "z3d" and h_target < 0:
             return {"error": "Trajektorie erreicht den Boden"}
+        from .interp_fast import resolve_height_fast
+
+        fast = resolve_height_fast(pt, h_target, tt)
+        if fast is not None and fast.get("error"):
+            return fast
+        if fast is not None:
+            k0, k1, hw = fast["k0"], fast["k1"], fast["hw"]
+            out = dict(fast)
+            if pt["w"] is not None:
+                w0 = level_value_at_t(pt["w"][k0], tt)
+                w1 = level_value_at_t(pt["w"][k1], tt)
+                out["w"] = w0 + hw * (w1 - w0)
+
+            def lin(arr):
+                a = level_value_at_t(arr[k0], tt)
+                b = level_value_at_t(arr[k1], tt)
+                return a + hw * (b - a)
+
+            if pt["p"] is not None:
+                p0 = level_value_at_t(pt["p"][k0], tt)
+                p1 = level_value_at_t(pt["p"][k1], tt)
+                out["p"] = math.exp(math.log(p0) + hw * (math.log(p1) - math.log(p0)))
+            if pt["T"] is not None:
+                out["tK"] = lin(pt["T"])
+            if pt["q"] is not None:
+                out["q"] = lin(pt["q"])
+            if pt["rh"] is not None:
+                out["rh"] = lin(pt["rh"])
+            return out
         br = height_bracket(pt["hAgl"], h_target)
         if br.get("error"):
             return br

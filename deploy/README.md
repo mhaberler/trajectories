@@ -70,3 +70,14 @@ curl -sS -D - -o /dev/null -H 'Accept-Encoding: gzip, deflate, br, zstd' \
   | grep -i content-encoding
 # Expect: Content-Encoding: gzip  or  zstd
 ```
+
+Point wind (flat JSON):
+
+```bash
+curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
+  --data-urlencode 'latitude=47.23' \
+  --data-urlencode 'longitude=15.82' \
+  --data-urlencode 'models=icon_eu' \
+  --data-urlencode 'time=2026-08-02T11:00:00Z' \
+  --data-urlencode 'height_agl=550'
+```

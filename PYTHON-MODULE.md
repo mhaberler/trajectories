@@ -6,7 +6,7 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 ## Goals
 
 - Functional parity with the browser app (`src/windfield.js`, `src/integrator.js`, `src/app.js` export).
-- Library API (`compute_trajectories`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`).
+- Library API (`compute_trajectories`, `compute_point_wind`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`, `GET /v1/wind`).
 - GeoJSON FeatureCollection with SimpleStyle (`stroke` / `marker-color`) for Placemark tools.
 - Trajectory features include `properties.terrain_m` (model orography m AMSL, parallel to coordinates) for Querschnitt / 3D after API fetch.
 - Tests that prove the port: unit (offline), near-exact vs web UI, rough vs Windy.
@@ -25,6 +25,7 @@ python/
   examples/
     basic_trajectory.py   # library smoke
     api_trajectory.py     # HTTP client (default https://trajectory.mah.priv.at)
+    api_point_wind.py     # GET /v1/wind client
   trajectories/
     config.py             # models, methods, API/OM backend resolution
     windfield.py          # HTTP or local OM client + 4-D interpolation
@@ -75,6 +76,7 @@ python python/examples/basic_trajectory.py
 
 # HTTP client example (default base: https://trajectory.mah.priv.at):
 python python/examples/api_trajectory.py
+python python/examples/api_point_wind.py
 # local: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
 
 trajectories \
@@ -136,6 +138,29 @@ uvicorn trajectories.api:app --host 127.0.0.1 --port 8000
 pytest python/tests/test_api.py
 ```
 
+## HTTP API (`GET /v1/wind`)
+
+Single-point wind sample (flat JSON, not GeoJSON). No trajectory integration.
+
+| Query | Role |
+|-------|------|
+| `latitude`, `longitude` | sample point |
+| `models` | CSV: `icon_d2`, `icon_eu` |
+| `time` + `timeformat` | ISO-8601 (default) or `unixtime` |
+| `height_agl` XOR `height_amsl` | single height (metres) |
+| `backend`, `format=json` | optional |
+
+Response: top-level lat/lon/time/height plus `models[]` with `wind_u_ms`, `wind_v_ms`, `wind_w_ms` (null if unavailable), speeds, met “from” direction, `z_amsl_m`, `terrain_m`. Multi-model requests may return per-model `{error, reason}` entries (HTTP 200) when at least one model succeeds.
+
+```bash
+curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
+  --data-urlencode 'latitude=47.23' \
+  --data-urlencode 'longitude=15.82' \
+  --data-urlencode 'models=icon_eu,icon_d2' \
+  --data-urlencode 'time=2026-08-02T11:00:00Z' \
+  --data-urlencode 'height_agl=550'
+```
+
 ### Production on this VPS (`trajectory.mah.priv.at`)
 
 Artifacts under [`deploy/`](deploy/) (full steps also in [`deploy/README.md`](deploy/README.md)):
@@ -174,7 +199,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-**Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`.  
+**Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`, `/v1/wind`.  
 Client example defaults to that host (`TRAJECTORIES_API_URL`).
 
 ## Accelerating answer processing

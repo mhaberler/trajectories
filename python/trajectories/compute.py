@@ -206,3 +206,150 @@ def compute_trajectories(
         duration=duration,
         direction=direction_i,
     )
+
+
+def _iso_ms(t_ms: float) -> str:
+    return (
+        datetime.fromtimestamp(t_ms / 1000.0, tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _sample_point_wind_one(
+    *,
+    model: str,
+    lat: float,
+    lon: float,
+    t0_ms: float,
+    height_m: float,
+    height_ref: str,
+    backend_kind: str,
+) -> dict[str, Any]:
+    """Sample one model; raises ValueError/RuntimeError on hard failure."""
+    if model not in config.MODELS:
+        raise ValueError(f"Unknown model: {model}")
+    model_cfg = config.MODELS[model]
+    b = model_cfg["bbox"]
+    if not (b["latMin"] <= lat <= b["latMax"] and b["lonMin"] <= lon <= b["lonMax"]):
+        raise ValueError(f"Point outside {model_cfg['label']} domain")
+
+    w_prefix = WindField.detect_w_variable(model, backend=backend_kind)
+    target = {"type": "height", "mode": height_ref, "value": height_m}
+
+    with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
+        wf.init(
+            lat,
+            lon,
+            height_m,
+            t0_ms,
+            t0_ms,
+            "height",
+            met_extras=False,
+            include_w=bool(w_prefix),
+        )
+        sample = wf.wind_at(lat, lon, target, t0_ms)
+        if sample.get("error"):
+            raise RuntimeError(sample["error"])
+        elev = wf.elevation_at(lat, lon)
+
+    u = float(sample["u"])
+    v = float(sample["v"])
+    spd_ms = math.hypot(u, v)
+    direction_deg = (math.atan2(-u, -v) * 180 / math.pi + 360) % 360
+    w_raw = sample.get("w")
+    w_ms = float(w_raw) if w_raw is not None and math.isfinite(float(w_raw)) else None
+    z_amsl = sample.get("zAmsl")
+    terrain = float(elev) if elev is not None and math.isfinite(elev) else None
+
+    return {
+        "model": model,
+        "wind_u_ms": round(u, 3),
+        "wind_v_ms": round(v, 3),
+        "wind_w_ms": round(w_ms, 4) if w_ms is not None else None,
+        "wind_speed_ms": round(spd_ms, 3),
+        "wind_speed_kmh": round(spd_ms * 3.6, 1),
+        "wind_direction_deg": round(direction_deg),
+        "z_amsl_m": round(float(z_amsl)) if z_amsl is not None and math.isfinite(z_amsl) else None,
+        "terrain_m": round(terrain) if terrain is not None else None,
+    }
+
+
+def compute_point_wind(
+    *,
+    lat: float,
+    lon: float,
+    time: str | datetime | float | int,
+    models: str | Sequence[str] = "icon_eu",
+    height_m: float,
+    height_ref: str = "agl",
+    api_base: str | None = None,
+    om_root: str | None = None,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    """
+    Sample horizontal (+ optional vertical) wind at one lat/lon/time/height.
+
+    ``models`` may be a single id or a sequence / CSV-split list. Per-model
+    failures become ``{model, error, reason}`` entries when at least one model
+    succeeds; if all fail, raises ValueError with a combined reason.
+    """
+    if api_base:
+        config.set_api_base(api_base)
+    if om_root is not None:
+        config.set_om_root(om_root)
+    if backend is not None:
+        config.set_backend(backend)
+
+    if height_ref not in ("agl", "amsl"):
+        raise ValueError("height_ref must be 'agl' or 'amsl'")
+    if not math.isfinite(height_m) or height_m < 0:
+        raise ValueError("height_m must be a non-negative finite number")
+
+    if isinstance(models, str):
+        model_list = [p.strip() for p in models.split(",") if p.strip()]
+    else:
+        model_list = [str(m).strip() for m in models if str(m).strip()]
+    if not model_list:
+        raise ValueError("At least one model required")
+
+    t0_ms = _parse_time(time)
+    entries: list[dict[str, Any]] = []
+    ok = 0
+    errors: list[str] = []
+
+    for model in model_list:
+        try:
+            backend_kind = config.resolve_backend(model)
+            entries.append(
+                _sample_point_wind_one(
+                    model=model,
+                    lat=lat,
+                    lon=lon,
+                    t0_ms=t0_ms,
+                    height_m=float(height_m),
+                    height_ref=height_ref,
+                    backend_kind=backend_kind,
+                )
+            )
+            ok += 1
+        except (ValueError, RuntimeError) as exc:
+            reason = str(exc)
+            errors.append(f"{model}: {reason}")
+            entries.append({"model": model, "error": True, "reason": reason})
+        except Exception as exc:  # noqa: BLE001
+            reason = f"Internal error: {exc}"
+            errors.append(f"{model}: {reason}")
+            entries.append({"model": model, "error": True, "reason": reason})
+
+    if ok == 0:
+        raise ValueError("; ".join(errors) if errors else "No wind sample")
+
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "time": _iso_ms(t0_ms),
+        "height_reference": height_ref,
+        "height_m": float(height_m),
+        "models": entries,
+    }

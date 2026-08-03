@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
-from .compute import compute_trajectories
-from .response_cache import cache_key, get_response_cache
+from .compute import compute_point_wind, compute_trajectories
+from .response_cache import cache_key, get_response_cache, wind_cache_key
 
 MODELS = Literal["icon_d2", "icon_eu"]
 VERTICAL = Literal["height", "pressure", "theta", "z3d"]
@@ -21,18 +21,21 @@ DIRECTION = Literal["forward", "backward"]
 BACKEND = Literal["auto", "om", "http"]
 TIMEFORMAT = Literal["iso8601", "unixtime"]
 FORMAT = Literal["geojson"]
+WIND_FORMAT = Literal["json"]
 
 app = FastAPI(
     title="Trajectories API",
     description=(
         "Petterssen ICON wind trajectories over Open-Meteo fields. "
-        "Query parameters follow Open-Meteo naming; successful responses are "
-        "GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
-        "properties.terrain_m (model orography m AMSL, parallel to coordinates)."
+        "Query parameters follow Open-Meteo naming; successful trajectory responses "
+        "are GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
+        "properties.terrain_m (model orography m AMSL, parallel to coordinates). "
+        "Point wind samples are available at GET /v1/wind (flat JSON)."
     ),
     version="0.1.0",
     openapi_tags=[
         {"name": "trajectory", "description": "Compute wind trajectories"},
+        {"name": "wind", "description": "Sample wind at a single point"},
         {"name": "meta", "description": "Health and service metadata"},
     ],
 )
@@ -115,6 +118,26 @@ def _parse_csv_methods(raw: str | None) -> list[str] | None:
             )
         out.append(part)
     return out or None
+
+
+def _parse_csv_models(raw: str | None) -> list[str]:
+    if raw is None or not str(raw).strip():
+        raise ValueError("Parameter models is required")
+    allowed = set(config.MODELS)
+    out: list[str] = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part not in allowed:
+            raise ValueError(
+                f"Unknown model: {part!r} (allowed: {', '.join(sorted(allowed))})"
+            )
+        if part not in out:
+            out.append(part)
+    if not out:
+        raise ValueError("Parameter models is required")
+    return out
 
 
 def _resolve_time(time: str | None, timeformat: str) -> str | float:
@@ -268,6 +291,139 @@ def trajectory(
             direction=direction,
             marker_interval_min=marker_interval,
             met_extras=met_extras,
+            backend=backend,
+        )
+    except ValueError as exc:
+        return _om_error(400, str(exc))
+    except RuntimeError as exc:
+        return _om_error(500, str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface as OM error
+        return _om_error(500, f"Internal error: {exc}")
+
+    cache.put(key, result)
+    return result
+
+
+@app.get(
+    "/v1/wind",
+    tags=["wind"],
+    summary="Sample wind at a point",
+    response_description="Flat JSON with per-model wind components",
+    responses={
+        200: {
+            "description": "Point wind sample (partial model failures allowed)",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "latitude": 40.126,
+                        "longitude": 16.419,
+                        "time": "2026-08-03T08:00:00.000Z",
+                        "height_reference": "agl",
+                        "height_m": 550,
+                        "models": [
+                            {
+                                "model": "icon_eu",
+                                "wind_u_ms": 1.2,
+                                "wind_v_ms": -1.5,
+                                "wind_w_ms": 0.02,
+                                "wind_speed_ms": 1.92,
+                                "wind_speed_kmh": 6.9,
+                                "wind_direction_deg": 321,
+                                "z_amsl_m": 858,
+                                "terrain_m": 308,
+                            }
+                        ],
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Open-Meteo-style error",
+            "content": {
+                "application/json": {
+                    "example": {"error": True, "reason": "Specify only one of height_agl or height_amsl"}
+                }
+            },
+        },
+    },
+)
+def wind(
+    latitude: float = Query(..., description="WGS84 latitude (°)", ge=-90, le=90),
+    longitude: float = Query(..., description="WGS84 longitude (°)", ge=-180, le=180),
+    models: str = Query(
+        "icon_eu",
+        description="Comma-separated Open-Meteo model ids (icon_d2, icon_eu)",
+        examples=["icon_eu", "icon_eu,icon_d2"],
+    ),
+    time: str = Query(
+        ...,
+        description="Sample time: ISO-8601 (default) or unix seconds when timeformat=unixtime",
+    ),
+    timeformat: TIMEFORMAT = Query(
+        "iso8601",
+        description="How to interpret `time` (Open-Meteo-style)",
+    ),
+    height_agl: float | None = Query(
+        None,
+        description="Height in metres AGL (mutually exclusive with height_amsl)",
+        examples=[550],
+    ),
+    height_amsl: float | None = Query(
+        None,
+        description="Height in metres AMSL (mutually exclusive with height_agl)",
+    ),
+    backend: BACKEND | None = Query(
+        None,
+        description="Wind data source override (default: server auto/om/http config)",
+    ),
+    format: WIND_FORMAT = Query(
+        "json",
+        description="Response format (only json in v1)",
+    ),
+) -> dict[str, Any]:
+    if format != "json":
+        return _om_error(400, f"Unsupported format: {format}")
+
+    if height_agl is not None and height_amsl is not None:
+        return _om_error(400, "Specify only one of height_agl or height_amsl")
+    if height_agl is None and height_amsl is None:
+        return _om_error(400, "Specify height_agl or height_amsl")
+
+    try:
+        t0 = _resolve_time(time, timeformat)
+        model_list = _parse_csv_models(models)
+    except ValueError as exc:
+        return _om_error(400, str(exc))
+
+    if height_amsl is not None:
+        height_m = float(height_amsl)
+        height_ref = "amsl"
+    else:
+        height_m = float(height_agl)
+        height_ref = "agl"
+
+    key = wind_cache_key(
+        models=model_list,
+        lat=latitude,
+        lon=longitude,
+        time=t0,
+        height_m=height_m,
+        height_ref=height_ref,
+        backend=backend,
+    )
+    cache = get_response_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        result = compute_point_wind(
+            lat=latitude,
+            lon=longitude,
+            time=t0,
+            models=model_list,
+            height_m=height_m,
+            height_ref=height_ref,
             backend=backend,
         )
     except ValueError as exc:

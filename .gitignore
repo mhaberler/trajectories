@@ -6,6 +6,7 @@ untracked
 python/.venv/
 python/examples/out_example.geojson
 python/examples/out_api_example.geojson
+python/examples/out_api_point_wind.json
 __pycache__/
 *.egg-info/
 .pytest_cache/

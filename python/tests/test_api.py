@@ -148,3 +148,124 @@ def test_trajectory_compute_value_error(_mock):
     )
     assert r.status_code == 400
     assert "outside" in r.json()["reason"]
+
+
+TINY_WIND = {
+    "latitude": 47.23,
+    "longitude": 15.82,
+    "time": "2026-08-02T11:00:00.000Z",
+    "height_reference": "agl",
+    "height_m": 550.0,
+    "models": [
+        {
+            "model": "icon_eu",
+            "wind_u_ms": 1.2,
+            "wind_v_ms": -1.5,
+            "wind_w_ms": 0.02,
+            "wind_speed_ms": 1.921,
+            "wind_speed_kmh": 6.9,
+            "wind_direction_deg": 321,
+            "z_amsl_m": 858,
+            "terrain_m": 308,
+        }
+    ],
+}
+
+
+def test_wind_both_height_refs():
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+            "height_agl": 500,
+            "height_amsl": 1000,
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["error"] is True
+
+
+def test_wind_missing_height():
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+        },
+    )
+    assert r.status_code == 400
+    assert "height" in r.json()["reason"]
+
+
+def test_wind_bad_model():
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_global",
+            "time": "2026-08-02T11:00:00Z",
+            "height_agl": 550,
+        },
+    )
+    assert r.status_code == 400
+    assert "model" in r.json()["reason"].lower()
+
+
+@patch("trajectories.api.compute_point_wind", return_value=TINY_WIND)
+def test_wind_happy_path(mock_compute):
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_eu,icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+            "height_agl": 550,
+            "backend": "http",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["height_reference"] == "agl"
+    assert body["height_m"] == 550.0
+    assert body["models"][0]["wind_direction_deg"] == 321
+    assert "wind_w_ms" in body["models"][0]
+    mock_compute.assert_called_once()
+    kwargs = mock_compute.call_args.kwargs
+    assert kwargs["models"] == ["icon_eu", "icon_d2"]
+    assert kwargs["height_m"] == 550.0
+    assert kwargs["height_ref"] == "agl"
+    assert kwargs["backend"] == "http"
+
+
+@patch("trajectories.api.compute_point_wind", return_value=TINY_WIND)
+def test_wind_amsl_unixtime(mock_compute):
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "1754132400",
+            "timeformat": "unixtime",
+            "height_amsl": 1500,
+        },
+    )
+    assert r.status_code == 200
+    kwargs = mock_compute.call_args.kwargs
+    assert kwargs["time"] == 1754132400.0
+    assert kwargs["height_ref"] == "amsl"
+    assert kwargs["height_m"] == 1500.0
+
+
+def test_openapi_has_wind_path():
+    r = client.get("/openapi.json")
+    assert r.status_code == 200
+    paths = r.json().get("paths") or {}
+    assert "/v1/wind" in paths

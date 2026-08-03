@@ -101,6 +101,28 @@ def cache_key(
     ])
 
 
+def wind_cache_key(
+    *,
+    models: list[str] | tuple[str, ...],
+    lat: float,
+    lon: float,
+    time: str | float,
+    height_m: float,
+    height_ref: str,
+    backend: str | None,
+) -> str:
+    return "|".join([
+        "wind",
+        ",".join(models),
+        f"{round(lat, 3):.3f}",
+        f"{round(lon, 3):.3f}",
+        str(time),
+        str(height_m),
+        height_ref,
+        backend or "",
+    ])
+
+
 _CACHE = ResponseCache()
 
 

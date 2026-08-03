@@ -128,16 +128,23 @@ class WindField:
         t_max_ms: float,
         vmotion: str | list[str] = "height",
         met_extras: bool = False,
+        *,
+        include_w: bool = False,
     ) -> None:
         lst = list(vmotion) if isinstance(vmotion, (list, tuple)) else [vmotion]
+        # z3d trajectories require w; include_w loads it when present (point wind).
+        self._w_required = "z3d" in lst
+        want_w = self._w_required or include_w
+        if want_w and not self.w_var_prefix:
+            if self._w_required:
+                raise RuntimeError("Server liefert (noch) keine Modell-Vertikalgeschwindigkeit")
+            want_w = False
         self.needs = {
             "p": any(v in ("pressure", "theta") for v in lst),
             "t": "theta" in lst,
-            "w": "z3d" in lst,
+            "w": want_w,
             "met": met_extras,
         }
-        if self.needs["w"] and not self.w_var_prefix:
-            raise RuntimeError("Server liefert (noch) keine Modell-Vertikalgeschwindigkeit")
         if self.needs["p"] or met_extras:
             self.needs["p"] = True
             self.needs["t"] = True
@@ -420,7 +427,7 @@ class WindField:
 
         if not (_isfinite(U) and _isfinite(V)):
             return {"error": "Fehlende Winddaten (Modelllauf unvollständig)"}
-        if self.needs["w"] and not _isfinite(W):
+        if self.needs["w"] and not _isfinite(W) and getattr(self, "_w_required", False):
             return {"error": "Modell-w fehlt am Rechenpunkt (null-Werte)"}
 
         met = None
@@ -433,7 +440,7 @@ class WindField:
 
         out: dict[str, Any] = {"u": U, "v": V, "zAmsl": Z, "met": met}
         if self.needs["w"]:
-            out["w"] = W
+            out["w"] = float(W) if _isfinite(W) else None
         return out
 
     def elevation_at(self, lat: float, lon: float) -> float | None:

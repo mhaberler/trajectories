@@ -142,6 +142,8 @@ const bar = el("heightbar");
 const FP_MAX_ROWS = 12;
 const FP_DIM_OPACITY = 0.18;
 const FP_PRESETS = {
+  // Heights/times from the Gneixendorf sketch; climb/descent rates come from
+  // Steigrate / Sinkrate when the preset is applied.
   climbcruise: [
     { tSec: 0, targetAgl: 150 },
     { tSec: 1200, targetAgl: 150 },
@@ -159,6 +161,20 @@ function clampRate(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 3;
   return Math.min(7, Math.max(1, Math.round(n * 2) / 2));
+}
+
+/** Aufstieg–Reiseflug–Sinkflug with current Steig-/Sinkrate. */
+function climbCruiseTargets() {
+  const asc = clampRate(+el("ascentrate").value);
+  const desc = clampRate(+el("descentrate").value);
+  const base = FP_PRESETS.climbcruise;
+  return [
+    { tSec: base[0].tSec, targetAgl: base[0].targetAgl, rate: "jump" },
+    { tSec: base[1].tSec, targetAgl: base[1].targetAgl, rate: "jump" }, // low hold
+    { tSec: base[2].tSec, targetAgl: base[2].targetAgl, rate: asc },    // Steigrate → cruise
+    { tSec: base[3].tSec, targetAgl: base[3].targetAgl, rate: "jump" }, // cruise hold
+    { tSec: base[4].tSec, targetAgl: base[4].targetAgl, rate: desc },   // Sinkrate → end
+  ];
 }
 
 function defaultConstantTargets() {
@@ -179,7 +195,7 @@ function cloneTargets(list) {
 }
 
 /** @type {{ tSec: number, targetAgl: number, rate: 'jump' | number }[]} */
-let profileTargets = cloneTargets(FP_PRESETS.climbcruise);
+let profileTargets = climbCruiseTargets();
 
 function runKey(run) {
   return `${run.heightM}|${run.method}|${run.label}`;
@@ -189,7 +205,7 @@ function applyProfilePreset(key) {
   state.profileEdit = null;
   if (key === "constant") profileTargets = defaultConstantTargets();
   else if (key === "empty") profileTargets = cloneTargets(FP_PRESETS.empty);
-  else profileTargets = cloneTargets(FP_PRESETS.climbcruise);
+  else profileTargets = climbCruiseTargets();
   refreshProfileUI({ scheduleApi: false });
   el("fp-candhint").textContent = "";
 }
@@ -1619,6 +1635,10 @@ if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
 }
 if (Number.isFinite(saved.ascentRate)) el("ascentrate").value = String(clampRate(saved.ascentRate));
 if (Number.isFinite(saved.descentRate)) el("descentrate").value = String(clampRate(saved.descentRate));
+// Rebuild default climbcruise after rates are known (skip if waypoints were restored).
+if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
+  profileTargets = climbCruiseTargets();
+}
 if (saved.flightProfile) {
   el("flightprofile").checked = true;
   if (!el("useapi").checked) el("useapi").checked = true;

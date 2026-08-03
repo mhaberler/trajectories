@@ -53,6 +53,9 @@ function persist() {
     methods: selectedMethods(),
     metExtras: el("metextras").checked,
     useApi: el("useapi").checked,
+    flightProfile: el("flightprofile").checked,
+    profileWaypoints: profileWaypoints.map((w) => ({ tSec: w.tSec, hAgl: w.hAgl })),
+    profilePreset: el("fp-preset").value,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
@@ -118,6 +121,155 @@ const state = {
 const heightColors = new Map();
 let activeHeight = null;
 const bar = el("heightbar");
+
+// --- Flugprofil (AGL über Zeit, API-only) -----------------------------------
+const FP_MAX_ROWS = 12;
+const FP_PRESETS = {
+  climbcruise: [
+    { tSec: 0, hAgl: 150 },
+    { tSec: 1200, hAgl: 150 },
+    { tSec: 3600, hAgl: 1800 },
+    { tSec: 5400, hAgl: 1800 },
+    { tSec: 7200, hAgl: 400 },
+  ],
+  constant: null, // filled from duration + active/default height
+  empty: [
+    { tSec: 0, hAgl: 500 },
+    { tSec: 3600, hAgl: 500 },
+  ],
+};
+
+function defaultConstantProfile() {
+  const h = activeHeight != null ? activeHeight : 500;
+  const hours = Math.min(72, Math.max(1, +el("duration").value || 12));
+  return [
+    { tSec: 0, hAgl: h },
+    { tSec: hours * 3600, hAgl: h },
+  ];
+}
+
+let profileWaypoints = FP_PRESETS.climbcruise.map((w) => ({ ...w }));
+
+function cloneWaypoints(list) {
+  return list.map((w) => ({ tSec: w.tSec, hAgl: w.hAgl }));
+}
+
+function applyProfilePreset(key) {
+  if (key === "constant") profileWaypoints = defaultConstantProfile();
+  else if (key === "empty") profileWaypoints = cloneWaypoints(FP_PRESETS.empty);
+  else profileWaypoints = cloneWaypoints(FP_PRESETS.climbcruise);
+  renderProfileTable();
+  updateProfileHint();
+}
+
+function renderProfileTable() {
+  const tbody = el("fp-tbody");
+  tbody.replaceChildren();
+  const unit = heightUnit();
+  for (let i = 0; i < profileWaypoints.length; i++) {
+    const w = profileWaypoints[i];
+    const tr = document.createElement("tr");
+    const tdT = document.createElement("td");
+    const inpT = document.createElement("input");
+    inpT.type = "number";
+    inpT.min = "0";
+    inpT.step = "1";
+    inpT.value = String(Math.round(w.tSec / 60));
+    inpT.dataset.i = String(i);
+    inpT.dataset.field = "t";
+    inpT.setAttribute("aria-label", `Zeit Punkt ${i + 1} in Minuten`);
+    tdT.appendChild(inpT);
+    const tdH = document.createElement("td");
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "4px";
+    const inpH = document.createElement("input");
+    inpH.type = "number";
+    inpH.min = "0";
+    inpH.step = unit === "ft" ? "50" : "10";
+    inpH.value = String(Math.round(heightToDisplay(w.hAgl)));
+    inpH.dataset.i = String(i);
+    inpH.dataset.field = "h";
+    inpH.setAttribute("aria-label", `Höhe Punkt ${i + 1} AGL`);
+    const u = document.createElement("span");
+    u.className = "hint";
+    u.textContent = unit === "ft" ? "ft" : "m";
+    wrap.appendChild(inpH);
+    wrap.appendChild(u);
+    tdH.appendChild(wrap);
+    tr.appendChild(tdT);
+    tr.appendChild(tdH);
+    tbody.appendChild(tr);
+  }
+  el("fp-add").disabled = profileWaypoints.length >= FP_MAX_ROWS;
+  el("fp-rm").disabled = profileWaypoints.length <= 2;
+}
+
+function readProfileTable() {
+  const rows = [...el("fp-tbody").querySelectorAll("tr")];
+  const next = [];
+  for (const tr of rows) {
+    const tInp = tr.querySelector('input[data-field="t"]');
+    const hInp = tr.querySelector('input[data-field="h"]');
+    const min = Number(tInp?.value);
+    const hDisp = Number(hInp?.value);
+    if (!Number.isFinite(min) || !Number.isFinite(hDisp)) continue;
+    next.push({
+      tSec: Math.max(0, Math.round(min * 60)),
+      hAgl: Math.max(0, Math.round(heightFromDisplay(hDisp))),
+    });
+  }
+  if (next.length >= 2) profileWaypoints = next;
+}
+
+function validateProfileWaypoints(list) {
+  if (!list || list.length < 2) return "Mindestens zwei Wegpunkte nötig.";
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    if (!Number.isFinite(w.tSec) || !Number.isFinite(w.hAgl) || w.hAgl < 0) {
+      return `Ungültiger Wegpunkt ${i + 1}.`;
+    }
+    if (i > 0 && w.tSec <= list[i - 1].tSec) {
+      return "Zeiten müssen streng steigend sein.";
+    }
+  }
+  return null;
+}
+
+function updateProfileHint() {
+  const hint = el("fp-hint");
+  const err = validateProfileWaypoints(profileWaypoints);
+  if (err) {
+    hint.textContent = err;
+    hint.classList.add("error");
+    return;
+  }
+  const lastH = profileWaypoints[profileWaypoints.length - 1].tSec / 3600;
+  hint.textContent =
+    `${profileWaypoints.length} Punkte · bis ${lastH.toFixed(lastH < 10 ? 1 : 0)} h · AGL`;
+  hint.classList.remove("error");
+}
+
+function applyProfileUI() {
+  const on = el("flightprofile").checked;
+  el("flightprofile-panel").hidden = !on;
+  el("heights-block").classList.toggle("off", on);
+  el("methodrow").classList.toggle("off", on);
+  el("livemode").disabled = on;
+  el("refmode").disabled = on;
+  if (on) {
+    el("livemode").checked = false;
+    el("refmode").value = "agl";
+    el("useapi").checked = true;
+    for (const c of el("methodlist").querySelectorAll("input")) {
+      c.checked = c.value === "height";
+    }
+    renderProfileTable();
+    updateProfileHint();
+  }
+  applyModeUI();
+}
 
 // Oberes Ende der Höhenbalken-Skala, in den Einstellungen wählbar (Default
 // 6 km). HEIGHT_MAX bleibt die absolute Obergrenze für diese Auswahl.
@@ -401,12 +553,55 @@ el("livemode").addEventListener("change", () => {
   if (el("livemode").checked && el("useapi").checked) {
     el("useapi").checked = false; // Live-Scrub nur mit Browser-Rechnung
   }
+  if (el("livemode").checked && el("flightprofile").checked) {
+    el("flightprofile").checked = false;
+    applyProfileUI();
+  }
   applyModeUI();
   state.live = null;
   // Beim Verlassen des Live-Modus bleiben alle Trajektorien sichtbar (aktive
   // Linie + Pins). Ein späterer „echter" Lauf zeichnet ohnehin alles neu.
   persist();
   liveRun();
+});
+
+// --- Flugprofil: Events -----------------------------------------------------
+el("flightprofile").addEventListener("change", () => {
+  if (el("flightprofile").checked && el("livemode").checked) {
+    el("livemode").checked = false;
+    state.live = null;
+  }
+  applyProfileUI();
+  persist();
+});
+el("fp-preset").addEventListener("change", () => {
+  applyProfilePreset(el("fp-preset").value);
+  persist();
+});
+el("fp-tbody").addEventListener("change", () => {
+  readProfileTable();
+  updateProfileHint();
+  persist();
+});
+el("fp-add").addEventListener("click", () => {
+  readProfileTable();
+  if (profileWaypoints.length >= FP_MAX_ROWS) return;
+  const last = profileWaypoints[profileWaypoints.length - 1];
+  profileWaypoints.push({
+    tSec: last.tSec + 1800,
+    hAgl: last.hAgl,
+  });
+  renderProfileTable();
+  updateProfileHint();
+  persist();
+});
+el("fp-rm").addEventListener("click", () => {
+  readProfileTable();
+  if (profileWaypoints.length <= 2) return;
+  profileWaypoints.pop();
+  renderProfileTable();
+  updateProfileHint();
+  persist();
 });
 
 // --- Methoden (Berechnungsarten): eine oder mehrere per Häkchen -------------
@@ -537,6 +732,7 @@ el("unitwind").value = unitState.wind;
 function onUnitsChange() {
   setUnits({ height: el("unitheight").value, wind: el("unitwind").value });
   renderBar();
+  if (el("flightprofile").checked) renderProfileTable();
   updateHeightContext();
   if (!el("xsec").hidden && state.xsec) renderCrossSection(el("xsec-body"), state.xsec);
   persist();
@@ -567,6 +763,11 @@ el("useapi").addEventListener("change", () => {
     el("livemode").checked = false;
     state.live = null;
   }
+  if (!el("useapi").checked && el("flightprofile").checked) {
+    el("flightprofile").checked = false;
+    applyProfileUI();
+    setStatus("Flugprofil braucht „API abrufen“.", true);
+  }
   persist();
   updateRunButton();
 });
@@ -574,6 +775,25 @@ el("metextras").addEventListener("change", () => {
   state.live = null; // Zusatzvariablen erfordern einen frischen Daten-Cache
   persist();
 });
+
+// Flugprofil wiederherstellen (nach useApi/liveMode, vor settingsReady)
+if (Array.isArray(saved.profileWaypoints) && saved.profileWaypoints.length >= 2) {
+  const restored = saved.profileWaypoints
+    .map((w) => ({ tSec: +w.tSec, hAgl: +w.hAgl }))
+    .filter((w) => Number.isFinite(w.tSec) && Number.isFinite(w.hAgl));
+  if (restored.length >= 2 && !validateProfileWaypoints(restored)) {
+    profileWaypoints = restored;
+  }
+}
+if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
+  el("fp-preset").value = saved.profilePreset;
+}
+if (saved.flightProfile) {
+  el("flightprofile").checked = true;
+  if (!el("useapi").checked) el("useapi").checked = true;
+  if (el("livemode").checked) el("livemode").checked = false;
+}
+applyProfileUI();
 
 updateHeightContext();
 
@@ -871,6 +1091,7 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
 async function runTrajectoriesViaApi({
   modelKey, lat, lon, methods, compareMode,
   activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
+  heightProfile = null,
 }) {
   state.running = true;
   updateRunButton();
@@ -888,22 +1109,34 @@ async function runTrajectoriesViaApi({
   state.live = null;
   setStatus("API: lade Trajektorien …");
 
+  const profile = heightProfile && heightProfile.length >= 2 ? heightProfile : null;
+  const forecastHours = profile
+    ? Math.min(duration, Math.max(1, Math.ceil(profile[profile.length - 1].tSec / 3600)))
+    : duration;
+
   const params = new URLSearchParams({
     latitude: String(lat),
     longitude: String(lon),
     models: modelKey,
     time: new Date(t0Ms).toISOString().replace(/\.\d{3}Z$/, "Z"),
     timeformat: "iso8601",
-    forecast_hours: String(duration),
-    vertical_motion: methods.join(","),
+    forecast_hours: String(forecastHours),
+    vertical_motion: profile ? "height" : methods.join(","),
     direction: direction > 0 ? "forward" : "backward",
     marker_interval: String(markerIntervalSec / 60),
     met_extras: String(el("metextras").checked),
     format: "geojson",
     backend: "auto",
   });
-  if (mode === "amsl") params.set("height_amsl", activeHeights.join(","));
-  else params.set("height_agl", activeHeights.join(","));
+  if (profile) {
+    params.set("profile_time", profile.map((w) => w.tSec).join(","));
+    params.set("profile_height", profile.map((w) => w.hAgl).join(","));
+    params.set("marker_interval_climbing", "10");
+  } else if (mode === "amsl") {
+    params.set("height_amsl", activeHeights.join(","));
+  } else {
+    params.set("height_agl", activeHeights.join(","));
+  }
 
   const t0 = performance.now();
   try {
@@ -922,7 +1155,7 @@ async function runTrajectoriesViaApi({
       throw new Error(data?.reason || `HTTP ${resp.status}`);
     }
     const runs = runsFromApiGeoJSON(data, {
-      mode, modelKey, direction, duration, t0Ms,
+      mode: profile ? "agl" : mode, modelKey, direction, duration: forecastHours, t0Ms,
     });
     if (!runs.length) throw new Error("API lieferte keine Trajektorien");
 
@@ -930,7 +1163,7 @@ async function runTrajectoriesViaApi({
     for (const run of runs) drawTrajectory(run.r, run.color, run.label, run.dash, state.layers);
     for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label);
 
-    state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
+    state.lastRuns = { runs, modelKey, mode: profile ? "agl" : mode, t0Ms, duration: forecastHours, direction };
     el("download").disabled = false;
     // Querschnitt: terrain_m from API (model orography along each path).
     state.xsec = {
@@ -946,6 +1179,8 @@ async function runTrajectoriesViaApi({
     if (Number.isFinite(g0)) state.startElevation = g0;
     el("xsecbtn").disabled = runs.length === 0;
     el("view3dbtn").disabled = runs.length === 0;
+    // Offene 3D-Ansicht mit API-Ergebnis aktualisieren (auch Flugprofil).
+    if (view3dMod && !el("view3d").hidden && runs.length) view3dMod.update(view3dData());
     setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtMs(ms)}`);
   } catch (err) {
     const ms = performance.now() - t0;
@@ -967,25 +1202,36 @@ async function runTrajectories() {
   const model = MODELS[modelKey];
   const { lat, lon } = state.start;
   const liveMode = el("livemode").checked;
-  const methods = selectedMethods();
+  const profileOn = el("flightprofile").checked;
+  if (profileOn) {
+    readProfileTable();
+    const perr = validateProfileWaypoints(profileWaypoints);
+    if (perr) return setStatus(perr, true);
+    if (!el("useapi").checked) {
+      return setStatus("Flugprofil braucht „API abrufen“.", true);
+    }
+  }
+  const methods = profileOn ? ["height"] : selectedMethods();
   // Mehrere Methoden ergeben nur bei genau einer Starthöhe eine lesbare
   // Darstellung (Farbe kodiert dann die Methode statt der Höhe). Verglichen
   // wird am aktiven Balkenpunkt; die übrigen Punkte bleiben erhalten.
-  const compareMode = methods.length > 1;
+  const compareMode = !profileOn && methods.length > 1;
   // Pin-Modus: reiner Höhen-Live-Betrieb. Die aktive Höhe rechnet bei jeder
   // Balkenbewegung neu (Scrub), die übrigen Balkenpunkte bleiben als „Pins"
   // stehen. Im Methodenvergleich gibt es keine Pins.
-  const pinMode = liveMode && !compareMode;
+  const pinMode = liveMode && !compareMode && !profileOn;
   const allBarHeights = [...heightColors.keys()].sort((a, b) => a - b);
   // Live-Modus und Methodenvergleich rechnen an der aktiven Höhe; sonst alle
   // Höhen des Balkens.
-  const activeHeights = (liveMode || compareMode)
-    ? (activeHeight != null ? [activeHeight] : [])
-    : allBarHeights;
+  const activeHeights = profileOn
+    ? [profileWaypoints[0].hAgl]
+    : (liveMode || compareMode)
+      ? (activeHeight != null ? [activeHeight] : [])
+      : allBarHeights;
   // Pins sind die übrigen Balkenhöhen (nur im Pin-Modus).
   const pinHeights = pinMode ? allBarHeights.filter((m) => m !== activeHeight) : [];
   const markerIntervalSec = +el("markerint").value;
-  const mode = el("refmode").value;
+  const mode = profileOn ? "agl" : el("refmode").value;
   if (!methods.length) {
     return setStatus("Bitte mindestens eine Methode wählen.", true);
   }
@@ -993,7 +1239,7 @@ async function runTrajectories() {
   const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
   const t0Ms = +el("timeslider").value * 3600e3;
 
-  if (!activeHeights.length) {
+  if (!profileOn && !activeHeights.length) {
     return setStatus(compareMode
       ? "Bitte einen Höhenpunkt am Balken für den Vergleich wählen."
       : "Bitte eine Höhe am Balken wählen.", true);
@@ -1008,6 +1254,7 @@ async function runTrajectories() {
     return runTrajectoriesViaApi({
       modelKey, model, lat, lon, methods, compareMode,
       activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
+      heightProfile: profileOn ? cloneWaypoints(profileWaypoints) : null,
     });
   }
 

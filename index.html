@@ -75,13 +75,41 @@
       <input type="checkbox" id="livemode" />
     </label>
 
-    <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
-    <div id="heightbar-wrap">
-      <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>
-      <div id="heightbar-labels"></div>
+    <label class="row">
+      <span class="label">Flugprofil <span class="hint">(AGL über Zeit · nur API)</span></span>
+      <input type="checkbox" id="flightprofile" />
+    </label>
+    <div id="flightprofile-panel" hidden>
+      <label class="row">
+        <span class="label">Vorlage</span>
+        <select id="fp-preset" aria-label="Flugprofil-Vorlage">
+          <option value="climbcruise" selected>Aufstieg–Reiseflug–Sinkflug</option>
+          <option value="constant">Konstant</option>
+          <option value="empty">Leer</option>
+        </select>
+      </label>
+      <table id="fp-table" aria-label="Flugprofil-Wegpunkte">
+        <thead>
+          <tr><th>Zeit (min)</th><th>Höhe AGL</th></tr>
+        </thead>
+        <tbody id="fp-tbody"></tbody>
+      </table>
+      <div class="fp-actions">
+        <button type="button" id="fp-add" class="secondary">Zeile +</button>
+        <button type="button" id="fp-rm" class="secondary">Zeile −</button>
+      </div>
+      <div id="fp-hint" class="hint mono"></div>
     </div>
-    <div id="activehint" class="hint mono"></div>
-    <div id="heighthint" class="hint mono"></div>
+
+    <div id="heights-block">
+      <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
+      <div id="heightbar-wrap">
+        <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>
+        <div id="heightbar-labels"></div>
+      </div>
+      <div id="activehint" class="hint mono"></div>
+      <div id="heighthint" class="hint mono"></div>
+    </div>
 
     <button id="run" disabled>Trajektorien berechnen</button>
     <div id="status"></div>

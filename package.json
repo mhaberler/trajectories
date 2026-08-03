@@ -18,9 +18,6 @@
     "vite-plugin-cesium": "^1.2.23"
   },
   "dependencies": {
-    "@macrostrat/cesium-martini": "^1.6.0",
-    "@mapbox/martini": "^0.2.0",
-    "cesium": "^1.143.0",
-    "pmtiles": "^4.4.1"
+    "cesium": "^1.143.0"
   }
 }

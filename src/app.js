@@ -34,6 +34,10 @@ function loadSettings() {
 const saved = loadSettings();
 setUnits(saved.units || {});
 let settingsReady = false; // erst nach vollständiger Wiederherstellung speichern
+/** @type {number|null} CSS `right` inset of #view3d (null = fill beside panel) */
+let view3dRight = Number.isFinite(saved.view3dRight) ? saved.view3dRight : null;
+/** @type {number|null} CSS `bottom` inset of #view3d (null = full height) */
+let view3dBottom = Number.isFinite(saved.view3dBottom) ? saved.view3dBottom : null;
 
 function persist() {
   if (!settingsReady) return;
@@ -62,6 +66,9 @@ function persist() {
     ascentRate: clampRate(+el("ascentrate").value),
     descentRate: clampRate(+el("descentrate").value),
     panelWidth: Math.round(el("panel").getBoundingClientRect().width),
+    fpSideHeight: Math.round(el("fp-side").getBoundingClientRect().height) || 110,
+    view3dRight,
+    view3dBottom,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
@@ -287,12 +294,94 @@ function updateProfileHint() {
   hint.classList.remove("error");
 }
 
-/** @type {{ tMax: number, hMax: number, pad: { l: number, r: number, t: number, b: number }, iw: number, ih: number, W: number, H: number } | null} */
+/** @type {{ tMax: number, hMin: number, hMax: number, pad: object, iw: number, ih: number, W: number, H: number, terrain: { tSec: number, z: number }[], useAmsl: boolean } | null} */
 let sideViewGeom = null;
 /** @type {{ i: number, pointerId: number, moved: boolean } | null} */
 let sideDrag = null;
 
-function sideViewClientToAgl(clientY) {
+const FP_SIDE_H_MIN = 80;
+const FP_SIDE_H_DEFAULT = 110;
+
+function fpSideHeightMax() {
+  // Leave room for the rest of the panel; grow with the viewport.
+  return Math.min(520, Math.max(FP_SIDE_H_MIN, Math.round(window.innerHeight * 0.45)));
+}
+
+function profileCandidateRun() {
+  const runs = state.lastRuns?.runs;
+  if (!runs?.length) return null;
+  const key = state.profileEdit?.candidateKey;
+  if (key) {
+    const hit = runs.find((r) => runKey(r) === key);
+    if (hit) return hit;
+  }
+  return runs.find((r) => Array.isArray(r.terrain) && r.terrain.some((g) => Number.isFinite(g)))
+    || runs[0];
+}
+
+function terrainSeriesFromRun(run) {
+  if (!run?.r?.points?.length) return [];
+  const t0 = run.r.points[0].tMs;
+  const out = [];
+  for (let i = 0; i < run.r.points.length; i++) {
+    const g = run.terrain?.[i];
+    if (!Number.isFinite(g)) continue;
+    out.push({ tSec: (run.r.points[i].tMs - t0) / 1000, z: +g });
+  }
+  return out;
+}
+
+function terrainAt(series, tSec) {
+  if (!series.length) return null;
+  if (tSec <= series[0].tSec) return series[0].z;
+  const last = series[series.length - 1];
+  if (tSec >= last.tSec) return last.z;
+  for (let i = 1; i < series.length; i++) {
+    if (tSec <= series[i].tSec) {
+      const a = series[i - 1];
+      const b = series[i];
+      const u = (tSec - a.tSec) / Math.max(1e-9, b.tSec - a.tSec);
+      return a.z + u * (b.z - a.z);
+    }
+  }
+  return last.z;
+}
+
+function niceTicks(min, max, count = 4) {
+  const span = max - min;
+  if (!(span > 0)) return [min];
+  const raw = span / Math.max(1, count);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10) * mag;
+  const t0 = Math.ceil(min / step) * step;
+  const ticks = [];
+  for (let v = t0; v <= max + step * 1e-9; v += step) ticks.push(v);
+  if (!ticks.length) ticks.push(min, max);
+  return ticks;
+}
+
+function setFpSideHeight(px, { save = false } = {}) {
+  const h = Math.round(Math.min(fpSideHeightMax(), Math.max(FP_SIDE_H_MIN, px)));
+  el("fp-side").style.height = `${h}px`;
+  el("fp-side-resize")?.setAttribute("aria-valuenow", String(h));
+  el("fp-side-resize")?.setAttribute("aria-valuemax", String(fpSideHeightMax()));
+  if (save) persist();
+  return h;
+}
+
+function sideViewClientToTSec(clientX) {
+  const svg = el("fp-side")?.querySelector("svg");
+  const g = sideViewGeom;
+  if (!svg || !g || g.iw < 1) return null;
+  const rect = svg.getBoundingClientRect();
+  if (rect.width < 1) return null;
+  const xVb = ((clientX - rect.left) / rect.width) * g.W;
+  const t = ((xVb - g.pad.l) / g.iw) * g.tMax;
+  return Math.max(0, Math.min(g.tMax, t));
+}
+
+function sideViewClientToAgl(clientY, tSecForTerrain = null) {
   const host = el("fp-side");
   const svg = host?.querySelector("svg");
   const g = sideViewGeom;
@@ -300,9 +389,17 @@ function sideViewClientToAgl(clientY) {
   const rect = svg.getBoundingClientRect();
   if (rect.height < 1) return null;
   const yVb = ((clientY - rect.top) / rect.height) * g.H;
-  const raw = ((g.pad.t + g.ih - yVb) / g.ih) * g.hMax;
+  const z = g.hMin + ((g.pad.t + g.ih - yVb) / g.ih) * (g.hMax - g.hMin);
+  let agl = z;
+  if (g.useAmsl) {
+    const t = tSecForTerrain ?? (sideDrag != null ? profileTargets[sideDrag.i]?.tSec : null);
+    if (t != null) {
+      const ground = terrainAt(g.terrain, t);
+      agl = z - (ground ?? 0);
+    }
+  }
   const cfg = heightSliderCfg();
-  const disp = Math.round(heightToDisplay(raw) / cfg.step) * cfg.step;
+  const disp = Math.round(heightToDisplay(agl) / cfg.step) * cfg.step;
   const m = heightFromDisplay(Math.min(Math.max(disp, 0), heightToDisplay(barMax)));
   return Math.round(Math.min(barMax, Math.max(0, m)));
 }
@@ -324,31 +421,99 @@ function renderProfileSideView() {
     sideViewGeom = null;
     return;
   }
-  const steps = targetStepPolyline(profileTargets);
+
+  const run = profileCandidateRun();
+  const terrain = terrainSeriesFromRun(run);
+  const useAmsl = terrain.length >= 2;
   const tMax = Math.max(...profileTargets.map((w) => w.tSec), 1);
-  const hMax = Math.max(barMax, ...profileTargets.map((w) => w.targetAgl), 100);
-  const W = 320;
-  const H = 110;
-  const pad = { l: 28, r: 8, t: 8, b: 18 };
+
+  const toZ = (tSec, hAgl) => {
+    if (!useAmsl) return hAgl;
+    const g = terrainAt(terrain, tSec);
+    return (g ?? 0) + hAgl;
+  };
+
+  const stepsAgl = targetStepPolyline(profileTargets);
+  const steps = stepsAgl.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
+  const ramp = expanded.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
+  const handles = profileTargets.map((w) => ({ tSec: w.tSec, z: toZ(w.tSec, w.targetAgl) }));
+
+  let hMin = useAmsl ? Math.min(...terrain.map((p) => p.z)) : 0;
+  let hMax = Math.max(
+    ...handles.map((p) => p.z),
+    ...ramp.map((p) => p.z),
+    useAmsl ? hMin + 100 : Math.max(barMax, ...profileTargets.map((w) => w.targetAgl), 100),
+  );
+  if (useAmsl) {
+    hMin = Math.max(0, hMin - 50);
+    hMax += 80;
+  }
+  if (hMax <= hMin) hMax = hMin + 100;
+
+  const rect = host.getBoundingClientRect();
+  const W = Math.max(160, Math.round(rect.width) || 320);
+  const H = Math.max(FP_SIDE_H_MIN, Math.round(rect.height) || FP_SIDE_H_DEFAULT);
+  const pad = { l: 44, r: 10, t: 10, b: 22 };
   const iw = W - pad.l - pad.r;
   const ih = H - pad.t - pad.b;
-  sideViewGeom = { tMax, hMax, pad, iw, ih, W, H };
+  sideViewGeom = { tMax, hMin, hMax, pad, iw, ih, W, H, terrain, useAmsl };
+
   const x = (t) => pad.l + (t / tMax) * iw;
-  const y = (h) => pad.t + ih - (h / hMax) * ih;
+  const y = (z) => pad.t + ih - ((z - hMin) / (hMax - hMin)) * ih;
   const poly = (pts, stroke, width) => {
     if (pts.length < 2) return "";
-    const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.hAgl).toFixed(1)}`).join(" ");
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
     return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"/>`;
   };
+
+  let terrainSvg = "";
+  if (useAmsl) {
+    const top = terrain.map((p, i) =>
+      `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
+    const close =
+      `L${x(terrain[terrain.length - 1].tSec).toFixed(1)},${(pad.t + ih).toFixed(1)} ` +
+      `L${x(terrain[0].tSec).toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
+    terrainSvg =
+      `<path d="${top} ${close}" fill="#d8d2c4" fill-opacity="0.7" stroke="none" pointer-events="none"/>` +
+      poly(terrain.map((p) => ({ tSec: p.tSec, z: p.z })), "#a89f8a", 1.25);
+  } else {
+    terrainSvg =
+      `<line x1="${pad.l}" y1="${y(0).toFixed(1)}" x2="${(pad.l + iw).toFixed(1)}" ` +
+      `y2="${y(0).toFixed(1)}" stroke="#a89f8a" stroke-width="1" pointer-events="none"/>`;
+  }
+
+  const tTicks = niceTicks(0, tMax / 60, 4); // minutes
+  const zTicks = niceTicks(hMin, hMax, 4);
+  const yUnit = useAmsl
+    ? (heightUnit() === "ft" ? "ft NN" : "m NN")
+    : (heightUnit() === "ft" ? "ft AGL" : "m AGL");
+  let axes = "";
+  axes += `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + ih}" stroke="#9c9b95" pointer-events="none"/>`;
+  axes += `<line x1="${pad.l}" y1="${pad.t + ih}" x2="${pad.l + iw}" y2="${pad.t + ih}" stroke="#9c9b95" pointer-events="none"/>`;
+  for (const m of tTicks) {
+    const tx = x(m * 60);
+    if (tx < pad.l - 0.5 || tx > pad.l + iw + 0.5) continue;
+    axes += `<line x1="${tx.toFixed(1)}" y1="${(pad.t + ih).toFixed(1)}" x2="${tx.toFixed(1)}" y2="${(pad.t + ih + 4).toFixed(1)}" stroke="#9c9b95" pointer-events="none"/>`;
+    axes += `<text x="${tx.toFixed(1)}" y="${(H - 4).toFixed(1)}" text-anchor="middle" font-size="10" fill="#52514e" pointer-events="none">${Math.round(m)}</text>`;
+  }
+  axes += `<text x="${(pad.l + iw).toFixed(1)}" y="${(H - 4).toFixed(1)}" text-anchor="end" font-size="9" fill="#7a7970" pointer-events="none">min</text>`;
+  for (const z of zTicks) {
+    const ty = y(z);
+    if (ty < pad.t - 0.5 || ty > pad.t + ih + 0.5) continue;
+    axes += `<line x1="${(pad.l - 4).toFixed(1)}" y1="${ty.toFixed(1)}" x2="${pad.l}" y2="${ty.toFixed(1)}" stroke="#9c9b95" pointer-events="none"/>`;
+    axes += `<text x="${(pad.l - 6).toFixed(1)}" y="${(ty + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#52514e" pointer-events="none">${Math.round(heightToDisplay(z))}</text>`;
+  }
+  axes += `<text x="4" y="${(pad.t + 8).toFixed(1)}" text-anchor="start" font-size="9" fill="#7a7970" pointer-events="none">${yUnit}</text>`;
+
   host.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
-    `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + ih}" stroke="#c9c8c2" pointer-events="none"/>` +
-    `<line x1="${pad.l}" y1="${pad.t + ih}" x2="${pad.l + iw}" y2="${pad.t + ih}" stroke="#c9c8c2" pointer-events="none"/>` +
+    terrainSvg +
     poly(steps, "#9c9b95", 1.5) +
-    poly(expanded, "#1c5cab", 2) +
-    profileTargets.map((w, i) =>
-      `<circle class="fp-side-pt" data-i="${i}" cx="${x(w.tSec).toFixed(1)}" ` +
-      `cy="${y(w.targetAgl).toFixed(1)}" r="5" fill="#1c5cab"/>`
+    poly(ramp, "#1c5cab", 2) +
+    axes +
+    handles.map((p, i) =>
+      `<circle class="fp-side-pt" data-i="${i}" cx="${x(p.tSec).toFixed(1)}" ` +
+      `cy="${y(p.z).toFixed(1)}" r="6" fill="#1c5cab"/>`
     ).join("") +
     `</svg>`;
 }
@@ -358,15 +523,46 @@ function wireProfileSideView() {
   if (!host || host.dataset.wired) return;
   host.dataset.wired = "1";
 
+  const initialH = Number.isFinite(saved.fpSideHeight) ? saved.fpSideHeight : FP_SIDE_H_DEFAULT;
+  setFpSideHeight(initialH);
+  el("fp-side-resize")?.setAttribute("aria-valuemin", String(FP_SIDE_H_MIN));
+  el("fp-side-resize")?.setAttribute("aria-valuemax", String(fpSideHeightMax()));
+
+  if (typeof ResizeObserver !== "undefined") {
+    let roT = 0;
+    const ro = new ResizeObserver(() => {
+      if (el("flightprofile-panel").hidden) return;
+      clearTimeout(roT);
+      roT = setTimeout(() => renderProfileSideView(), 40);
+    });
+    ro.observe(host);
+  }
+
   host.addEventListener("pointerdown", (e) => {
     const pt = e.target.closest?.(".fp-side-pt");
     if (!pt || el("flightprofile-panel").hidden) return;
     const i = +pt.dataset.i;
     if (!Number.isFinite(i) || i < 0 || i >= profileTargets.length) return;
     e.preventDefault();
+    if (e.altKey) {
+      if (profileModalIndex === i) closeProfileModal();
+      removeProfileTarget(i);
+      return;
+    }
     host.setPointerCapture(e.pointerId);
     host.classList.add("dragging");
     sideDrag = { i, pointerId: e.pointerId, moved: false };
+  });
+
+  host.addEventListener("dblclick", (e) => {
+    if (el("flightprofile-panel").hidden) return;
+    if (e.target.closest?.(".fp-side-pt")) return;
+    e.preventDefault();
+    const tSec = sideViewClientToTSec(e.clientX);
+    if (tSec == null) return;
+    const hClick = sideViewClientToAgl(e.clientY, tSec);
+    const h = hClick != null ? hClick : Math.round(profileHeightAt(tSec));
+    insertProfileTarget(tSec, h);
   });
 
   host.addEventListener("pointermove", (e) => {
@@ -381,7 +577,6 @@ function wireProfileSideView() {
     };
     renderProfileSideView();
     updateProfileHint();
-    // Keep table height cell in sync without full rebuild focus steal
     const inp = el("fp-tbody").querySelector(
       `tr:nth-child(${sideDrag.i + 1}) input[data-field="h"]`,
     );
@@ -407,6 +602,50 @@ function wireProfileSideView() {
   };
   host.addEventListener("pointerup", endDrag);
   host.addEventListener("pointercancel", endDrag);
+
+  const grip = el("fp-side-resize");
+  if (grip && !grip.dataset.wired) {
+    grip.dataset.wired = "1";
+    let vdrag = null;
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      document.body.classList.add("fp-side-resizing");
+      vdrag = {
+        pointerId: e.pointerId,
+        startY: e.clientY,
+        startH: host.getBoundingClientRect().height,
+      };
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!vdrag || e.pointerId !== vdrag.pointerId) return;
+      setFpSideHeight(vdrag.startH + (e.clientY - vdrag.startY));
+      renderProfileSideView();
+    });
+    const endV = (e) => {
+      if (!vdrag || e.pointerId !== vdrag.pointerId) return;
+      vdrag = null;
+      document.body.classList.remove("fp-side-resizing");
+      try { grip.releasePointerCapture(e.pointerId); } catch { /* */ }
+      persist();
+      renderProfileSideView();
+    };
+    grip.addEventListener("pointerup", endV);
+    grip.addEventListener("pointercancel", endV);
+    grip.addEventListener("keydown", (e) => {
+      const cur = host.getBoundingClientRect().height;
+      const step = e.shiftKey ? 24 : 12;
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFpSideHeight(cur - step, { save: true });
+        renderProfileSideView();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFpSideHeight(cur + step, { save: true });
+        renderProfileSideView();
+      }
+    });
+  }
 }
 
 function refreshProfileUI({ scheduleApi = true } = {}) {
@@ -414,6 +653,149 @@ function refreshProfileUI({ scheduleApi = true } = {}) {
   updateProfileHint();
   renderProfileSideView();
   if (scheduleApi && el("flightprofile").checked) scheduleProfileRedraw();
+}
+
+/** Interpolate target AGL at tSec from the expanded (or raw) profile. */
+function profileHeightAt(tSec) {
+  const sorted = [...profileTargets].sort((a, b) => a.tSec - b.tSec);
+  if (sorted.length < 2) return sorted[0]?.targetAgl ?? 0;
+  if (tSec <= sorted[0].tSec) return sorted[0].targetAgl;
+  if (tSec >= sorted[sorted.length - 1].tSec) return sorted[sorted.length - 1].targetAgl;
+  try {
+    const exp = expandProfile(sorted);
+    for (let i = 1; i < exp.length; i++) {
+      if (tSec <= exp[i].tSec) {
+        const a = exp[i - 1];
+        const b = exp[i];
+        const u = (tSec - a.tSec) / Math.max(1e-9, b.tSec - a.tSec);
+        return a.hAgl + u * (b.hAgl - a.hAgl);
+      }
+    }
+  } catch { /* fall through */ }
+  for (let i = 1; i < sorted.length; i++) {
+    if (tSec <= sorted[i].tSec) {
+      const a = sorted[i - 1];
+      const b = sorted[i];
+      const u = (tSec - a.tSec) / Math.max(1e-9, b.tSec - a.tSec);
+      return a.targetAgl + u * (b.targetAgl - a.targetAgl);
+    }
+  }
+  return sorted[sorted.length - 1].targetAgl;
+}
+
+function pointAtTimeOnPath(r, tSec) {
+  const pts = r.points;
+  if (!pts?.length) return null;
+  const t0 = pts[0].tMs;
+  const tMs = t0 + tSec * 1000;
+  if (tMs <= pts[0].tMs) return { lat: pts[0].lat, lon: pts[0].lon, z: pts[0].z };
+  const last = pts[pts.length - 1];
+  if (tMs >= last.tMs) return { lat: last.lat, lon: last.lon, z: last.z };
+  for (let i = 1; i < pts.length; i++) {
+    if (tMs <= pts[i].tMs) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const u = (tMs - a.tMs) / Math.max(1, b.tMs - a.tMs);
+      return {
+        lat: a.lat + u * (b.lat - a.lat),
+        lon: a.lon + u * (b.lon - a.lon),
+        z: Number.isFinite(a.z) && Number.isFinite(b.z) ? a.z + u * (b.z - a.z) : a.z,
+      };
+    }
+  }
+  return { lat: last.lat, lon: last.lon, z: last.z };
+}
+
+function timeAlongPath(r, lat, lon) {
+  const pts = r.points;
+  if (!pts?.length) return 0;
+  const t0 = pts[0].tMs;
+  let bestD = Infinity;
+  let bestT = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const d = (p.lat - lat) ** 2 + (p.lon - lon) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      bestT = (p.tMs - t0) / 1000;
+    }
+  }
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const abx = b.lon - a.lon;
+    const aby = b.lat - a.lat;
+    const len2 = abx * abx + aby * aby;
+    if (len2 < 1e-18) continue;
+    let u = ((lon - a.lon) * abx + (lat - a.lat) * aby) / len2;
+    u = Math.min(1, Math.max(0, u));
+    const plat = a.lat + u * aby;
+    const plon = a.lon + u * abx;
+    const d = (plat - lat) ** 2 + (plon - lon) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      bestT = ((a.tMs + u * (b.tMs - a.tMs)) - t0) / 1000;
+    }
+  }
+  return bestT;
+}
+
+function afterProfileTargetsMutated() {
+  persist();
+  refreshProfileUI({ scheduleApi: true });
+  if (state.profileEdit?.active) {
+    const run = profileCandidateRun();
+    if (run) paintProfileEditMap(run);
+  }
+}
+
+function insertProfileTarget(tSec, hAgl) {
+  if (profileTargets.length >= FP_MAX_ROWS) {
+    setStatus(`Maximal ${FP_MAX_ROWS} Profilpunkte.`, true);
+    return false;
+  }
+  let t = Math.max(0, Math.round(tSec));
+  const h = Math.max(0, Math.round(hAgl));
+  const sorted = [...profileTargets].sort((a, b) => a.tSec - b.tSec);
+  const tMin = sorted[0].tSec;
+  const tMax = sorted[sorted.length - 1].tSec;
+  if (t <= tMin) t = tMin + 1;
+  if (t >= tMax) t = tMax - 1;
+  if (t <= tMin || t >= tMax) {
+    setStatus("Punkt muss zwischen Start und Ende liegen.", true);
+    return false;
+  }
+  // Nudge off collisions
+  const used = new Set(sorted.map((w) => w.tSec));
+  while (used.has(t) && t < tMax - 1) t += 1;
+  if (used.has(t)) {
+    setStatus("Kein freier Zeit-Slot für neuen Punkt.", true);
+    return false;
+  }
+  profileTargets.push({ tSec: t, targetAgl: h, rate: "jump" });
+  profileTargets.sort((a, b) => a.tSec - b.tSec);
+  afterProfileTargetsMutated();
+  setStatus(`Profilpunkt bei ${Math.round(t / 60)} min · ${fmtHeight(h)} AGL`);
+  return true;
+}
+
+function removeProfileTarget(index) {
+  if (profileTargets.length <= 2) {
+    setStatus("Mindestens zwei Wegpunkte nötig.", true);
+    return false;
+  }
+  if (index < 0 || index >= profileTargets.length) return false;
+  if (profileModalIndex != null) closeProfileModal();
+  profileTargets.splice(index, 1);
+  afterProfileTargetsMutated();
+  setStatus("Profilpunkt gelöscht.");
+  return true;
+}
+
+function setProfileMapDblClickZoom(enabled) {
+  if (!map.doubleClickZoom) return;
+  if (enabled) map.doubleClickZoom.enable();
+  else map.doubleClickZoom.disable();
 }
 
 function applyProfileUI() {
@@ -438,6 +820,7 @@ function applyProfileUI() {
     state.dimLayers.clearLayers();
     restoreStartMarkerVisibility();
   }
+  setProfileMapDblClickZoom(!state.profileEdit?.active);
   applyModeUI();
 }
 
@@ -482,7 +865,7 @@ function enterProfileFromCandidate(run) {
   el("fp-preset").value = "empty";
   applyProfileUI();
   el("fp-candhint").textContent =
-    `Kandidat: ${run.label} — Marken anklicken zum Ändern`;
+    `Kandidat: ${run.label} — Klick: ändern · Doppelklick: Punkt · Alt+Klick: löschen`;
   paintProfileEditMap(run);
   highlightResultCandidate(key);
   refreshProfileUI({ scheduleApi: true });
@@ -500,6 +883,7 @@ function highlightResultCandidate(key) {
 }
 
 function paintProfileEditMap(candidateRun) {
+  setProfileMapDblClickZoom(false);
   state.layers.clearLayers();
   state.dimLayers.clearLayers();
   state.pinLayers.clearLayers();
@@ -579,6 +963,12 @@ function openProfileModal(index, markerCtx = null) {
     ? (Math.atan2(-(markerCtx.u || 0), -(markerCtx.v || 0)) * 180 / Math.PI + 360) % 360
     : 0;
   fillProfileModalMet(markerCtx, dir);
+  const delBtn = el("fp-modal-del");
+  if (delBtn) {
+    const canDel = profileTargets.length > 2;
+    delBtn.hidden = !canDel;
+    delBtn.disabled = !canDel;
+  }
   el("fp-modal").hidden = false;
 }
 
@@ -1012,6 +1402,12 @@ wireProfileSideView();
 el("fp-modal-close").addEventListener("click", closeProfileModal);
 el("fp-modal").addEventListener("click", (e) => {
   if (e.target === el("fp-modal")) closeProfileModal();
+});
+el("fp-modal-del")?.addEventListener("click", () => {
+  const i = profileModalIndex;
+  if (i == null) return;
+  closeProfileModal();
+  removeProfileTarget(i);
 });
 el("fp-modal-h").addEventListener("input", applyModalToTarget);
 el("fp-modal-rate").addEventListener("change", applyModalToTarget);
@@ -2010,35 +2406,74 @@ function drawTrajectory(r, color, label, dash = null, layer = state.layers, opts
   const latlngs = r.points.map((p) => [p.lat, p.lon]);
   const line = L.polyline(latlngs, {
     color, weight: 3, opacity, dashArray: dash, interactive,
-  }).addTo(layer).bindTooltip(label, { sticky: true });
+  }).addTo(layer).bindTooltip(
+    opts.editableMarkers
+      ? `${label}<br><em>Doppelklick: Punkt einfügen</em>`
+      : label,
+    { sticky: true },
+  );
   if (opts.onSelect && interactive) {
     line.on("click", (e) => {
       L.DomEvent.stopPropagation(e);
       opts.onSelect();
     });
   }
+  if (opts.editableMarkers) {
+    line.on("dblclick", (e) => {
+      L.DomEvent.stop(e);
+      L.DomEvent.preventDefault(e);
+      const ll = e.latlng;
+      const tSec = timeAlongPath(r, ll.lat, ll.lng);
+      insertProfileTarget(tSec, profileHeightAt(tSec));
+    });
+  }
 
   const t0 = r.points[0]?.tMs ?? 0;
   const end = r.points.at(-1);
-  /** @type {{ lat: number, lon: number, tMs: number, u?: number, v?: number, z?: number, met?: object }[]} */
+  /** @type {{ lat: number, lon: number, tMs: number, u?: number, v?: number, z?: number, met?: object, profileIndex?: number, synthetic?: string }[]} */
   const dots = [];
-  if (opts.editableMarkers && r.points[0]) {
-    // Integrator markers usually skip t=0; seed an edit handle at the start.
-    dots.push({
-      lat: r.points[0].lat,
-      lon: r.points[0].lon,
-      tMs: t0,
-      z: r.points[0].z,
-      synthetic: "start",
-    });
-  }
-  for (const m of r.markers) dots.push(m);
-  if (opts.editableMarkers && end) {
-    const lastMark = r.markers.at(-1);
-    if (!lastMark || Math.abs(end.tMs - lastMark.tMs) > 1500) {
+  if (opts.editableMarkers && profileTargets.length >= 2) {
+    for (let i = 0; i < profileTargets.length; i++) {
+      const w = profileTargets[i];
+      const pos = pointAtTimeOnPath(r, w.tSec);
+      if (!pos) continue;
+      let nearestMet = null;
+      let bestD = Infinity;
+      for (const m of r.markers) {
+        const d = Math.abs(m.tMs - (t0 + w.tSec * 1000));
+        if (d < bestD) { bestD = d; nearestMet = m; }
+      }
+      const syn = i === 0 ? "start" : (i === profileTargets.length - 1 ? "end" : undefined);
       dots.push({
-        lat: end.lat, lon: end.lon, tMs: end.tMs, z: end.z, synthetic: "end",
+        lat: pos.lat,
+        lon: pos.lon,
+        tMs: t0 + w.tSec * 1000,
+        z: pos.z,
+        profileIndex: i,
+        synthetic: syn,
+        u: nearestMet?.u,
+        v: nearestMet?.v,
+        met: bestD < 120_000 ? nearestMet?.met : undefined,
       });
+    }
+  } else {
+    if (opts.editableMarkers && r.points[0]) {
+      dots.push({
+        lat: r.points[0].lat,
+        lon: r.points[0].lon,
+        tMs: t0,
+        z: r.points[0].z,
+        synthetic: "start",
+      });
+    }
+    for (const m of r.markers) dots.push(m);
+    if (opts.editableMarkers && end) {
+      const lastMark = r.markers.at(-1);
+      if (!lastMark || Math.abs(end.tMs - lastMark.tMs) > 1500) {
+        dots.push({
+          lat: end.lat, lon: end.lon, tMs: end.tMs, z: end.z, synthetic: "end",
+        });
+      }
     }
   }
 
@@ -2048,11 +2483,9 @@ function drawTrajectory(r, color, label, dash = null, layer = state.layers, opts
     const windLine = m.synthetic
       ? (m.synthetic === "start" ? "Start" : "Ziel")
       : `${fmtWind(Math.hypot(m.u || 0, m.v || 0))} aus ${Math.round(dir)}°`;
-    const tipExtra = opts.editableMarkers && m.met
-      ? "<br><em>Klicken: Höhe ändern + Details</em>"
-      : opts.editableMarkers
-        ? "<br><em>Klicken: Höhe ändern</em>"
-        : (m.met ? "<br><em>klicken für Details</em>" : "");
+    const tipExtra = opts.editableMarkers
+      ? "<br><em>Klick: ändern · Alt+Klick: löschen</em>"
+      : (m.met ? "<br><em>klicken für Details</em>" : "");
     const marker = L.circleMarker([m.lat, m.lon], {
       radius: opts.editableMarkers ? 7 : 4,
       color,
@@ -2082,9 +2515,15 @@ function drawTrajectory(r, color, label, dash = null, layer = state.layers, opts
     if (opts.editableMarkers) {
       marker.on("click", (e) => {
         L.DomEvent.stopPropagation(e);
-        const tSec = Math.max(0, Math.round((m.tMs - t0) / 1000));
-        // Modal overlays the map — show Zusatzparameter inside the dialog.
-        openProfileModal(nearestTargetIndex(tSec), m);
+        const idx = Number.isFinite(m.profileIndex)
+          ? m.profileIndex
+          : nearestTargetIndex(Math.max(0, Math.round((m.tMs - t0) / 1000)));
+        if (e.originalEvent?.altKey) {
+          if (profileModalIndex === idx) closeProfileModal();
+          removeProfileTarget(idx);
+          return;
+        }
+        openProfileModal(idx, m);
       });
     }
   }
@@ -2143,6 +2582,41 @@ const PANEL_W_MIN = 280;
 const PANEL_W_MAX = 720;
 const PANEL_W_DEFAULT = 400;
 
+// 3D layout consts/helpers must come before initPanelResize: setPanelWidth
+// calls layoutView3d() on startup (TDZ if these are still uninitialized).
+let view3dMod = null;
+const V3D_EDGE = 10;
+const V3D_MIN_W = 280;
+const V3D_MIN_H = 200;
+
+function view3dMobile() {
+  return window.matchMedia("(max-width: 700px), (max-height: 500px)").matches;
+}
+
+/** Minimum `right` inset so the overlay clears the control panel. */
+function view3dMinRight() {
+  const panelW = el("panel").getBoundingClientRect().width || PANEL_W_DEFAULT;
+  return Math.round(panelW + V3D_EDGE * 2);
+}
+
+function layoutView3d() {
+  const box = el("view3d");
+  if (!box || view3dMobile()) return;
+  const minRight = view3dMinRight();
+  const maxRight = Math.max(minRight, window.innerWidth - V3D_EDGE - V3D_MIN_W);
+  let right = view3dRight == null ? minRight : view3dRight;
+  right = Math.min(maxRight, Math.max(minRight, right));
+  const maxBottom = Math.max(V3D_EDGE, window.innerHeight - V3D_EDGE - V3D_MIN_H);
+  let bottom = view3dBottom == null ? V3D_EDGE : view3dBottom;
+  bottom = Math.min(maxBottom, Math.max(V3D_EDGE, bottom));
+  box.style.top = `${V3D_EDGE}px`;
+  box.style.left = `${V3D_EDGE}px`;
+  box.style.right = `${right}px`;
+  box.style.bottom = `${bottom}px`;
+  el("view3d-resize-e")?.setAttribute("aria-valuenow", String(right));
+  el("view3d-resize-s")?.setAttribute("aria-valuenow", String(bottom));
+}
+
 function panelWidthMax() {
   return Math.min(PANEL_W_MAX, Math.max(PANEL_W_MIN, window.innerWidth - 40));
 }
@@ -2151,6 +2625,7 @@ function setPanelWidth(px, { save = false } = {}) {
   const w = Math.round(Math.min(panelWidthMax(), Math.max(PANEL_W_MIN, px)));
   el("panel").style.width = `${w}px`;
   el("panel-resize").setAttribute("aria-valuenow", String(w));
+  layoutView3d();
   if (save) persist();
   return w;
 }
@@ -2218,7 +2693,94 @@ window.addEventListener("resize", () => {
 });
 
 // --- 3D-Ansicht (Cesium, lazy geladen) --------------------------------------
-let view3dMod = null;
+(function initView3dResize() {
+  const east = el("view3d-resize-e");
+  const south = el("view3d-resize-s");
+  if (!east || !south) return;
+  east.setAttribute("aria-valuemin", String(V3D_EDGE));
+  south.setAttribute("aria-valuemin", String(V3D_EDGE));
+
+  let drag = null;
+  east.addEventListener("pointerdown", (e) => {
+    if (view3dMobile() || el("view3d").hidden) return;
+    e.preventDefault();
+    east.setPointerCapture(e.pointerId);
+    document.body.classList.add("v3d-resizing-e");
+    const cur = parseFloat(el("view3d").style.right) || view3dMinRight();
+    drag = { axis: "e", pointerId: e.pointerId, startX: e.clientX, start: cur };
+  });
+  south.addEventListener("pointerdown", (e) => {
+    if (view3dMobile() || el("view3d").hidden) return;
+    e.preventDefault();
+    south.setPointerCapture(e.pointerId);
+    document.body.classList.add("v3d-resizing-s");
+    const cur = parseFloat(el("view3d").style.bottom) || V3D_EDGE;
+    drag = { axis: "s", pointerId: e.pointerId, startY: e.clientY, start: cur };
+  });
+  const onMove = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (drag.axis === "e") {
+      // Drag left → larger right inset → narrower overlay.
+      view3dRight = drag.start + (drag.startX - e.clientX);
+      layoutView3d();
+    } else {
+      view3dBottom = drag.start + (drag.startY - e.clientY);
+      layoutView3d();
+    }
+  };
+  const onEnd = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    document.body.classList.remove("v3d-resizing-e", "v3d-resizing-s");
+    try {
+      (drag.axis === "e" ? east : south).releasePointerCapture(e.pointerId);
+    } catch { /* */ }
+    drag = null;
+    persist();
+  };
+  for (const h of [east, south]) {
+    h.addEventListener("pointermove", onMove);
+    h.addEventListener("pointerup", onEnd);
+    h.addEventListener("pointercancel", onEnd);
+  }
+  east.addEventListener("keydown", (e) => {
+    if (el("view3d").hidden) return;
+    const step = e.shiftKey ? 40 : 16;
+    const cur = parseFloat(el("view3d").style.right) || view3dMinRight();
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      view3dRight = cur + step;
+      layoutView3d();
+      persist();
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      view3dRight = cur - step;
+      layoutView3d();
+      persist();
+    }
+  });
+  south.addEventListener("keydown", (e) => {
+    if (el("view3d").hidden) return;
+    const step = e.shiftKey ? 40 : 16;
+    const cur = parseFloat(el("view3d").style.bottom) || V3D_EDGE;
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      view3dBottom = cur + step;
+      layoutView3d();
+      persist();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      view3dBottom = cur - step;
+      layoutView3d();
+      persist();
+    }
+  });
+  window.addEventListener("resize", () => {
+    layoutView3d();
+    const cur = el("fp-side")?.getBoundingClientRect().height;
+    if (cur > fpSideHeightMax()) setFpSideHeight(fpSideHeightMax(), { save: true });
+  });
+  layoutView3d();
+})();
 
 // Modellorographie am Start für den Höhenabgleich Geoid vs. Ellipsoid;
 // die Geländewerte entlang des Pfads liegen im Querschnitts-Zustand vor.
@@ -2243,6 +2805,7 @@ el("view3dbtn").addEventListener("click", async () => {
   try {
     view3dMod ??= await import("./view3d.js");
     el("view3d").hidden = false;
+    layoutView3d();
     await view3dMod.show(view3dData());
     el("view3dbtn").textContent = "3D-Ansicht schließen";
     setStatus("");

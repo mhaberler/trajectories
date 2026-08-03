@@ -90,8 +90,13 @@
           <option value="empty">Leer</option>
         </select>
       </label>
-      <div id="fp-side" aria-label="Höhenprofil Ziel und Rampe"></div>
+      <div id="fp-side-wrap">
+        <div id="fp-side" aria-label="Höhenprofil Ziel und Rampe"></div>
+        <div id="fp-side-resize" role="separator" aria-orientation="horizontal"
+             aria-label="Profilhöhe einstellen" tabindex="0" title="Ziehen zum Ändern der Höhe"></div>
+      </div>
       <div id="fp-side-legend" class="hint">
+        <span class="fp-leg-terrain">Gelände</span>
         <span class="fp-leg-target">Ziel</span>
         <span class="fp-leg-expand">Rampe</span>
       </div>
@@ -132,6 +137,7 @@
         </label>
         <p id="fp-modal-note" class="hint mono"></p>
         <div id="fp-modal-met" class="fp-modal-met mono" hidden></div>
+        <button type="button" id="fp-modal-del" class="secondary" hidden>Punkt löschen</button>
       </div>
     </div>
 
@@ -206,6 +212,10 @@
   </div>
 
   <div id="view3d" hidden>
+    <div id="view3d-resize-e" role="separator" aria-orientation="vertical"
+         aria-label="3D-Breite einstellen" tabindex="0" title="Ziehen zum Ändern der Breite"></div>
+    <div id="view3d-resize-s" role="separator" aria-orientation="horizontal"
+         aria-label="3D-Höhe einstellen" tabindex="0" title="Ziehen zum Ändern der Höhe"></div>
     <div class="v3d-head">
       <span>3D-Ansicht</span>
       <label class="v3d-ctl">Überhöhung

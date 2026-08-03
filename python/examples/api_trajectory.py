@@ -55,7 +55,7 @@ def main() -> int:
     except httpx.ConnectError:
         print(
             f"error: cannot connect to {BASE} — start with:\n"
-            "  uvicorn trajectories.api:app --host 127.0.0.1 --port 8000",
+            "  uvicorn trajectories.api:app --host 127.0.0.1 --port 8010",
             file=sys.stderr,
         )
         return 1

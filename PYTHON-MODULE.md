@@ -13,7 +13,7 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 
 ## Layout
 
-```
+```text
 deploy/
   trajectories-api.service      # systemd (user openmeteo-api, :8010)
   Caddyfile.trajectory.snippet  # trajectory.mah.priv.at → reverse_proxy
@@ -324,6 +324,6 @@ RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
 - Dual backend: local OM preferred when `/open-meteo` + `omfiles` available; HTTP fallback.
 - Port fidelity vs web (HTTP path): **confirmed near-exact** (0 m on sampled points for the smoke matrix).
 - OM vs HTTP: same-physics opt-in tests pass; **OM slab ≤ HTTP** on `basic_trajectory` (~8.6 s cold / ~5.9 s warm vs ~9.0 s).
-- Acceleration shipped: OM slab preload + warm meta; response cache / parallel tracks still future.
+- Acceleration shipped: OM slab preload + warm meta, parallel tracks, response cache, Numba height interp.
 - Windy: rough agreement only; useful for regression, not a bit-for-bit oracle.
 - Generated compare dumps live under `python/tests/artifacts/` (not committed).

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
+import math
 
 from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
@@ -97,9 +98,12 @@ def _parse_csv_floats(raw: str | None, *, name: str) -> list[float] | None:
         if not part:
             continue
         try:
-            out.append(float(part))
+            val = float(part)
         except ValueError as exc:
             raise ValueError(f"Invalid {name} value: {part!r}") from exc
+        if not math.isfinite(val):
+            raise ValueError(f"Invalid {name} value: {part!r}")
+        out.append(val)
     return out or None
 
 
@@ -147,9 +151,12 @@ def _resolve_time(time: str | None, timeformat: str) -> str | float:
     raw = str(time).strip()
     if timeformat == "unixtime":
         try:
-            return float(raw)
+            val = float(raw)
         except ValueError as exc:
             raise ValueError(f"Invalid unix time: {raw!r}") from exc
+        if not math.isfinite(val):
+            raise ValueError(f"Invalid unix time: {raw!r}")
+        return val
     # iso8601 — normalize; compute_trajectories accepts ISO strings
     try:
         s = raw.replace("Z", "+00:00")

@@ -8,6 +8,10 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${TRAJECTORIES_VPS_DEST:-/var/www/vps/trajectories}"
+if [[ "$DEST" != /* || "$DEST" == "/" ]]; then
+  echo "Refusing unsafe deployment destination: $DEST" >&2
+  exit 1
+fi
 BASE="/trajectories/"
 
 echo "==> Baue Web-Build (base=${BASE}) ..."

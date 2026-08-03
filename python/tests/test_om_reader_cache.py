@@ -39,7 +39,14 @@ def test_ticket_stale_on_invalidate(tmp_path):
 
 def test_lru_eviction(tmp_path):
     clear_om_reader_cache()
-    cache = OmReaderCache(max_readers=2)
+    # OmReaderCache floors max_readers at 8
+    cache = OmReaderCache(max_readers=8)
+    # Disable inotify so sibling file creates don't race with LRU assertions
+    if cache._observer is not None:
+        cache._observer.stop()
+        cache._observer.join(timeout=2)
+        cache._observer = None
+        cache._handler = None
     readers = []
 
     def make_reader(_p):
@@ -51,10 +58,19 @@ def test_lru_eviction(tmp_path):
 
     cache._OmFileReader = make_reader
     paths = []
-    for i in range(3):
+    for i in range(9):
         p = tmp_path / f"c{i}.om"
         p.write_bytes(b"x")
         paths.append(p)
         cache.get(str(p))
-    assert cache.size == 2
+    assert cache.size == 8
+    # paths[0] is LRU and must have been closed/evicted
+    assert readers[0].close.called
+    for r in readers[1:]:
+        assert not r.close.called
+    # Re-requesting paths[0] creates a new reader (and evicts paths[1])
+    n_before = len(readers)
+    cache.get(str(paths[0]))
+    assert len(readers) == n_before + 1
+    assert readers[1].close.called
     cache.close()

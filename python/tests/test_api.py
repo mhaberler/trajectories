@@ -271,6 +271,21 @@ def test_openapi_has_wind_path():
     assert "/v1/wind" in paths
 
 
+def test_trajectory_nan_height():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+            "height_agl": "nan",
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["error"] is True
+
+
 def test_trajectory_profile_exclusive_with_height():
     r = client.get(
         "/v1/trajectory",

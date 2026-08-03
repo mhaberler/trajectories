@@ -90,7 +90,11 @@ def test_request_from_slab_hit_and_miss():
 
 def test_om_request_prefers_slab_without_point_readers():
     pytest.importorskip("omfiles")
+    from trajectories import config
     from trajectories.om_backend import OmBackend, get_om_backend
+
+    if config.dataset_path("icon_d2") is None:
+        pytest.skip("ICON D2 OM dataset not available")
 
     clear_om_backend_cache()
     om = get_om_backend("icon_d2")

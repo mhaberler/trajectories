@@ -24,9 +24,10 @@ def test_backend_http_always():
     assert config.resolve_backend("icon_d2", warn=False) == "http"
 
 
-def test_backend_om_requires_dataset(tmp_path: Path):
+def test_backend_om_requires_dataset(monkeypatch, tmp_path: Path):
     config.set_backend("om")
     config.set_om_root(tmp_path)  # no dwd_icon_* underneath
+    monkeypatch.setattr(config, "omfiles_available", lambda: True)
     with pytest.raises(RuntimeError, match="dataset not found"):
         config.resolve_backend("icon_d2", warn=False)
 

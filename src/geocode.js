@@ -10,6 +10,13 @@ function featureLabel(props) {
   return { name, sub: crumbs.join(", ") };
 }
 
+function textEl(tag, text, className) {
+  const n = document.createElement(tag);
+  if (className) n.className = className;
+  n.textContent = text;
+  return n;
+}
+
 async function photonSearch(q) {
   const url = `${PHOTON}/api/?${new URLSearchParams({ q, limit: "5", lang: "de" })}`;
   const resp = await fetch(url);
@@ -60,9 +67,8 @@ export function initGeocode({ map, setStart, debounce, el }) {
       const li = document.createElement("li");
       li.dataset.i = String(i);
       if (i === active) li.classList.add("active");
-      li.innerHTML = sub
-        ? `${name}<span class="geo-sub">${sub}</span>`
-        : name;
+      li.appendChild(document.createTextNode(name));
+      if (sub) li.appendChild(textEl("span", sub, "geo-sub"));
       li.addEventListener("mousedown", (e) => {
         e.preventDefault(); // keep focus; avoid blur-before-click
         pick(i);
@@ -128,12 +134,14 @@ export function initGeocode({ map, setStart, debounce, el }) {
   map.on("contextmenu", async (e) => {
     L.DomEvent.preventDefault(e.originalEvent);
     const { lat, lng: lon } = e.latlng;
-    const popup = L.popup({ maxWidth: 280 }).setLatLng(e.latlng).setContent("Suche Ort …").openOn(map);
+    const popup = L.popup({ maxWidth: 280 }).setLatLng(e.latlng)
+      .setContent(textEl("div", "Suche Ort …"))
+      .openOn(map);
     try {
       const label = await photonReverse(lat, lon);
-      popup.setContent(label || "Kein Ort gefunden");
+      popup.setContent(textEl("div", label || "Kein Ort gefunden"));
     } catch {
-      popup.setContent("Geocoding fehlgeschlagen");
+      popup.setContent(textEl("div", "Geocoding fehlgeschlagen"));
     }
   });
 }

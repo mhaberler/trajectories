@@ -39,7 +39,7 @@ function persist() {
   const s = {
     model: el("model").value,
     refmode: el("refmode").value,
-    markerIntervalSec: +el("markerint").value || 3600,
+    markerIntervalSec: +el("markerint").value || 600,
     duration: +el("duration").value || 12,
     direction: el("direction").value,
     heights: [...heightColors].map(([m, color]) => ({ m, color })),
@@ -473,7 +473,7 @@ for (const min of MARKER_INTERVALS) {
   const opt = document.createElement("option");
   opt.value = min * 60;
   opt.textContent = min < 60 ? `${min} min` : `${min / 60} h`;
-  if (min * 60 === (saved.markerIntervalSec ?? 3600)) opt.selected = true;
+  if (min * 60 === (saved.markerIntervalSec ?? 600)) opt.selected = true;
   el("markerint").appendChild(opt);
 }
 
@@ -558,7 +558,10 @@ if (Array.isArray(saved.methods) && saved.methods.length) {
 applyModeUI();
 
 if (saved.metExtras) el("metextras").checked = true;
-if (saved.useApi) el("useapi").checked = true;
+el("useapi").checked = saved.useApi !== false;
+if (el("useapi").checked && el("livemode").checked) {
+  el("useapi").checked = false; // Live-Scrub nur mit Browser-Rechnung
+}
 el("useapi").addEventListener("change", () => {
   if (el("useapi").checked && el("livemode").checked) {
     el("livemode").checked = false;

@@ -82,9 +82,16 @@ def cache_key(
     marker: float,
     met_extras: bool,
     backend: str | None,
+    profile: list[tuple[float, float]] | None = None,
+    marker_climb: float | None = None,
+    clearance_m: float = 0.0,
 ) -> str:
     h = ",".join(str(x) for x in (heights or []))
     m = ",".join(methods or [])
+    if profile:
+        p = ";".join(f"{t}:{ht}" for t, ht in profile)
+    else:
+        p = ""
     return "|".join([
         model,
         f"{round(lat, 3):.3f}",
@@ -98,6 +105,9 @@ def cache_key(
         str(marker),
         "1" if met_extras else "0",
         backend or "",
+        p,
+        "" if marker_climb is None else str(marker_climb),
+        str(clearance_m),
     ])
 
 

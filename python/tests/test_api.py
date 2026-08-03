@@ -269,3 +269,67 @@ def test_openapi_has_wind_path():
     assert r.status_code == 200
     paths = r.json().get("paths") or {}
     assert "/v1/wind" in paths
+
+
+def test_trajectory_profile_exclusive_with_height():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 48.4375,
+            "longitude": 15.6181,
+            "models": "icon_eu",
+            "time": "2026-08-02T11:00:00Z",
+            "height_agl": "500",
+            "profile_time": "0,3600",
+            "profile_height": "150,500",
+        },
+    )
+    assert r.status_code == 400
+    assert "exclusive" in r.json()["reason"].lower() or "mutually" in r.json()["reason"].lower()
+
+
+def test_trajectory_profile_partial_params():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 48.4375,
+            "longitude": 15.6181,
+            "models": "icon_eu",
+            "time": "2026-08-02T11:00:00Z",
+            "profile_time": "0,3600",
+        },
+    )
+    assert r.status_code == 400
+    assert "profile" in r.json()["reason"].lower()
+
+
+@patch("trajectories.api.compute_trajectories", return_value=TINY_GJ)
+def test_trajectory_profile_happy_path(mock_compute):
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 48.4375,
+            "longitude": 15.6181,
+            "models": "icon_eu",
+            "time": "2026-08-02T11:00:00Z",
+            "forecast_hours": 2,
+            "profile_time": "0,1200,3600,5400,7200",
+            "profile_height": "150,150,1800,1800,400",
+            "marker_interval": 60,
+            "marker_interval_climbing": 10,
+            "clearance_m": 0,
+            "backend": "http",
+        },
+    )
+    assert r.status_code == 200
+    kwargs = mock_compute.call_args.kwargs
+    assert kwargs["height_profile"] == [
+        (0.0, 150.0),
+        (1200.0, 150.0),
+        (3600.0, 1800.0),
+        (5400.0, 1800.0),
+        (7200.0, 400.0),
+    ]
+    assert kwargs["marker_interval_climbing_min"] == 10
+    assert kwargs["clearance_m"] == 0
+    assert kwargs["methods"] == ["height"]

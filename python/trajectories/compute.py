@@ -34,6 +34,31 @@ def _fmt_height(m: float) -> str:
     return f"{round(m)} m"
 
 
+def parse_flight_profile(
+    times: Sequence[float],
+    heights: Sequence[float],
+) -> list[tuple[float, float]]:
+    """Validate and zip profile_time (s) + profile_height (m AGL)."""
+    if len(times) != len(heights):
+        raise ValueError("profile_time and profile_height must have the same length")
+    if len(times) < 2:
+        raise ValueError("flight profile requires at least 2 waypoints")
+    out: list[tuple[float, float]] = []
+    prev_t: float | None = None
+    for t, h in zip(times, heights, strict=True):
+        if not math.isfinite(t) or not math.isfinite(h):
+            raise ValueError("profile waypoints must be finite numbers")
+        if t < 0:
+            raise ValueError("profile_time values must be >= 0")
+        if h < 0:
+            raise ValueError("profile_height values must be >= 0")
+        if prev_t is not None and t <= prev_t:
+            raise ValueError("profile_time must be strictly increasing")
+        prev_t = t
+        out.append((float(t), float(h)))
+    return out
+
+
 def make_target(
     wf: WindField,
     lat: float,
@@ -82,12 +107,18 @@ def compute_trajectories(
     om_root: str | None = None,
     backend: str | None = None,
     colors: Sequence[str] | None = None,
+    height_profile: Sequence[tuple[float, float]] | None = None,
+    marker_interval_climbing_min: float = 10,
+    clearance_m: float = 0.0,
 ) -> dict[str, Any]:
     """
     Compute trajectories and return a GeoJSON FeatureCollection dict.
 
     ``methods`` may list several vertical modes; ``heights`` several start heights.
     All combinations are run into one FeatureCollection.
+
+    When ``height_profile`` is set (list of ``(t_sec, h_agl)``), a single kinematic
+    AGL track is computed; ``heights`` / multi-method are not used.
 
     Data source: ``backend`` ``auto`` (default) prefers local Open-Meteo OM files
     under ``om_root`` / ``TRAJECTORIES_OM_ROOT`` when available, else HTTP.
@@ -104,15 +135,36 @@ def compute_trajectories(
     model_cfg = config.MODELS[model]
     backend_kind = config.resolve_backend(model)
 
-    heights = list(heights) if heights is not None else list(config.DEFAULT_HEIGHTS)
-    methods = list(methods) if methods is not None else ["height"]
-    if not heights:
-        raise ValueError("At least one height required")
-    if not methods:
-        raise ValueError("At least one method required")
+    profile: list[tuple[float, float]] | None = None
+    if height_profile is not None:
+        profile = parse_flight_profile(
+            [p[0] for p in height_profile],
+            [p[1] for p in height_profile],
+        )
+
+    if profile is not None:
+        methods = ["height"]
+        height_ref = "agl"
+        h0 = profile[0][1]
+        heights = [h0]
+        t_last_h = profile[-1][0] / 3600.0
+        duration = min(72.0, max(0.0, float(duration_h)), t_last_h)
+        if duration <= 0:
+            raise ValueError("flight profile duration must be > 0")
+    else:
+        heights = list(heights) if heights is not None else list(config.DEFAULT_HEIGHTS)
+        methods = list(methods) if methods is not None else ["height"]
+        if not heights:
+            raise ValueError("At least one height required")
+        if not methods:
+            raise ValueError("At least one method required")
+        duration = min(72, max(1, float(duration_h)))
+
     for m in methods:
         if m not in {x["key"] for x in config.METHODS}:
             raise ValueError(f"Unknown method: {m}")
+    if profile is not None and methods != ["height"]:
+        raise ValueError("flight profile only supports vertical_motion=height")
     if height_ref not in ("agl", "amsl"):
         raise ValueError("height_ref must be 'agl' or 'amsl'")
 
@@ -121,9 +173,9 @@ def compute_trajectories(
     else:
         direction_i = 1 if int(direction) >= 0 else -1
 
-    duration = min(72, max(1, float(duration_h)))
     t0_ms = _parse_time(time)
     marker_interval_sec = float(marker_interval_min) * 60
+    marker_climb_sec = float(marker_interval_climbing_min) * 60
 
     b = model_cfg["bbox"]
     if not (b["latMin"] <= lat <= b["latMax"] and b["lonMin"] <= lon <= b["lonMax"]):
@@ -143,6 +195,8 @@ def compute_trajectories(
 
     t_end = t0_ms + direction_i * duration * 3600e3
     max_h = max(heights)
+    if profile is not None:
+        max_h = max(max_h, max(h for _, h in profile))
 
     with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
         wf.init(lat, lon, max_h, t0_ms, t_end, methods, met_extras=met_extras)
@@ -151,7 +205,13 @@ def compute_trajectories(
             for method in methods:
                 style = next(m for m in config.METHODS if m["key"] == method)
                 color = style["color"] if compare_mode else height_colors[height_m]
-                target, label = make_target(wf, lat, lon, height_m, height_ref, method, t0_ms)
+                if profile is not None:
+                    target = {"type": "height", "mode": "agl", "value": height_m}
+                    label = f"Profil {_fmt_height(height_m)} AGL"
+                else:
+                    target, label = make_target(
+                        wf, lat, lon, height_m, height_ref, method, t0_ms
+                    )
                 jobs.append((height_m, method, color, target, label))
 
         def _run_one(job: tuple[float, str, str, dict, str]) -> dict:
@@ -166,6 +226,10 @@ def compute_trajectories(
                 direction=direction_i,
                 grid_meters=model_cfg["gridMeters"],
                 marker_interval_sec=marker_interval_sec,
+                height_profile=profile,
+                marker_interval_climb_sec=marker_climb_sec if profile else None,
+                clearance_m=float(clearance_m) if profile else 0.0,
+                elevation_at=wf.elevation_at if profile else None,
             )
             return {
                 "r": r,

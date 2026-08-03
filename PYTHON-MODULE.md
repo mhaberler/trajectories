@@ -26,6 +26,7 @@ python/
     basic_trajectory.py   # library smoke
     api_trajectory.py     # HTTP client (default https://trajectory.mah.priv.at)
     api_point_wind.py     # GET /v1/wind client
+    api_flight_profile.py # GET /v1/trajectory with AGL profile
   trajectories/
     config.py             # models, methods, API/OM backend resolution
     windfield.py          # HTTP or local OM client + 4-D interpolation
@@ -131,6 +132,25 @@ Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection 
 | `height_agl` / `height_amsl` | comma-separated metres |
 | `vertical_motion` | comma-list of methods |
 | `direction`, `marker_interval`, `met_extras`, `backend` | as CLI |
+| `profile_time` + `profile_height` | kinematic AGL flight profile (CSV seconds / m AGL); exclusive with `height_*` |
+| `marker_interval_climbing` | denser markers on climb/descent (minutes, default 10) |
+| `clearance_m` | stop when AGL &lt; clearance (default 0) |
+
+Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Browser UI is not wired yet.
+
+```bash
+curl -sG 'https://trajectory.mah.priv.at/v1/trajectory' \
+  --data-urlencode 'latitude=48.4375' \
+  --data-urlencode 'longitude=15.6181' \
+  --data-urlencode 'models=icon_eu' \
+  --data-urlencode 'time=2026-08-02T11:00:00Z' \
+  --data-urlencode 'forecast_hours=2' \
+  --data-urlencode 'profile_time=0,1200,3600,5400,7200' \
+  --data-urlencode 'profile_height=150,150,1800,1800,400' \
+  --data-urlencode 'marker_interval=60' \
+  --data-urlencode 'marker_interval_climbing=10'
+# or: python python/examples/api_flight_profile.py
+```
 
 ```bash
 uvicorn trajectories.api:app --host 127.0.0.1 --port 8000

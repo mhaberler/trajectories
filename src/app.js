@@ -327,16 +327,41 @@ function fmtVertRate(rMs) {
   return `${sign}${rMs.toFixed(1)} m/s`;
 }
 
-/** Live Δh/Δt of legs touching waypoint i (previous ← · → next). */
+/** Live Δh/Δt of legs touching waypoint i (previous ← · → next), plus current time. */
 function updateSegmentRateHint(i) {
-  const hint = el("fp-hint");
-  const parts = [];
-  if (i > 0) parts.push(`← ${fmtVertRate(segmentMeanRate(i - 1, i))}`);
-  if (i < profileTargets.length - 1) parts.push(`${fmtVertRate(segmentMeanRate(i, i + 1))} →`);
-  hint.textContent = parts.length
-    ? `Vertikalrate ${parts.join(" · ")}`
-    : "";
-  hint.classList.remove("error");
+  const box = el("fp-side-rates");
+  if (!box) return;
+  const w = profileTargets[i];
+  if (!w) {
+    box.textContent = "";
+    return;
+  }
+  const parts = [`t = ${Math.round(w.tSec / 60)} min`];
+  const rates = [];
+  if (i > 0) rates.push(`← ${fmtVertRate(segmentMeanRate(i - 1, i))}`);
+  if (i < profileTargets.length - 1) rates.push(`${fmtVertRate(segmentMeanRate(i, i + 1))} →`);
+  if (rates.length) parts.push(`Vertikalrate ${rates.join(" · ")}`);
+  box.textContent = parts.join(" · ");
+}
+
+function clearSegmentRateHint() {
+  const box = el("fp-side-rates");
+  if (box) box.textContent = "";
+}
+
+/**
+ * Clamp waypoint time: start fixed at 0; others strictly between neighbors (±1 s gap).
+ * End has no artificial upper bound.
+ */
+function clampProfileTime(i, tSec) {
+  if (i === 0) return 0;
+  let t = Math.max(0, Math.round(tSec));
+  const prev = profileTargets[i - 1]?.tSec ?? 0;
+  const next = i < profileTargets.length - 1 ? profileTargets[i + 1].tSec : null;
+  const lo = prev + 1;
+  const hi = next != null ? next - 1 : Infinity;
+  if (hi < lo) return prev + 1; // degenerate gap — stay just after prev
+  return Math.min(hi, Math.max(lo, t));
 }
 
 /** @type {{ tMax: number, hMin: number, hMax: number, pad: object, iw: number, ih: number, W: number, H: number, terrain: { tSec: number, z: number }[], useAmsl: boolean } | null} */
@@ -415,7 +440,7 @@ function setFpSideHeight(px, { save = false } = {}) {
   return h;
 }
 
-function sideViewClientToTSec(clientX) {
+function sideViewClientToTSec(clientX, { allowBeyond = false } = {}) {
   const svg = el("fp-side")?.querySelector("svg");
   const g = sideViewGeom;
   if (!svg || !g || g.iw < 1) return null;
@@ -423,6 +448,7 @@ function sideViewClientToTSec(clientX) {
   if (rect.width < 1) return null;
   const xVb = ((clientX - rect.left) / rect.width) * g.W;
   const t = ((xVb - g.pad.l) / g.iw) * g.tMax;
+  if (allowBeyond) return Math.max(0, t);
   return Math.max(0, Math.min(g.tMax, t));
 }
 
@@ -613,23 +639,29 @@ function wireProfileSideView() {
 
   host.addEventListener("pointermove", (e) => {
     if (!sideDrag || e.pointerId !== sideDrag.pointerId) return;
-    const h = sideViewClientToAgl(e.clientY);
+    const i = sideDrag.i;
+    const rawT = sideViewClientToTSec(e.clientX, {
+      allowBeyond: i === profileTargets.length - 1,
+    });
+    if (rawT == null) return;
+    const tSec = clampProfileTime(i, rawT);
+    const h = sideViewClientToAgl(e.clientY, tSec);
     if (h == null) return;
-    if (h === profileTargets[sideDrag.i].targetAgl && !sideDrag.moved) return;
+    const cur = profileTargets[i];
+    if (h === cur.targetAgl && tSec === cur.tSec && !sideDrag.moved) return;
     sideDrag.moved = true;
-    profileTargets[sideDrag.i] = {
-      ...profileTargets[sideDrag.i],
-      targetAgl: h,
-    };
+    profileTargets[i] = { ...cur, tSec, targetAgl: h };
     renderProfileSideView();
-    updateSegmentRateHint(sideDrag.i);
-    const inp = el("fp-tbody").querySelector(
-      `tr:nth-child(${sideDrag.i + 1}) input[data-field="h"]`,
-    );
-    if (inp) inp.value = String(Math.round(heightToDisplay(h)));
-    if (profileModalIndex === sideDrag.i) {
+    updateSegmentRateHint(i);
+    const row = el("fp-tbody").querySelector(`tr:nth-child(${i + 1})`);
+    const inpT = row?.querySelector('input[data-field="t"]');
+    const inpH = row?.querySelector('input[data-field="h"]');
+    if (inpT) inpT.value = String(Math.round(tSec / 60));
+    if (inpH) inpH.value = String(Math.round(heightToDisplay(h)));
+    if (profileModalIndex === i) {
       el("fp-modal-h").value = String(Math.round(heightToDisplay(h)));
       el("fp-modal-hlabel").textContent = fmtHeight(h);
+      el("fp-modal-title").textContent = `Marke · ${Math.round(tSec / 60)} min`;
       updateModalNote();
     }
   });
@@ -641,10 +673,12 @@ function wireProfileSideView() {
     host.classList.remove("dragging");
     try { host.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     if (!moved) {
+      clearSegmentRateHint();
       updateProfileHint();
       openProfileModal(i);
       return;
     }
+    clearSegmentRateHint();
     persist();
     refreshProfileUI({ scheduleApi: true });
   };

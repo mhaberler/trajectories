@@ -295,6 +295,12 @@ body.fp-side-resizing #fp-side-resize::after {
 }
 #fp-side-resize:focus-visible { outline: none; }
 body.fp-side-resizing { cursor: ns-resize; user-select: none; }
+#fp-side-rates {
+  min-height: 1.2em;
+  margin: 2px 0 0;
+  color: #1c5cab;
+}
+#fp-side-rates:empty { display: none; }
 #fp-side-legend { display: flex; gap: 12px; margin: 4px 0; flex-wrap: wrap; }
 .fp-leg-target::before,
 .fp-leg-expand::before,

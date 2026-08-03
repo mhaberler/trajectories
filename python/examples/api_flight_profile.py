@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """
-Call the Trajectories HTTP API and write GeoJSON.
+Call GET /v1/trajectory with a kinematic AGL flight profile (Gneixendorf sketch).
 
 Defaults to https://trajectory.mah.priv.at (override with TRAJECTORIES_API_URL).
 
-Setup (from repo root):
   source python/.venv/bin/activate
-  pip install -e "python/[api]"
-  python python/examples/api_trajectory.py
-
-Local uvicorn instead:
-  uvicorn trajectories.api:app --host 127.0.0.1 --port 8010
-  TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
-
-Swagger: https://trajectory.mah.priv.at/docs
+  python python/examples/api_flight_profile.py
 """
 
 from __future__ import annotations
@@ -27,19 +19,23 @@ from urllib.parse import urlencode
 import httpx
 
 BASE = os.environ.get("TRAJECTORIES_API_URL", "https://trajectory.mah.priv.at").rstrip("/")
-OUT = Path(__file__).resolve().parent / "out_api_example.geojson"
+OUT = Path(__file__).resolve().parent / "out_api_flight_profile.geojson"
 
+# Sketch: low level → climb → cruise → descend (edit freely).
 PARAMS = {
-    "latitude": 47.23,
-    "longitude": 15.82,
-    "models": "icon_d2",
+    "latitude": 48.4375,
+    "longitude": 15.6181,
+    "models": "icon_eu",
     "time": "2026-08-02T11:00:00Z",
     "timeformat": "iso8601",
     "forecast_hours": 2,
-    "height_agl": "500,1500,3000",
+    "profile_time": "0,1200,3600,5400,7200",
+    "profile_height": "150,150,1800,1800,400",
     "vertical_motion": "height",
     "direction": "forward",
     "marker_interval": 60,
+    "marker_interval_climbing": 10,
+    "clearance_m": 0,
     "met_extras": "false",
     "backend": "http",
     "format": "geojson",
@@ -74,6 +70,12 @@ def main() -> int:
     lines = [f for f in feats if f.get("geometry", {}).get("type") == "LineString"]
     print(f"# wrote {OUT}", file=sys.stderr)
     print(f"# {len(lines)} track(s), {len(feats)} feature(s)", file=sys.stderr)
+    for line in lines:
+        props = line.get("properties") or {}
+        print(
+            f"# status={props.get('status')} stop_reason={props.get('stop_reason')}",
+            file=sys.stderr,
+        )
     return 0
 
 

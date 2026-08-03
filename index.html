@@ -30,8 +30,9 @@
       <span id="startpos" class="mono">Karte anklicken</span>
     </div>
     <div class="geocode-wrap">
-      <input type="search" id="geocode" placeholder="Ort suchen …" autocomplete="off" />
-      <ul id="geocode-results" hidden></ul>
+      <input type="search" id="geocode" aria-label="Ort suchen"
+             placeholder="Ort suchen …" autocomplete="off" />
+      <ul id="geocode-results" role="listbox" aria-label="Suchergebnisse" hidden></ul>
     </div>
     <div class="row">
       <span class="label" id="timeheadlabel">Startzeit <span class="hint">(UTC)</span></span>

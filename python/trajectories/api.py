@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
+import math
 
 from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
@@ -12,7 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
-from .compute import compute_point_wind, compute_trajectories
+from .compute import compute_point_wind, compute_trajectories, parse_flight_profile
 from .response_cache import cache_key, get_response_cache, wind_cache_key
 
 MODELS = Literal["icon_d2", "icon_eu"]
@@ -30,7 +31,8 @@ app = FastAPI(
         "Query parameters follow Open-Meteo naming; successful trajectory responses "
         "are GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
         "properties.terrain_m (model orography m AMSL, parallel to coordinates). "
-        "Point wind samples are available at GET /v1/wind (flat JSON)."
+        "Point wind samples are available at GET /v1/wind (flat JSON). "
+        "Optional kinematic AGL flight profiles via profile_time + profile_height."
     ),
     version="0.1.0",
     openapi_tags=[
@@ -96,9 +98,12 @@ def _parse_csv_floats(raw: str | None, *, name: str) -> list[float] | None:
         if not part:
             continue
         try:
-            out.append(float(part))
+            val = float(part)
         except ValueError as exc:
             raise ValueError(f"Invalid {name} value: {part!r}") from exc
+        if not math.isfinite(val):
+            raise ValueError(f"Invalid {name} value: {part!r}")
+        out.append(val)
     return out or None
 
 
@@ -146,9 +151,12 @@ def _resolve_time(time: str | None, timeformat: str) -> str | float:
     raw = str(time).strip()
     if timeformat == "unixtime":
         try:
-            return float(raw)
+            val = float(raw)
         except ValueError as exc:
             raise ValueError(f"Invalid unix time: {raw!r}") from exc
+        if not math.isfinite(val):
+            raise ValueError(f"Invalid unix time: {raw!r}")
+        return val
     # iso8601 — normalize; compute_trajectories accepts ISO strings
     try:
         s = raw.replace("Z", "+00:00")
@@ -226,7 +234,30 @@ def trajectory(
     marker_interval: float = Query(
         60,
         ge=1,
-        description="Marker interval in minutes",
+        description="Marker interval in minutes (level-flight segments when using a profile)",
+    ),
+    marker_interval_climbing: float = Query(
+        10,
+        ge=1,
+        description="Marker interval in minutes on climb/descent profile segments (default 10)",
+    ),
+    profile_time: str | None = Query(
+        None,
+        description=(
+            "Flight profile times in seconds from `time` (CSV). "
+            "Requires profile_height; exclusive with height_agl/height_amsl"
+        ),
+        examples=["0,1200,3600,5400,7200"],
+    ),
+    profile_height: str | None = Query(
+        None,
+        description="Flight profile heights in metres AGL (CSV, same length as profile_time)",
+        examples=["150,150,1800,1800,400"],
+    ),
+    clearance_m: float = Query(
+        0,
+        ge=0,
+        description="Stop when AGL falls below this clearance (m); default 0",
     ),
     met_extras: bool = Query(
         False,
@@ -247,15 +278,40 @@ def trajectory(
     if height_agl and height_amsl:
         return _om_error(400, "Specify only one of height_agl or height_amsl")
 
+    has_profile_t = profile_time is not None and str(profile_time).strip() != ""
+    has_profile_h = profile_height is not None and str(profile_height).strip() != ""
+    if has_profile_t != has_profile_h:
+        return _om_error(400, "Specify both profile_time and profile_height")
+    if has_profile_t and (height_agl or height_amsl):
+        return _om_error(
+            400,
+            "flight profile is mutually exclusive with height_agl and height_amsl",
+        )
+
     try:
         t0 = _resolve_time(time, timeformat)
-        if height_amsl:
-            heights = _parse_csv_floats(height_amsl, name="height_amsl")
-            height_ref = "amsl"
-        else:
-            heights = _parse_csv_floats(height_agl, name="height_agl")
+        profile = None
+        if has_profile_t:
+            times = _parse_csv_floats(profile_time, name="profile_time")
+            heights_p = _parse_csv_floats(profile_height, name="profile_height")
+            if times is None or heights_p is None:
+                raise ValueError("profile_time and profile_height are required")
+            profile = parse_flight_profile(times, heights_p)
+            heights = None
             height_ref = "agl"
-        methods = _parse_csv_methods(vertical_motion)
+            methods = _parse_csv_methods(vertical_motion)
+            if methods is None:
+                methods = ["height"]
+            if methods != ["height"]:
+                raise ValueError("flight profile only supports vertical_motion=height")
+        else:
+            if height_amsl:
+                heights = _parse_csv_floats(height_amsl, name="height_amsl")
+                height_ref = "amsl"
+            else:
+                heights = _parse_csv_floats(height_agl, name="height_agl")
+                height_ref = "agl"
+            methods = _parse_csv_methods(vertical_motion)
     except ValueError as exc:
         return _om_error(400, str(exc))
 
@@ -272,6 +328,9 @@ def trajectory(
         marker=marker_interval,
         met_extras=met_extras,
         backend=backend,
+        profile=profile,
+        marker_climb=marker_interval_climbing if profile else None,
+        clearance_m=clearance_m if profile else 0.0,
     )
     cache = get_response_cache()
     cached = cache.get(key)
@@ -292,6 +351,9 @@ def trajectory(
             marker_interval_min=marker_interval,
             met_extras=met_extras,
             backend=backend,
+            height_profile=profile,
+            marker_interval_climbing_min=marker_interval_climbing,
+            clearance_m=clearance_m,
         )
     except ValueError as exc:
         return _om_error(400, str(exc))

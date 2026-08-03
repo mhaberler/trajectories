@@ -810,9 +810,14 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
     if (points.length < 2) continue;
     const heightM = +p.start_height_m;
     const method = p.vertical_motion || "height";
-    const label = p.label || `${fmtHeight(heightM)} ${mode.toUpperCase()}`;
+    const rawLabel = typeof p.label === "string" ? p.label : "";
+    const label = rawLabel.slice(0, 120).replace(/[<>&"]/g, "")
+      || `${fmtHeight(heightM)} ${mode.toUpperCase()}`;
     const style = METHODS.find((m) => m.key === method);
-    const color = p.stroke || p.color || style?.color || colorFor(heightM);
+    const cssColor = /^#[0-9a-f]{3,8}$/i.test(p.stroke || p.color || "")
+      ? (p.stroke || p.color)
+      : null;
+    const color = cssColor || style?.color || colorFor(heightM);
     const dash = style?.dash || null;
     const lineMarkers = markers
       .filter((m) => (m.properties?.label || "") === label)
@@ -904,8 +909,14 @@ async function runTrajectoriesViaApi({
   try {
     const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
     if (DEBUG) console.debug("[traj] API", url);
-    const resp = await fetch(url);
-    const data = await resp.json();
+    const resp = await fetch(url, { signal: AbortSignal.timeout(120000) });
+    const body = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      throw new Error(`Serverfehler ${resp.status}: ${body.slice(0, 180)}`);
+    }
     const ms = performance.now() - t0;
     if (!resp.ok || data?.error) {
       throw new Error(data?.reason || `HTTP ${resp.status}`);
@@ -1250,9 +1261,15 @@ function reportResult(r, heightM, color, label) {
   const note = r.status === "stopped"
     ? `gestoppt ${fmtTime(end.tMs)}: ${r.reason}`
     : `bis ${fmtTime(end.tMs)}`;
-  line.innerHTML =
-    `<span class="chip" style="background:${color}"></span>` +
-    `${label} <span class="note">${note}</span>`;
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  if (/^#[0-9a-f]{3,8}$/i.test(color || "")) chip.style.background = color;
+  line.appendChild(chip);
+  line.appendChild(document.createTextNode(`${label} `));
+  const noteEl = document.createElement("span");
+  noteEl.className = "note";
+  noteEl.textContent = note;
+  line.appendChild(noteEl);
   el("results").appendChild(line);
 }
 

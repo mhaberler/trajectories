@@ -15,10 +15,11 @@ bun run test:live  # Live-Test gegen den Server
 bun run deploy:vps # Build → https://vps.mah.priv.at/trajectories/ (Caddy Basic Auth)
 ```
 
-Die App ist reines ESM ohne Build-Zwang — jeder statische Webserver im
-Projektwurzelverzeichnis funktioniert ebenfalls. VPS-Deploy und Basic Auth:
-siehe [`deploy/README.md`](deploy/README.md). Die Trajectories-HTTP-API bleibt unter
-`https://trajectory.mah.priv.at`.
+Die 2D-App ist ESM und kann ohne Build aus dem Projektwurzelverzeichnis
+serviert werden; die **3D-Ansicht** braucht Cesium-Assets und damit
+`bun run build` sowie Auslieferung von `dist/` (lokal: `bun run preview`,
+VPS: `bun run deploy:vps`). Basic Auth: siehe [`deploy/README.md`](deploy/README.md).
+Die Trajectories-HTTP-API bleibt unter `https://trajectory.mah.priv.at`.
 
 ## Bedienung
 

@@ -107,7 +107,7 @@ class WindField:
                     vals = (d.get("hourly") or {}).get(var_name)
                     if isinstance(vals, list) and any(v is not None and _isfinite(v) for v in vals):
                         return prefix
-                    return None
+                    continue
                 except Exception:
                     continue
             return None
@@ -290,14 +290,12 @@ class WindField:
             else 1
         )
         # HTTP forecast API returns horizontal wind in km/h; local OM is m/s.
+        # Missing hourly_units already default to "km/h" via .get(..., "km/h").
         u_unit = (
             1.0
             if self.backend_kind == "om"
             else unit_factor(self.units.get(f"wind_u_component_level{self.levels[0]}", "km/h"))
         )
-        if self.backend_kind != "om" and u_unit == 1.0:
-            # Default HTTP path when hourly_units omitted
-            u_unit = KMH_TO_MS
         point: dict[str, Any] = {
             "elevation": r["__elevation"],
             "hAgl": [float("nan")] * L,

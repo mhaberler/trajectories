@@ -9,6 +9,7 @@ import {
   setUnits, unitState, fmtHeight, fmtWind, heightUnit,
   heightToDisplay, heightFromDisplay, heightSliderCfg,
 } from "./units.js";
+import { initGeocode } from "./geocode.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -594,6 +595,8 @@ function setStart(lat, lon) {
   persist();
   fetchStartElevation();
 }
+
+initGeocode({ map, setStart, debounce, el });
 
 // Modell-Geländehöhe am Startort — bewusst aus der Forecast-Antwort des
 // gewählten Modells (Modellorographie), damit die Anzeige zu dem passt,

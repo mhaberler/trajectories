@@ -10,6 +10,7 @@ import {
   heightToDisplay, heightFromDisplay, heightSliderCfg,
 } from "./units.js";
 import { initGeocode } from "./geocode.js";
+import { expandProfile, targetStepPolyline } from "./profileExpand.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -54,8 +55,12 @@ function persist() {
     metExtras: el("metextras").checked,
     useApi: el("useapi").checked,
     flightProfile: el("flightprofile").checked,
-    profileWaypoints: profileWaypoints.map((w) => ({ tSec: w.tSec, hAgl: w.hAgl })),
+    profileTargets: profileTargets.map((w) => ({
+      tSec: w.tSec, targetAgl: w.targetAgl, rate: w.rate,
+    })),
     profilePreset: el("fp-preset").value,
+    ascentRate: clampRate(+el("ascentrate").value),
+    descentRate: clampRate(+el("descentrate").value),
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
@@ -105,12 +110,15 @@ const state = {
   // Live-Modus: die „gepinnten" (inaktiven) Trajektorien bleiben stehen,
   // während nur die aktive Linie live neu gezeichnet wird. pinLayers wird
   // zuerst zur Karte gefügt, damit die aktive Linie (layers) darüber liegt.
+  dimLayers: L.layerGroup().addTo(map), // Geschwister-Tracks im Profil-Edit (stark gedimmt)
   pinLayers: L.layerGroup().addTo(map),
   layers: L.layerGroup().addTo(map),
   pinRuns: new Map(), // Höhe(m) -> berechneter Run, damit Pins beim Scrubben nicht neu rechnen
   pinKey: "",         // Satz der aktuell gezeichneten Pin-Höhen (für „nur bei Änderung neu zeichnen")
   startMarker: null,
   running: false,
+  profileEdit: null, // { active, candidateKey, siblingRuns, t0Ms }
+  profileRedrawGen: 0,
 };
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
@@ -124,50 +132,66 @@ const bar = el("heightbar");
 
 // --- Flugprofil (AGL über Zeit, API-only) -----------------------------------
 const FP_MAX_ROWS = 12;
+const FP_DIM_OPACITY = 0.18;
 const FP_PRESETS = {
   climbcruise: [
-    { tSec: 0, hAgl: 150 },
-    { tSec: 1200, hAgl: 150 },
-    { tSec: 3600, hAgl: 1800 },
-    { tSec: 5400, hAgl: 1800 },
-    { tSec: 7200, hAgl: 400 },
+    { tSec: 0, targetAgl: 150 },
+    { tSec: 1200, targetAgl: 150 },
+    { tSec: 3600, targetAgl: 1800 },
+    { tSec: 5400, targetAgl: 1800 },
+    { tSec: 7200, targetAgl: 400 },
   ],
-  constant: null, // filled from duration + active/default height
   empty: [
-    { tSec: 0, hAgl: 500 },
-    { tSec: 3600, hAgl: 500 },
+    { tSec: 0, targetAgl: 500 },
+    { tSec: 3600, targetAgl: 500 },
   ],
 };
 
-function defaultConstantProfile() {
+function clampRate(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 3;
+  return Math.min(7, Math.max(1, Math.round(n * 2) / 2));
+}
+
+function defaultConstantTargets() {
   const h = activeHeight != null ? activeHeight : 500;
   const hours = Math.min(72, Math.max(1, +el("duration").value || 12));
   return [
-    { tSec: 0, hAgl: h },
-    { tSec: hours * 3600, hAgl: h },
+    { tSec: 0, targetAgl: h, rate: "jump" },
+    { tSec: hours * 3600, targetAgl: h, rate: "jump" },
   ];
 }
 
-let profileWaypoints = FP_PRESETS.climbcruise.map((w) => ({ ...w }));
+function cloneTargets(list) {
+  return list.map((w) => ({
+    tSec: w.tSec,
+    targetAgl: w.targetAgl ?? w.hAgl,
+    rate: w.rate === undefined ? "jump" : w.rate,
+  }));
+}
 
-function cloneWaypoints(list) {
-  return list.map((w) => ({ tSec: w.tSec, hAgl: w.hAgl }));
+/** @type {{ tSec: number, targetAgl: number, rate: 'jump' | number }[]} */
+let profileTargets = cloneTargets(FP_PRESETS.climbcruise);
+
+function runKey(run) {
+  return `${run.heightM}|${run.method}|${run.label}`;
 }
 
 function applyProfilePreset(key) {
-  if (key === "constant") profileWaypoints = defaultConstantProfile();
-  else if (key === "empty") profileWaypoints = cloneWaypoints(FP_PRESETS.empty);
-  else profileWaypoints = cloneWaypoints(FP_PRESETS.climbcruise);
-  renderProfileTable();
-  updateProfileHint();
+  state.profileEdit = null;
+  if (key === "constant") profileTargets = defaultConstantTargets();
+  else if (key === "empty") profileTargets = cloneTargets(FP_PRESETS.empty);
+  else profileTargets = cloneTargets(FP_PRESETS.climbcruise);
+  refreshProfileUI({ scheduleApi: false });
+  el("fp-candhint").textContent = "";
 }
 
 function renderProfileTable() {
   const tbody = el("fp-tbody");
   tbody.replaceChildren();
   const unit = heightUnit();
-  for (let i = 0; i < profileWaypoints.length; i++) {
-    const w = profileWaypoints[i];
+  for (let i = 0; i < profileTargets.length; i++) {
+    const w = profileTargets[i];
     const tr = document.createElement("tr");
     const tdT = document.createElement("td");
     const inpT = document.createElement("input");
@@ -188,7 +212,7 @@ function renderProfileTable() {
     inpH.type = "number";
     inpH.min = "0";
     inpH.step = unit === "ft" ? "50" : "10";
-    inpH.value = String(Math.round(heightToDisplay(w.hAgl)));
+    inpH.value = String(Math.round(heightToDisplay(w.targetAgl)));
     inpH.dataset.i = String(i);
     inpH.dataset.field = "h";
     inpH.setAttribute("aria-label", `Höhe Punkt ${i + 1} AGL`);
@@ -202,32 +226,35 @@ function renderProfileTable() {
     tr.appendChild(tdH);
     tbody.appendChild(tr);
   }
-  el("fp-add").disabled = profileWaypoints.length >= FP_MAX_ROWS;
-  el("fp-rm").disabled = profileWaypoints.length <= 2;
+  el("fp-add").disabled = profileTargets.length >= FP_MAX_ROWS;
+  el("fp-rm").disabled = profileTargets.length <= 2;
 }
 
 function readProfileTable() {
   const rows = [...el("fp-tbody").querySelectorAll("tr")];
   const next = [];
-  for (const tr of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const tr = rows[i];
     const tInp = tr.querySelector('input[data-field="t"]');
     const hInp = tr.querySelector('input[data-field="h"]');
     const min = Number(tInp?.value);
     const hDisp = Number(hInp?.value);
     if (!Number.isFinite(min) || !Number.isFinite(hDisp)) continue;
+    const prevRate = profileTargets[i]?.rate ?? "jump";
     next.push({
       tSec: Math.max(0, Math.round(min * 60)),
-      hAgl: Math.max(0, Math.round(heightFromDisplay(hDisp))),
+      targetAgl: Math.max(0, Math.round(heightFromDisplay(hDisp))),
+      rate: prevRate,
     });
   }
-  if (next.length >= 2) profileWaypoints = next;
+  if (next.length >= 2) profileTargets = next;
 }
 
-function validateProfileWaypoints(list) {
+function validateProfileTargets(list) {
   if (!list || list.length < 2) return "Mindestens zwei Wegpunkte nötig.";
   for (let i = 0; i < list.length; i++) {
     const w = list[i];
-    if (!Number.isFinite(w.tSec) || !Number.isFinite(w.hAgl) || w.hAgl < 0) {
+    if (!Number.isFinite(w.tSec) || !Number.isFinite(w.targetAgl) || w.targetAgl < 0) {
       return `Ungültiger Wegpunkt ${i + 1}.`;
     }
     if (i > 0 && w.tSec <= list[i - 1].tSec) {
@@ -239,16 +266,73 @@ function validateProfileWaypoints(list) {
 
 function updateProfileHint() {
   const hint = el("fp-hint");
-  const err = validateProfileWaypoints(profileWaypoints);
+  const err = validateProfileTargets(profileTargets);
   if (err) {
     hint.textContent = err;
     hint.classList.add("error");
     return;
   }
-  const lastH = profileWaypoints[profileWaypoints.length - 1].tSec / 3600;
+  let expanded;
+  try {
+    expanded = expandProfile(profileTargets);
+  } catch (e) {
+    hint.textContent = e.message;
+    hint.classList.add("error");
+    return;
+  }
+  const lastH = profileTargets[profileTargets.length - 1].tSec / 3600;
   hint.textContent =
-    `${profileWaypoints.length} Punkte · bis ${lastH.toFixed(lastH < 10 ? 1 : 0)} h · AGL`;
+    `${profileTargets.length} Ziele · ${expanded.length} API-Punkte · bis ${lastH.toFixed(lastH < 10 ? 1 : 0)} h`;
   hint.classList.remove("error");
+}
+
+function renderProfileSideView() {
+  const host = el("fp-side");
+  if (!host || el("flightprofile-panel").hidden) return;
+  const err = validateProfileTargets(profileTargets);
+  if (err) {
+    host.replaceChildren();
+    return;
+  }
+  let expanded;
+  try {
+    expanded = expandProfile(profileTargets);
+  } catch {
+    host.replaceChildren();
+    return;
+  }
+  const steps = targetStepPolyline(profileTargets);
+  const tMax = Math.max(...profileTargets.map((w) => w.tSec), 1);
+  const hMax = Math.max(barMax, ...profileTargets.map((w) => w.targetAgl), 100);
+  const W = 320;
+  const H = 110;
+  const pad = { l: 28, r: 8, t: 8, b: 18 };
+  const iw = W - pad.l - pad.r;
+  const ih = H - pad.t - pad.b;
+  const x = (t) => pad.l + (t / tMax) * iw;
+  const y = (h) => pad.t + ih - (h / hMax) * ih;
+  const poly = (pts, stroke, width) => {
+    if (pts.length < 2) return "";
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.hAgl).toFixed(1)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}"/>`;
+  };
+  host.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + ih}" stroke="#c9c8c2"/>` +
+    `<line x1="${pad.l}" y1="${pad.t + ih}" x2="${pad.l + iw}" y2="${pad.t + ih}" stroke="#c9c8c2"/>` +
+    poly(steps, "#9c9b95", 1.5) +
+    poly(expanded, "#1c5cab", 2) +
+    profileTargets.map((w) =>
+      `<circle cx="${x(w.tSec).toFixed(1)}" cy="${y(w.targetAgl).toFixed(1)}" r="3" fill="#1c5cab"/>`
+    ).join("") +
+    `</svg>`;
+}
+
+function refreshProfileUI({ scheduleApi = true } = {}) {
+  renderProfileTable();
+  updateProfileHint();
+  renderProfileSideView();
+  if (scheduleApi && el("flightprofile").checked) scheduleProfileRedraw();
 }
 
 function applyProfileUI() {
@@ -265,10 +349,248 @@ function applyProfileUI() {
     for (const c of el("methodlist").querySelectorAll("input")) {
       c.checked = c.value === "height";
     }
-    renderProfileTable();
-    updateProfileHint();
+    refreshProfileUI({ scheduleApi: false });
+  } else {
+    state.profileEdit = null;
+    el("fp-candhint").textContent = "";
+    closeProfileModal();
+    state.dimLayers.clearLayers();
+    restoreStartMarkerVisibility();
   }
   applyModeUI();
+}
+
+function defaultRateForDelta(dh) {
+  return dh >= 0 ? clampRate(+el("ascentrate").value) : clampRate(+el("descentrate").value);
+}
+
+function enterProfileFromCandidate(run) {
+  if (!state.lastRuns?.runs?.length) return;
+  if (state.lastRuns.mode !== "agl") {
+    return setStatus("Flugprofil: nur AGL-Läufe wählbar.", true);
+  }
+  if (run.method !== "height") {
+    return setStatus("Flugprofil: nur Methode „Höhe AGL“.", true);
+  }
+  if (!el("useapi").checked) el("useapi").checked = true;
+  el("flightprofile").checked = true;
+
+  const pts = run.r.points;
+  const t0 = pts[0].tMs;
+  const end = pts.at(-1).tMs;
+  const times = new Set([0, Math.max(1, Math.round((end - t0) / 1000))]);
+  for (const m of run.r.markers) {
+    times.add(Math.max(0, Math.round((m.tMs - t0) / 1000)));
+  }
+  const sorted = [...times].sort((a, b) => a - b);
+  const uniq = sorted.filter((t, i) => i === 0 || t > sorted[i - 1]);
+  if (uniq.length < 2) uniq.push(uniq[0] + 3600);
+  profileTargets = uniq.map((t) => ({
+    tSec: t,
+    targetAgl: run.heightM,
+    rate: "jump",
+  }));
+
+  const key = runKey(run);
+  state.profileEdit = {
+    active: true,
+    candidateKey: key,
+    siblingRuns: state.lastRuns.runs.filter((r) => runKey(r) !== key),
+    t0Ms: state.lastRuns.t0Ms,
+  };
+  el("fp-preset").value = "empty";
+  applyProfileUI();
+  el("fp-candhint").textContent =
+    `Kandidat: ${run.label} — Marken anklicken zum Ändern`;
+  paintProfileEditMap(run);
+  highlightResultCandidate(key);
+  refreshProfileUI({ scheduleApi: true });
+  setStatus(`Flugprofil: ${run.label}`);
+}
+
+function tryPickCandidate(run) {
+  enterProfileFromCandidate(run);
+}
+
+function highlightResultCandidate(key) {
+  for (const line of el("results").querySelectorAll(".result-line")) {
+    line.classList.toggle("candidate", line.dataset.runKey === key);
+  }
+}
+
+function paintProfileEditMap(candidateRun) {
+  state.layers.clearLayers();
+  state.dimLayers.clearLayers();
+  state.pinLayers.clearLayers();
+  // Pin sits above circleMarkers and hid the t=0 edit target — hide while editing.
+  if (state.startMarker) state.startMarker.setOpacity(0);
+  const siblings = state.profileEdit?.siblingRuns || [];
+  for (const run of siblings) {
+    drawCasing(run.r, state.dimLayers);
+    drawTrajectory(run.r, run.color, run.label, run.dash, state.dimLayers, {
+      opacity: FP_DIM_OPACITY,
+      interactive: false,
+    });
+  }
+  if (candidateRun) {
+    drawCasing(candidateRun.r, state.layers);
+    drawTrajectory(candidateRun.r, candidateRun.color, candidateRun.label, candidateRun.dash, state.layers, {
+      editableMarkers: true,
+      onSelect: () => tryPickCandidate(candidateRun),
+    });
+  }
+}
+
+function restoreStartMarkerVisibility() {
+  if (state.startMarker) state.startMarker.setOpacity(1);
+}
+
+let profileModalIndex = null;
+
+function fillProfileModalMet(m, dir) {
+  const box = el("fp-modal-met");
+  if (!m?.met) {
+    box.hidden = true;
+    box.textContent = "";
+    return;
+  }
+  const lines = [
+    Number.isFinite(m.z) ? `Höhe: ${fmtHeight(m.z)} NN` : null,
+    !m.synthetic && Number.isFinite(m.u) && Number.isFinite(m.v)
+      ? `Wind: ${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`
+      : null,
+    Number.isFinite(m.met.t) ? `T: ${m.met.t.toFixed(1)} °C` : null,
+    Number.isFinite(m.met.td) ? `Td: ${m.met.td.toFixed(1)} °C` : null,
+    Number.isFinite(m.met.rh) ? `RH: ${Math.round(m.met.rh)} %` : null,
+    Number.isFinite(m.met.p) ? `p: ${m.met.p.toFixed(0)} hPa` : null,
+    `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E`,
+  ].filter(Boolean);
+  box.textContent = lines.join("\n");
+  box.hidden = lines.length === 0;
+}
+
+function openProfileModal(index, markerCtx = null) {
+  if (index < 0 || index >= profileTargets.length) return;
+  profileModalIndex = index;
+  const w = profileTargets[index];
+  const cfg = heightSliderCfg();
+  const slider = el("fp-modal-h");
+  slider.min = String(cfg.min);
+  slider.max = String(Math.round(heightToDisplay(barMax)));
+  slider.step = String(cfg.step);
+  slider.value = String(Math.round(heightToDisplay(w.targetAgl)));
+  el("fp-modal-hlabel").textContent = fmtHeight(w.targetAgl);
+  const rate = w.rate;
+  let modeVal = "jump";
+  if (rate !== "jump" && rate != null) {
+    const asc = clampRate(+el("ascentrate").value);
+    const desc = clampRate(+el("descentrate").value);
+    modeVal = (rate === asc || rate === desc) ? "default" : "custom";
+    el("fp-modal-rate").value = String(rate);
+  }
+  for (const r of el("fp-modal").querySelectorAll('input[name="fp-mode"]')) {
+    r.checked = r.value === modeVal;
+  }
+  el("fp-modal-rate-row").hidden = modeVal !== "custom";
+  el("fp-modal-title").textContent = `Marke · ${Math.round(w.tSec / 60)} min`;
+  updateModalNote();
+  const dir = markerCtx
+    ? (Math.atan2(-(markerCtx.u || 0), -(markerCtx.v || 0)) * 180 / Math.PI + 360) % 360
+    : 0;
+  fillProfileModalMet(markerCtx, dir);
+  el("fp-modal").hidden = false;
+}
+
+function closeProfileModal() {
+  el("fp-modal").hidden = true;
+  profileModalIndex = null;
+  el("fp-modal-met").hidden = true;
+  el("fp-modal-met").textContent = "";
+}
+
+function updateModalNote() {
+  if (profileModalIndex == null || profileModalIndex === 0) {
+    el("fp-modal-note").textContent = profileModalIndex === 0
+      ? "Startpunkt: Höhe ohne Rampe davor."
+      : "";
+    return;
+  }
+  const w = profileTargets[profileModalIndex];
+  const prev = profileTargets[profileModalIndex - 1];
+  const h = +heightFromDisplay(+el("fp-modal-h").value);
+  const dh = h - prev.targetAgl;
+  const mode = el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value;
+  if (mode === "jump" || Math.abs(dh) < 1) {
+    el("fp-modal-note").textContent = "Sprung: steile Linie über das ganze Intervall.";
+    return;
+  }
+  const r = mode === "custom"
+    ? clampRate(+el("fp-modal-rate").value)
+    : defaultRateForDelta(dh);
+  const need = Math.abs(dh) / r;
+  const gap = w.tSec - prev.tSec;
+  if (need > gap) {
+    el("fp-modal-note").textContent =
+      `Gap ${(gap).toFixed(0)} s zu kurz für ${r} m/s → Rate wird geclampt.`;
+  } else {
+    el("fp-modal-note").textContent =
+      `Rampe ${(need).toFixed(0)} s · Start bei t=${Math.round((w.tSec - need) / 60)} min`;
+  }
+}
+
+function applyModalToTarget() {
+  if (profileModalIndex == null) return;
+  const h = Math.max(0, Math.round(heightFromDisplay(+el("fp-modal-h").value)));
+  const mode = el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value || "jump";
+  const prevH = profileModalIndex > 0
+    ? profileTargets[profileModalIndex - 1].targetAgl
+    : h;
+  let rate = "jump";
+  if (mode === "default") rate = defaultRateForDelta(h - prevH);
+  else if (mode === "custom") rate = clampRate(+el("fp-modal-rate").value);
+  profileTargets[profileModalIndex] = {
+    ...profileTargets[profileModalIndex],
+    targetAgl: h,
+    rate: profileModalIndex === 0 ? "jump" : rate,
+  };
+  el("fp-modal-hlabel").textContent = fmtHeight(h);
+  updateModalNote();
+  refreshProfileUI({ scheduleApi: true });
+}
+
+const scheduleProfileRedraw = debounce(() => {
+  if (!el("flightprofile").checked || !state.start) return;
+  const err = validateProfileTargets(profileTargets);
+  if (err) return;
+  runProfileRedraw();
+}, 500);
+
+async function runProfileRedraw() {
+  if (!state.start || !state.meta) return;
+  const modelKey = el("model").value;
+  const model = MODELS[modelKey];
+  const { lat, lon } = state.start;
+  const b = model.bbox;
+  if (lat < b.latMin || lat > b.latMax || lon < b.lonMin || lon > b.lonMax) return;
+  let expanded;
+  try {
+    expanded = expandProfile(profileTargets);
+  } catch {
+    return;
+  }
+  const direction = +el("direction").value;
+  const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
+  const t0Ms = state.profileEdit?.t0Ms ?? (+el("timeslider").value * 3600e3);
+  const markerIntervalSec = +el("markerint").value;
+  const gen = ++state.profileRedrawGen;
+  await runTrajectoriesViaApi({
+    modelKey, model, lat, lon, methods: ["height"], compareMode: false,
+    activeHeights: [profileTargets[0].targetAgl],
+    markerIntervalSec, mode: "agl", direction, duration, t0Ms,
+    heightProfile: expanded,
+    profileRedraw: true,
+    profileGen: gen,
+  });
 }
 
 // Oberes Ende der Höhenbalken-Skala, in den Einstellungen wählbar (Default
@@ -571,6 +893,7 @@ el("flightprofile").addEventListener("change", () => {
     el("livemode").checked = false;
     state.live = null;
   }
+  if (!el("flightprofile").checked) state.profileEdit = null;
   applyProfileUI();
   persist();
 });
@@ -580,27 +903,48 @@ el("fp-preset").addEventListener("change", () => {
 });
 el("fp-tbody").addEventListener("change", () => {
   readProfileTable();
-  updateProfileHint();
+  refreshProfileUI({ scheduleApi: true });
   persist();
 });
 el("fp-add").addEventListener("click", () => {
   readProfileTable();
-  if (profileWaypoints.length >= FP_MAX_ROWS) return;
-  const last = profileWaypoints[profileWaypoints.length - 1];
-  profileWaypoints.push({
+  if (profileTargets.length >= FP_MAX_ROWS) return;
+  const last = profileTargets[profileTargets.length - 1];
+  profileTargets.push({
     tSec: last.tSec + 1800,
-    hAgl: last.hAgl,
+    targetAgl: last.targetAgl,
+    rate: "jump",
   });
-  renderProfileTable();
-  updateProfileHint();
+  refreshProfileUI({ scheduleApi: true });
   persist();
 });
 el("fp-rm").addEventListener("click", () => {
   readProfileTable();
-  if (profileWaypoints.length <= 2) return;
-  profileWaypoints.pop();
-  renderProfileTable();
-  updateProfileHint();
+  if (profileTargets.length <= 2) return;
+  profileTargets.pop();
+  refreshProfileUI({ scheduleApi: true });
+  persist();
+});
+
+el("fp-modal-close").addEventListener("click", closeProfileModal);
+el("fp-modal").addEventListener("click", (e) => {
+  if (e.target === el("fp-modal")) closeProfileModal();
+});
+el("fp-modal-h").addEventListener("input", applyModalToTarget);
+el("fp-modal-rate").addEventListener("change", applyModalToTarget);
+for (const r of el("fp-modal").querySelectorAll('input[name="fp-mode"]')) {
+  r.addEventListener("change", () => {
+    el("fp-modal-rate-row").hidden =
+      el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value !== "custom";
+    applyModalToTarget();
+  });
+}
+el("ascentrate").addEventListener("change", () => {
+  el("ascentrate").value = String(clampRate(+el("ascentrate").value));
+  persist();
+});
+el("descentrate").addEventListener("change", () => {
+  el("descentrate").value = String(clampRate(+el("descentrate").value));
   persist();
 });
 
@@ -732,7 +1076,7 @@ el("unitwind").value = unitState.wind;
 function onUnitsChange() {
   setUnits({ height: el("unitheight").value, wind: el("unitwind").value });
   renderBar();
-  if (el("flightprofile").checked) renderProfileTable();
+  if (el("flightprofile").checked) refreshProfileUI({ scheduleApi: false });
   updateHeightContext();
   if (!el("xsec").hidden && state.xsec) renderCrossSection(el("xsec-body"), state.xsec);
   persist();
@@ -777,17 +1121,25 @@ el("metextras").addEventListener("change", () => {
 });
 
 // Flugprofil wiederherstellen (nach useApi/liveMode, vor settingsReady)
-if (Array.isArray(saved.profileWaypoints) && saved.profileWaypoints.length >= 2) {
-  const restored = saved.profileWaypoints
-    .map((w) => ({ tSec: +w.tSec, hAgl: +w.hAgl }))
-    .filter((w) => Number.isFinite(w.tSec) && Number.isFinite(w.hAgl));
-  if (restored.length >= 2 && !validateProfileWaypoints(restored)) {
-    profileWaypoints = restored;
+const savedTargets = Array.isArray(saved.profileTargets) ? saved.profileTargets
+  : Array.isArray(saved.profileWaypoints) ? saved.profileWaypoints : null;
+if (savedTargets?.length >= 2) {
+  const restored = savedTargets
+    .map((w) => ({
+      tSec: +w.tSec,
+      targetAgl: +(w.targetAgl ?? w.hAgl),
+      rate: w.rate === "jump" || w.rate == null ? "jump" : +w.rate,
+    }))
+    .filter((w) => Number.isFinite(w.tSec) && Number.isFinite(w.targetAgl));
+  if (restored.length >= 2 && !validateProfileTargets(restored)) {
+    profileTargets = restored;
   }
 }
 if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
   el("fp-preset").value = saved.profilePreset;
 }
+if (Number.isFinite(saved.ascentRate)) el("ascentrate").value = String(clampRate(saved.ascentRate));
+if (Number.isFinite(saved.descentRate)) el("descentrate").value = String(clampRate(saved.descentRate));
 if (saved.flightProfile) {
   el("flightprofile").checked = true;
   if (!el("useapi").checked) el("useapi").checked = true;
@@ -1092,22 +1444,34 @@ async function runTrajectoriesViaApi({
   modelKey, lat, lon, methods, compareMode,
   activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
   heightProfile = null,
+  profileRedraw = false,
+  profileGen = null,
 }) {
+  const keepSiblings = profileRedraw && state.profileEdit?.active;
   state.running = true;
   updateRunButton();
   state.layers.clearLayers();
   state.pinLayers.clearLayers();
   state.pinRuns.clear();
   state.pinKey = "";
-  el("results").innerHTML = "";
+  if (!keepSiblings) {
+    state.dimLayers.clearLayers();
+    el("results").innerHTML = "";
+    state.profileEdit = el("flightprofile").checked && heightProfile
+      ? state.profileEdit
+      : null;
+    if (!state.profileEdit?.active) restoreStartMarkerVisibility();
+  }
   el("download").disabled = true;
   el("xsecbtn").disabled = true;
   el("view3dbtn").disabled = true;
-  el("xsec").hidden = true;
-  state.lastRuns = null;
-  state.xsec = null;
+  if (!keepSiblings) el("xsec").hidden = true;
+  if (!keepSiblings) {
+    state.lastRuns = null;
+    state.xsec = null;
+  }
   state.live = null;
-  setStatus("API: lade Trajektorien …");
+  setStatus(keepSiblings ? "API: aktualisiere Flugprofil …" : "API: lade Trajektorien …");
 
   const profile = heightProfile && heightProfile.length >= 2 ? heightProfile : null;
   const forecastHours = profile
@@ -1154,35 +1518,93 @@ async function runTrajectoriesViaApi({
     if (!resp.ok || data?.error) {
       throw new Error(data?.reason || `HTTP ${resp.status}`);
     }
+    if (profileGen != null && profileGen !== state.profileRedrawGen) return;
     const runs = runsFromApiGeoJSON(data, {
       mode: profile ? "agl" : mode, modelKey, direction, duration: forecastHours, t0Ms,
     });
     if (!runs.length) throw new Error("API lieferte keine Trajektorien");
 
-    for (const run of runs) drawCasing(run.r, state.layers);
-    for (const run of runs) drawTrajectory(run.r, run.color, run.label, run.dash, state.layers);
-    for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label);
+    if (keepSiblings) {
+      const candidate = runs[0];
+      const siblings = state.profileEdit.siblingRuns;
+      state.profileEdit.candidateKey = runKey(candidate);
+      paintProfileEditMap(candidate);
+      const all = [candidate, ...siblings];
+      state.lastRuns = {
+        runs: all, modelKey, mode: "agl", t0Ms, duration: forecastHours, direction,
+      };
+      el("results").innerHTML = "";
+      for (const run of all) reportResult(run.r, run.heightM, run.color, run.label, run);
+      highlightResultCandidate(runKey(candidate));
+      state.xsec = {
+        runs: all.map((run) => ({
+          ...run,
+          terrain: run.terrain || run.r.points.map(() => null),
+        })),
+        t0Ms,
+        direction,
+        overlay: false,
+      };
+      el("fp-candhint").textContent =
+        `Kandidat: ${candidate.label} — Marken anklicken zum Ändern`;
+    } else if (profile) {
+      const siblings = state.profileEdit?.siblingRuns || [];
+      state.profileEdit = {
+        active: true,
+        candidateKey: runKey(runs[0]),
+        siblingRuns: siblings,
+        t0Ms,
+      };
+      paintProfileEditMap(runs[0]);
+      const all = siblings.length ? [runs[0], ...siblings] : runs;
+      for (const run of all) reportResult(run.r, run.heightM, run.color, run.label, run);
+      highlightResultCandidate(runKey(runs[0]));
+      state.lastRuns = {
+        runs: all, modelKey, mode: "agl", t0Ms, duration: forecastHours, direction,
+      };
+      state.xsec = {
+        runs: all.map((run) => ({
+          ...run,
+          terrain: run.terrain || run.r.points.map(() => null),
+        })),
+        t0Ms,
+        direction,
+        overlay: false,
+      };
+      el("fp-candhint").textContent =
+        `Kandidat: ${runs[0].label} — Marken anklicken zum Ändern`;
+    } else {
+      const pickable = mode === "agl";
+      for (const run of runs) drawCasing(run.r, state.layers);
+      for (const run of runs) {
+        drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
+          onSelect: pickable && run.method === "height"
+            ? () => tryPickCandidate(run)
+            : null,
+        });
+      }
+      for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
+      state.lastRuns = { runs, modelKey, mode, t0Ms, duration: forecastHours, direction };
+      state.xsec = {
+        runs: runs.map((run) => ({
+          ...run,
+          terrain: run.terrain || run.r.points.map(() => null),
+        })),
+        t0Ms,
+        direction,
+        overlay: compareMode,
+      };
+    }
 
-    state.lastRuns = { runs, modelKey, mode: profile ? "agl" : mode, t0Ms, duration: forecastHours, direction };
-    el("download").disabled = false;
-    // Querschnitt: terrain_m from API (model orography along each path).
-    state.xsec = {
-      runs: runs.map((run) => ({
-        ...run,
-        terrain: run.terrain || run.r.points.map(() => null),
-      })),
-      t0Ms,
-      direction,
-      overlay: compareMode,
-    };
-    const g0 = runs[0]?.terrain?.find((g) => Number.isFinite(g));
+    const g0 = (keepSiblings ? runs[0] : runs[0])?.terrain?.find((g) => Number.isFinite(g));
     if (Number.isFinite(g0)) state.startElevation = g0;
-    el("xsecbtn").disabled = runs.length === 0;
-    el("view3dbtn").disabled = runs.length === 0;
-    // Offene 3D-Ansicht mit API-Ergebnis aktualisieren (auch Flugprofil).
-    if (view3dMod && !el("view3d").hidden && runs.length) view3dMod.update(view3dData());
-    setStatus(`API: ${runs.length} Trajektorie(n) · ${fmtMs(ms)}`);
+    el("download").disabled = false;
+    el("xsecbtn").disabled = false;
+    el("view3dbtn").disabled = false;
+    if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
+    setStatus(`API: ${keepSiblings ? "Profil" : `${runs.length} Trajektorie(n)`} · ${fmtMs(ms)}`);
   } catch (err) {
+    if (profileGen != null && profileGen !== state.profileRedrawGen) return;
     const ms = performance.now() - t0;
     setStatus(`API-Fehler: ${err.message} · ${fmtMs(ms)}`, true);
   } finally {
@@ -1205,7 +1627,7 @@ async function runTrajectories() {
   const profileOn = el("flightprofile").checked;
   if (profileOn) {
     readProfileTable();
-    const perr = validateProfileWaypoints(profileWaypoints);
+    const perr = validateProfileTargets(profileTargets);
     if (perr) return setStatus(perr, true);
     if (!el("useapi").checked) {
       return setStatus("Flugprofil braucht „API abrufen“.", true);
@@ -1224,7 +1646,7 @@ async function runTrajectories() {
   // Live-Modus und Methodenvergleich rechnen an der aktiven Höhe; sonst alle
   // Höhen des Balkens.
   const activeHeights = profileOn
-    ? [profileWaypoints[0].hAgl]
+    ? [profileTargets[0].targetAgl]
     : (liveMode || compareMode)
       ? (activeHeight != null ? [activeHeight] : [])
       : allBarHeights;
@@ -1251,10 +1673,19 @@ async function runTrajectories() {
 
   // Optional: Trajectories-HTTP-API statt Browser-Windfeld/Integrator.
   if (el("useapi").checked) {
+    let heightProfile = null;
+    if (profileOn) {
+      try {
+        heightProfile = expandProfile(profileTargets);
+      } catch (e) {
+        return setStatus(e.message, true);
+      }
+    }
+    state.dimLayers.clearLayers();
     return runTrajectoriesViaApi({
       modelKey, model, lat, lon, methods, compareMode,
       activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
-      heightProfile: profileOn ? cloneWaypoints(profileWaypoints) : null,
+      heightProfile,
     });
   }
 
@@ -1389,19 +1820,30 @@ async function runTrajectories() {
     // sonst übermalt die Unterlage einer Linie die Nachbarlinie, wo Pfade
     // (fast) übereinanderliegen, und in Strichlücken erschiene Weiß.
     const pinKey = pinHeights.join(",");
+    const pickable = mode === "agl" && !compareMode;
     if (!scrub || pinKey !== state.pinKey) {
       state.pinLayers.clearLayers();
       for (const run of pinRunList) drawCasing(run.r, state.pinLayers);
-      for (const run of pinRunList) drawTrajectory(run.r, run.color, run.label, run.dash, state.pinLayers);
+      for (const run of pinRunList) {
+        drawTrajectory(run.r, run.color, run.label, run.dash, state.pinLayers, {
+          onSelect: pickable && run.method === "height" ? () => tryPickCandidate(run) : null,
+        });
+      }
       state.pinKey = pinKey;
     }
+    state.dimLayers.clearLayers();
+    restoreStartMarkerVisibility();
     for (const run of activeRuns) drawCasing(run.r, state.layers);
-    for (const run of activeRuns) drawTrajectory(run.r, run.color, run.label, run.dash, state.layers);
+    for (const run of activeRuns) {
+      drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
+        onSelect: pickable && run.method === "height" ? () => tryPickCandidate(run) : null,
+      });
+    }
 
     // Alle sichtbaren Läufe (aktiv + Pins) nach Höhe sortiert — Ergebnisliste,
     // Querschnitt und 3D-Ansicht spiegeln so das gesamte Bild.
     const runs = [...activeRuns, ...pinRunList].sort((a, b) => a.heightM - b.heightM);
-    for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label);
+    for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
     state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
     el("download").disabled = runs.length === 0;
 
@@ -1468,28 +1910,84 @@ function drawCasing(r, layer = state.layers) {
   }).addTo(layer);
 }
 
-function drawTrajectory(r, color, label, dash = null, layer = state.layers) {
-  if (r.points.length < 2) return;
-  const latlngs = r.points.map((p) => [p.lat, p.lon]);
-  L.polyline(latlngs, { color, weight: 3, opacity: 1, dashArray: dash }).addTo(layer)
-    .bindTooltip(label, { sticky: true });
+function nearestTargetIndex(tSec) {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < profileTargets.length; i++) {
+    const d = Math.abs(profileTargets[i].tSec - tSec);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
 
-  for (const m of r.markers) {
-    const dir = (Math.atan2(-m.u, -m.v) * 180 / Math.PI + 360) % 360;
+function drawTrajectory(r, color, label, dash = null, layer = state.layers, opts = {}) {
+  if (r.points.length < 2) return;
+  const opacity = opts.opacity ?? 1;
+  const interactive = opts.interactive !== false && opacity > 0.5;
+  const latlngs = r.points.map((p) => [p.lat, p.lon]);
+  const line = L.polyline(latlngs, {
+    color, weight: 3, opacity, dashArray: dash, interactive,
+  }).addTo(layer).bindTooltip(label, { sticky: true });
+  if (opts.onSelect && interactive) {
+    line.on("click", (e) => {
+      L.DomEvent.stopPropagation(e);
+      opts.onSelect();
+    });
+  }
+
+  const t0 = r.points[0]?.tMs ?? 0;
+  const end = r.points.at(-1);
+  /** @type {{ lat: number, lon: number, tMs: number, u?: number, v?: number, z?: number, met?: object }[]} */
+  const dots = [];
+  if (opts.editableMarkers && r.points[0]) {
+    // Integrator markers usually skip t=0; seed an edit handle at the start.
+    dots.push({
+      lat: r.points[0].lat,
+      lon: r.points[0].lon,
+      tMs: t0,
+      z: r.points[0].z,
+      synthetic: "start",
+    });
+  }
+  for (const m of r.markers) dots.push(m);
+  if (opts.editableMarkers && end) {
+    const lastMark = r.markers.at(-1);
+    if (!lastMark || Math.abs(end.tMs - lastMark.tMs) > 1500) {
+      dots.push({
+        lat: end.lat, lon: end.lon, tMs: end.tMs, z: end.z, synthetic: "end",
+      });
+    }
+  }
+
+  for (const m of dots) {
+    const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
     const zLine = Number.isFinite(m.z) ? `<br>${fmtHeight(m.z)} NN` : "";
+    const windLine = m.synthetic
+      ? (m.synthetic === "start" ? "Start" : "Ziel")
+      : `${fmtWind(Math.hypot(m.u || 0, m.v || 0))} aus ${Math.round(dir)}°`;
+    const tipExtra = opts.editableMarkers && m.met
+      ? "<br><em>Klicken: Höhe ändern + Details</em>"
+      : opts.editableMarkers
+        ? "<br><em>Klicken: Höhe ändern</em>"
+        : (m.met ? "<br><em>klicken für Details</em>" : "");
     const marker = L.circleMarker([m.lat, m.lon], {
-      radius: 4, color, weight: 2, fillColor: "#ffffff", fillOpacity: 1,
+      radius: opts.editableMarkers ? 7 : 4,
+      color,
+      weight: 2,
+      fillColor: "#ffffff",
+      fillOpacity: Math.max(opacity, opts.editableMarkers ? 1 : opacity),
+      opacity: Math.max(opacity, opts.editableMarkers ? 1 : opacity),
+      interactive: interactive || !!opts.editableMarkers,
     }).addTo(layer).bindTooltip(
       `<div class="marker-tip">${fmtTime(m.tMs)}<br>${label}<br>` +
-      `${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°${zLine}` +
-      `${m.met ? "<br><em>klicken für Details</em>" : ""}</div>`,
+      `${windLine}${zLine}${tipExtra}</div>`,
     );
-    if (m.met) {
+    if (m.met && !opts.editableMarkers) {
       const rows = [
         `<strong>${fmtTime(m.tMs)}</strong>`,
         label,
         Number.isFinite(m.z) ? `Höhe: ${fmtHeight(m.z)} NN` : null,
-        `Wind: ${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`,
+        `Wind: ${fmtWind(Math.hypot(m.u || 0, m.v || 0))} aus ${Math.round(dir)}°`,
         Number.isFinite(m.met.t) ? `T: ${m.met.t.toFixed(1)} °C` : null,
         Number.isFinite(m.met.td) ? `Td: ${m.met.td.toFixed(1)} °C` : null,
         Number.isFinite(m.met.rh) ? `RH: ${Math.round(m.met.rh)} %` : null,
@@ -1498,10 +1996,18 @@ function drawTrajectory(r, color, label, dash = null, layer = state.layers) {
       ];
       marker.bindPopup(`<div class="marker-tip">${rows.filter(Boolean).join("<br>")}</div>`);
     }
+    if (opts.editableMarkers) {
+      marker.on("click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        const tSec = Math.max(0, Math.round((m.tMs - t0) / 1000));
+        // Modal overlays the map — show Zusatzparameter inside the dialog.
+        openProfileModal(nearestTargetIndex(tSec), m);
+      });
+    }
   }
 }
 
-function reportResult(r, heightM, color, label) {
+function reportResult(r, heightM, color, label, run = null) {
   const line = document.createElement("div");
   line.className = "result-line";
   const end = r.points.at(-1);
@@ -1517,6 +2023,10 @@ function reportResult(r, heightM, color, label) {
   noteEl.className = "note";
   noteEl.textContent = note;
   line.appendChild(noteEl);
+  if (run) {
+    line.dataset.runKey = runKey(run);
+    line.addEventListener("click", () => tryPickCandidate(run));
+  }
   el("results").appendChild(line);
 }
 

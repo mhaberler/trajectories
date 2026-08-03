@@ -88,6 +88,11 @@
           <option value="empty">Leer</option>
         </select>
       </label>
+      <div id="fp-side" aria-label="Höhenprofil Ziel und Rampe"></div>
+      <div id="fp-side-legend" class="hint">
+        <span class="fp-leg-target">Ziel</span>
+        <span class="fp-leg-expand">Rampe</span>
+      </div>
       <table id="fp-table" aria-label="Flugprofil-Wegpunkte">
         <thead>
           <tr><th>Zeit (min)</th><th>Höhe AGL</th></tr>
@@ -99,6 +104,33 @@
         <button type="button" id="fp-rm" class="secondary">Zeile −</button>
       </div>
       <div id="fp-hint" class="hint mono"></div>
+      <div id="fp-candhint" class="hint mono"></div>
+    </div>
+
+    <div id="fp-modal" class="fp-modal" hidden>
+      <div class="fp-modal-card" role="dialog" aria-labelledby="fp-modal-title">
+        <div class="fp-modal-head">
+          <strong id="fp-modal-title">Markenhöhe</strong>
+          <button type="button" id="fp-modal-close" title="Schließen">×</button>
+        </div>
+        <label class="row">
+          <span class="label">Zielhöhe AGL</span>
+          <span id="fp-modal-hlabel" class="mono">–</span>
+        </label>
+        <input type="range" id="fp-modal-h" min="0" max="6000" step="10" />
+        <fieldset class="fp-modal-mode">
+          <legend>Übergang</legend>
+          <label><input type="radio" name="fp-mode" value="jump" checked /> Sprung</label>
+          <label><input type="radio" name="fp-mode" value="default" /> Standardrate</label>
+          <label><input type="radio" name="fp-mode" value="custom" /> Rate</label>
+        </fieldset>
+        <label class="row" id="fp-modal-rate-row" hidden>
+          <span class="label">Rate (m/s)</span>
+          <input type="number" id="fp-modal-rate" min="1" max="7" step="0.5" value="3" />
+        </label>
+        <p id="fp-modal-note" class="hint mono"></p>
+        <div id="fp-modal-met" class="fp-modal-met mono" hidden></div>
+      </div>
     </div>
 
     <div id="heights-block">
@@ -135,6 +167,14 @@
         <span class="label">Zusatzparameter <span class="hint">(T, Td, RH an den Marken)</span></span>
         <input type="checkbox" id="metextras" />
       </label>
+      <div class="grid2">
+        <label>Steigrate (m/s)
+          <input type="number" id="ascentrate" min="1" max="7" step="0.5" value="3" />
+        </label>
+        <label>Sinkrate (m/s)
+          <input type="number" id="descentrate" min="1" max="7" step="0.5" value="3" />
+        </label>
+      </div>
       <label class="row">
         <span class="label">Lineal-Maximum <span class="hint">(oberes Ende des Höhenbalkens)</span></span>
         <select id="barmax"></select>

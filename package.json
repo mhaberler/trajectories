@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "bun test/integrator.test.mjs",
+    "test": "bun test/integrator.test.mjs && bun test/profileExpand.test.mjs",
     "test:live": "bun test/live-smoke.mjs",
     "deploy": "bash scripts/deploy-hetzner.sh",
     "deploy:vps": "bash scripts/deploy-vps.sh"

@@ -61,6 +61,7 @@ function persist() {
     profilePreset: el("fp-preset").value,
     ascentRate: clampRate(+el("ascentrate").value),
     descentRate: clampRate(+el("descentrate").value),
+    panelWidth: Math.round(el("panel").getBoundingClientRect().width),
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
@@ -286,12 +287,33 @@ function updateProfileHint() {
   hint.classList.remove("error");
 }
 
+/** @type {{ tMax: number, hMax: number, pad: { l: number, r: number, t: number, b: number }, iw: number, ih: number, W: number, H: number } | null} */
+let sideViewGeom = null;
+/** @type {{ i: number, pointerId: number, moved: boolean } | null} */
+let sideDrag = null;
+
+function sideViewClientToAgl(clientY) {
+  const host = el("fp-side");
+  const svg = host?.querySelector("svg");
+  const g = sideViewGeom;
+  if (!svg || !g) return null;
+  const rect = svg.getBoundingClientRect();
+  if (rect.height < 1) return null;
+  const yVb = ((clientY - rect.top) / rect.height) * g.H;
+  const raw = ((g.pad.t + g.ih - yVb) / g.ih) * g.hMax;
+  const cfg = heightSliderCfg();
+  const disp = Math.round(heightToDisplay(raw) / cfg.step) * cfg.step;
+  const m = heightFromDisplay(Math.min(Math.max(disp, 0), heightToDisplay(barMax)));
+  return Math.round(Math.min(barMax, Math.max(0, m)));
+}
+
 function renderProfileSideView() {
   const host = el("fp-side");
   if (!host || el("flightprofile-panel").hidden) return;
   const err = validateProfileTargets(profileTargets);
   if (err) {
     host.replaceChildren();
+    sideViewGeom = null;
     return;
   }
   let expanded;
@@ -299,6 +321,7 @@ function renderProfileSideView() {
     expanded = expandProfile(profileTargets);
   } catch {
     host.replaceChildren();
+    sideViewGeom = null;
     return;
   }
   const steps = targetStepPolyline(profileTargets);
@@ -309,23 +332,81 @@ function renderProfileSideView() {
   const pad = { l: 28, r: 8, t: 8, b: 18 };
   const iw = W - pad.l - pad.r;
   const ih = H - pad.t - pad.b;
+  sideViewGeom = { tMax, hMax, pad, iw, ih, W, H };
   const x = (t) => pad.l + (t / tMax) * iw;
   const y = (h) => pad.t + ih - (h / hMax) * ih;
   const poly = (pts, stroke, width) => {
     if (pts.length < 2) return "";
     const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.hAgl).toFixed(1)}`).join(" ");
-    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}"/>`;
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"/>`;
   };
   host.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
-    `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + ih}" stroke="#c9c8c2"/>` +
-    `<line x1="${pad.l}" y1="${pad.t + ih}" x2="${pad.l + iw}" y2="${pad.t + ih}" stroke="#c9c8c2"/>` +
+    `<line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t + ih}" stroke="#c9c8c2" pointer-events="none"/>` +
+    `<line x1="${pad.l}" y1="${pad.t + ih}" x2="${pad.l + iw}" y2="${pad.t + ih}" stroke="#c9c8c2" pointer-events="none"/>` +
     poly(steps, "#9c9b95", 1.5) +
     poly(expanded, "#1c5cab", 2) +
-    profileTargets.map((w) =>
-      `<circle cx="${x(w.tSec).toFixed(1)}" cy="${y(w.targetAgl).toFixed(1)}" r="3" fill="#1c5cab"/>`
+    profileTargets.map((w, i) =>
+      `<circle class="fp-side-pt" data-i="${i}" cx="${x(w.tSec).toFixed(1)}" ` +
+      `cy="${y(w.targetAgl).toFixed(1)}" r="5" fill="#1c5cab"/>`
     ).join("") +
     `</svg>`;
+}
+
+function wireProfileSideView() {
+  const host = el("fp-side");
+  if (!host || host.dataset.wired) return;
+  host.dataset.wired = "1";
+
+  host.addEventListener("pointerdown", (e) => {
+    const pt = e.target.closest?.(".fp-side-pt");
+    if (!pt || el("flightprofile-panel").hidden) return;
+    const i = +pt.dataset.i;
+    if (!Number.isFinite(i) || i < 0 || i >= profileTargets.length) return;
+    e.preventDefault();
+    host.setPointerCapture(e.pointerId);
+    host.classList.add("dragging");
+    sideDrag = { i, pointerId: e.pointerId, moved: false };
+  });
+
+  host.addEventListener("pointermove", (e) => {
+    if (!sideDrag || e.pointerId !== sideDrag.pointerId) return;
+    const h = sideViewClientToAgl(e.clientY);
+    if (h == null) return;
+    if (h === profileTargets[sideDrag.i].targetAgl && !sideDrag.moved) return;
+    sideDrag.moved = true;
+    profileTargets[sideDrag.i] = {
+      ...profileTargets[sideDrag.i],
+      targetAgl: h,
+    };
+    renderProfileSideView();
+    updateProfileHint();
+    // Keep table height cell in sync without full rebuild focus steal
+    const inp = el("fp-tbody").querySelector(
+      `tr:nth-child(${sideDrag.i + 1}) input[data-field="h"]`,
+    );
+    if (inp) inp.value = String(Math.round(heightToDisplay(h)));
+    if (profileModalIndex === sideDrag.i) {
+      el("fp-modal-h").value = String(Math.round(heightToDisplay(h)));
+      el("fp-modal-hlabel").textContent = fmtHeight(h);
+    }
+  });
+
+  const endDrag = (e) => {
+    if (!sideDrag || e.pointerId !== sideDrag.pointerId) return;
+    const { i, moved } = sideDrag;
+    sideDrag = null;
+    host.classList.remove("dragging");
+    try { host.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    if (!moved) {
+      openProfileModal(i);
+      return;
+    }
+    persist();
+    refreshProfileUI({ scheduleApi: true });
+  };
+  host.addEventListener("pointerup", endDrag);
+  host.addEventListener("pointercancel", endDrag);
 }
 
 function refreshProfileUI({ scheduleApi = true } = {}) {
@@ -925,6 +1006,8 @@ el("fp-rm").addEventListener("click", () => {
   refreshProfileUI({ scheduleApi: true });
   persist();
 });
+
+wireProfileSideView();
 
 el("fp-modal-close").addEventListener("click", closeProfileModal);
 el("fp-modal").addEventListener("click", (e) => {
@@ -2054,6 +2137,79 @@ function setPanelCollapsed(collapsed) {
 }
 el("paneltoggle").addEventListener("click", () =>
   setPanelCollapsed(!el("panel").classList.contains("collapsed")));
+
+// --- Panelbreite (Desktop, linker Griff) ------------------------------------
+const PANEL_W_MIN = 280;
+const PANEL_W_MAX = 720;
+const PANEL_W_DEFAULT = 400;
+
+function panelWidthMax() {
+  return Math.min(PANEL_W_MAX, Math.max(PANEL_W_MIN, window.innerWidth - 40));
+}
+
+function setPanelWidth(px, { save = false } = {}) {
+  const w = Math.round(Math.min(panelWidthMax(), Math.max(PANEL_W_MIN, px)));
+  el("panel").style.width = `${w}px`;
+  el("panel-resize").setAttribute("aria-valuenow", String(w));
+  if (save) persist();
+  return w;
+}
+
+(function initPanelResize() {
+  const handle = el("panel-resize");
+  handle.setAttribute("aria-valuemin", String(PANEL_W_MIN));
+  handle.setAttribute("aria-valuemax", String(PANEL_W_MAX));
+  const initial = Number.isFinite(saved.panelWidth) ? saved.panelWidth : PANEL_W_DEFAULT;
+  setPanelWidth(initial);
+
+  let drag = null;
+  handle.addEventListener("pointerdown", (e) => {
+    if (window.matchMedia("(max-width: 700px), (max-height: 500px)").matches) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("panel-resizing");
+    drag = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startW: el("panel").getBoundingClientRect().width,
+    };
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    // Panel is right-anchored: drag left → wider.
+    setPanelWidth(drag.startW + (drag.startX - e.clientX));
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag = null;
+    document.body.classList.remove("panel-resizing");
+    try { handle.releasePointerCapture(e.pointerId); } catch { /* */ }
+    persist();
+  };
+  handle.addEventListener("pointerup", endDrag);
+  handle.addEventListener("pointercancel", endDrag);
+  handle.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 40 : 16;
+    const cur = el("panel").getBoundingClientRect().width;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setPanelWidth(cur + step, { save: true });
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setPanelWidth(cur - step, { save: true });
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setPanelWidth(PANEL_W_MIN, { save: true });
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setPanelWidth(panelWidthMax(), { save: true });
+    }
+  });
+  window.addEventListener("resize", () => {
+    const cur = el("panel").getBoundingClientRect().width;
+    if (cur > panelWidthMax()) setPanelWidth(panelWidthMax());
+  });
+})();
 
 el("xsecbtn").addEventListener("click", () => showCrossSection(el("xsec").hidden));
 el("xsec-close").addEventListener("click", () => showCrossSection(false));

@@ -363,6 +363,7 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   white-space: pre-line;
 }
 .fp-modal-met[hidden] { display: none; }
+#fp-modal-note { white-space: pre-line; }
 #fp-modal-del {
   margin-top: 10px;
   width: 100%;

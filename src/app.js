@@ -310,6 +310,35 @@ function updateProfileHint() {
   hint.classList.remove("error");
 }
 
+/** Mean vertical rate (m/s AGL) between two waypoints; null if dt≤0. */
+function segmentMeanRate(iFrom, iTo) {
+  const a = profileTargets[iFrom];
+  const b = profileTargets[iTo];
+  if (!a || !b) return null;
+  const dt = b.tSec - a.tSec;
+  if (!(dt > 0)) return null;
+  return (b.targetAgl - a.targetAgl) / dt;
+}
+
+function fmtVertRate(rMs) {
+  if (rMs == null || !Number.isFinite(rMs)) return "–";
+  if (Math.abs(rMs) < 0.05) return "0 m/s";
+  const sign = rMs > 0 ? "+" : "";
+  return `${sign}${rMs.toFixed(1)} m/s`;
+}
+
+/** Live Δh/Δt of legs touching waypoint i (previous ← · → next). */
+function updateSegmentRateHint(i) {
+  const hint = el("fp-hint");
+  const parts = [];
+  if (i > 0) parts.push(`← ${fmtVertRate(segmentMeanRate(i - 1, i))}`);
+  if (i < profileTargets.length - 1) parts.push(`${fmtVertRate(segmentMeanRate(i, i + 1))} →`);
+  hint.textContent = parts.length
+    ? `Vertikalrate ${parts.join(" · ")}`
+    : "";
+  hint.classList.remove("error");
+}
+
 /** @type {{ tMax: number, hMin: number, hMax: number, pad: object, iw: number, ih: number, W: number, H: number, terrain: { tSec: number, z: number }[], useAmsl: boolean } | null} */
 let sideViewGeom = null;
 /** @type {{ i: number, pointerId: number, moved: boolean } | null} */
@@ -568,6 +597,7 @@ function wireProfileSideView() {
     host.setPointerCapture(e.pointerId);
     host.classList.add("dragging");
     sideDrag = { i, pointerId: e.pointerId, moved: false };
+    updateSegmentRateHint(i);
   });
 
   host.addEventListener("dblclick", (e) => {
@@ -592,7 +622,7 @@ function wireProfileSideView() {
       targetAgl: h,
     };
     renderProfileSideView();
-    updateProfileHint();
+    updateSegmentRateHint(sideDrag.i);
     const inp = el("fp-tbody").querySelector(
       `tr:nth-child(${sideDrag.i + 1}) input[data-field="h"]`,
     );
@@ -600,6 +630,7 @@ function wireProfileSideView() {
     if (profileModalIndex === sideDrag.i) {
       el("fp-modal-h").value = String(Math.round(heightToDisplay(h)));
       el("fp-modal-hlabel").textContent = fmtHeight(h);
+      updateModalNote();
     }
   });
 
@@ -610,6 +641,7 @@ function wireProfileSideView() {
     host.classList.remove("dragging");
     try { host.releasePointerCapture(e.pointerId); } catch { /* already released */ }
     if (!moved) {
+      updateProfileHint();
       openProfileModal(i);
       return;
     }
@@ -996,33 +1028,51 @@ function closeProfileModal() {
 }
 
 function updateModalNote() {
-  if (profileModalIndex == null || profileModalIndex === 0) {
-    el("fp-modal-note").textContent = profileModalIndex === 0
-      ? "Startpunkt: Höhe ohne Rampe davor."
-      : "";
+  if (profileModalIndex == null) {
+    el("fp-modal-note").textContent = "";
     return;
   }
-  const w = profileTargets[profileModalIndex];
-  const prev = profileTargets[profileModalIndex - 1];
+  const i = profileModalIndex;
   const h = +heightFromDisplay(+el("fp-modal-h").value);
+  const rateParts = [];
+  if (i > 0) {
+    const prev = profileTargets[i - 1];
+    const dt = profileTargets[i].tSec - prev.tSec;
+    const geo = dt > 0 ? (h - prev.targetAgl) / dt : null;
+    rateParts.push(`← ${fmtVertRate(geo)}`);
+  }
+  if (i < profileTargets.length - 1) {
+    const next = profileTargets[i + 1];
+    const dt = next.tSec - profileTargets[i].tSec;
+    const geo = dt > 0 ? (next.targetAgl - h) / dt : null;
+    rateParts.push(`${fmtVertRate(geo)} →`);
+  }
+  const rateLine = rateParts.length ? `Vertikalrate ${rateParts.join(" · ")}` : "";
+
+  if (i === 0) {
+    el("fp-modal-note").textContent = rateLine
+      ? `Startpunkt · ${rateLine}`
+      : "Startpunkt: Höhe ohne Rampe davor.";
+    return;
+  }
+  const w = profileTargets[i];
+  const prev = profileTargets[i - 1];
   const dh = h - prev.targetAgl;
   const mode = el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value;
+  let rampNote = "";
   if (mode === "jump" || Math.abs(dh) < 1) {
-    el("fp-modal-note").textContent = "Sprung: steile Linie über das ganze Intervall.";
-    return;
-  }
-  const r = mode === "custom"
-    ? clampRate(+el("fp-modal-rate").value)
-    : defaultRateForDelta(dh);
-  const need = Math.abs(dh) / r;
-  const gap = w.tSec - prev.tSec;
-  if (need > gap) {
-    el("fp-modal-note").textContent =
-      `Gap ${(gap).toFixed(0)} s zu kurz für ${r} m/s → Rate wird geclampt.`;
+    rampNote = "Sprung: steile Linie über das ganze Intervall.";
   } else {
-    el("fp-modal-note").textContent =
-      `Rampe ${(need).toFixed(0)} s · Start bei t=${Math.round((w.tSec - need) / 60)} min`;
+    const r = mode === "custom"
+      ? clampRate(+el("fp-modal-rate").value)
+      : defaultRateForDelta(dh);
+    const need = Math.abs(dh) / r;
+    const gap = w.tSec - prev.tSec;
+    rampNote = need > gap
+      ? `Gap ${(gap).toFixed(0)} s zu kurz für ${r} m/s → Rate wird geclampt.`
+      : `Rampe ${(need).toFixed(0)} s · Start bei t=${Math.round((w.tSec - need) / 60)} min`;
   }
+  el("fp-modal-note").textContent = rateLine ? `${rateLine}\n${rampNote}` : rampNote;
 }
 
 function applyModalToTarget() {

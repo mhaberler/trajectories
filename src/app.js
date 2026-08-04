@@ -349,6 +349,104 @@ function clearSegmentRateHint() {
   if (box) box.textContent = "";
 }
 
+const SIDE_HOVER_MS = 450;
+/** @type {{ seg: number|null, timer: number }} */
+let sideHover = { seg: null, timer: 0 };
+
+/** Mean vertical rate (m/s AGL) on expanded profile segment i → i+1. */
+function expandedSegmentRate(expanded, i) {
+  const a = expanded[i];
+  const b = expanded[i + 1];
+  if (!a || !b) return null;
+  const dt = b.tSec - a.tSec;
+  if (!(dt > 0)) return null;
+  return (b.hAgl - a.hAgl) / dt;
+}
+
+/** Nearest non-synthetic marker on run to profile-relative tSec. */
+function markerNearProfileTime(run, tSec) {
+  const marks = run?.r?.markers;
+  if (!marks?.length || !run.r.points?.length) return null;
+  const t0 = run.r.points[0].tMs;
+  let best = null;
+  let bestD = Infinity;
+  for (const m of marks) {
+    if (m.synthetic) continue;
+    const mt = (m.tMs - t0) / 1000;
+    const d = Math.abs(mt - tSec);
+    if (d < bestD) {
+      bestD = d;
+      best = m;
+    }
+  }
+  return best;
+}
+
+function formatSegmentHoverHint(expanded, i, run) {
+  const a = expanded[i];
+  const b = expanded[i + 1];
+  if (!a || !b) return "";
+  const dt = b.tSec - a.tSec;
+  const dh = b.hAgl - a.hAgl;
+  const rate = expandedSegmentRate(expanded, i);
+  const parts = [
+    `t = ${Math.round(a.tSec / 60)}–${Math.round(b.tSec / 60)} min`,
+    fmtVertRate(rate),
+  ];
+  if (Number.isFinite(dh) && dt > 0) {
+    const sign = dh > 0 ? "+" : "";
+    parts.push(`Δh ${sign}${Math.round(dh)} m`);
+  }
+  const m = markerNearProfileTime(run, (a.tSec + b.tSec) / 2);
+  if (m && Number.isFinite(m.u) && Number.isFinite(m.v)) {
+    const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
+    parts.push(`Wind: ${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`);
+  }
+  if (m?.met) {
+    if (Number.isFinite(m.met.t)) parts.push(`T: ${m.met.t.toFixed(1)} °C`);
+    if (Number.isFinite(m.met.td)) parts.push(`Td: ${m.met.td.toFixed(1)} °C`);
+    if (Number.isFinite(m.met.rh)) parts.push(`RH: ${Math.round(m.met.rh)} %`);
+    if (Number.isFinite(m.met.p)) parts.push(`p: ${m.met.p.toFixed(0)} hPa`);
+  }
+  return parts.join(" · ");
+}
+
+function showSegmentHoverHint(segI) {
+  const box = el("fp-side-rates");
+  if (!box) return;
+  const expanded = sideViewGeom?.expanded;
+  if (!expanded || segI < 0 || segI >= expanded.length - 1) {
+    box.textContent = "";
+    return;
+  }
+  box.textContent = formatSegmentHoverHint(expanded, segI, profileCandidateRun());
+}
+
+function cancelSideHover({ clearHint = false } = {}) {
+  if (sideHover.timer) {
+    clearTimeout(sideHover.timer);
+    sideHover.timer = 0;
+  }
+  sideHover.seg = null;
+  if (clearHint && !sideDrag) clearSegmentRateHint();
+}
+
+function scheduleSideHover(segI) {
+  if (sideDrag) return;
+  if (sideHover.seg === segI) {
+    if (!sideHover.timer) return; // already showing this segment
+    return; // timer already pending
+  }
+  if (sideHover.timer) clearTimeout(sideHover.timer);
+  if (sideHover.seg != null) clearSegmentRateHint();
+  sideHover.seg = segI;
+  sideHover.timer = setTimeout(() => {
+    sideHover.timer = 0;
+    if (sideDrag || sideHover.seg !== segI) return;
+    showSegmentHoverHint(segI);
+  }, SIDE_HOVER_MS);
+}
+
 /**
  * Clamp waypoint time: start fixed at 0; others strictly between neighbors (±1 s gap).
  * End has no artificial upper bound.
@@ -364,7 +462,7 @@ function clampProfileTime(i, tSec) {
   return Math.min(hi, Math.max(lo, t));
 }
 
-/** @type {{ tMax: number, hMin: number, hMax: number, pad: object, iw: number, ih: number, W: number, H: number, terrain: { tSec: number, z: number }[], useAmsl: boolean } | null} */
+/** @type {{ tMax: number, hMin: number, hMax: number, pad: object, iw: number, ih: number, W: number, H: number, terrain: { tSec: number, z: number }[], useAmsl: boolean, expanded?: { tSec: number, hAgl: number }[] } | null} */
 let sideViewGeom = null;
 /** @type {{ i: number, pointerId: number, moved: boolean } | null} */
 let sideDrag = null;
@@ -480,6 +578,7 @@ function renderProfileSideView() {
   if (!host || el("flightprofile-panel").hidden) return;
   const err = validateProfileTargets(profileTargets);
   if (err) {
+    cancelSideHover({ clearHint: true });
     host.replaceChildren();
     sideViewGeom = null;
     return;
@@ -488,6 +587,7 @@ function renderProfileSideView() {
   try {
     expanded = expandProfile(profileTargets);
   } catch {
+    cancelSideHover({ clearHint: true });
     host.replaceChildren();
     sideViewGeom = null;
     return;
@@ -527,7 +627,7 @@ function renderProfileSideView() {
   const pad = { l: 44, r: 10, t: 10, b: 22 };
   const iw = W - pad.l - pad.r;
   const ih = H - pad.t - pad.b;
-  sideViewGeom = { tMax, hMin, hMax, pad, iw, ih, W, H, terrain, useAmsl };
+  sideViewGeom = { tMax, hMin, hMax, pad, iw, ih, W, H, terrain, useAmsl, expanded };
 
   const x = (t) => pad.l + (t / tMax) * iw;
   const y = (z) => pad.t + ih - ((z - hMin) / (hMax - hMin)) * ih;
@@ -536,6 +636,18 @@ function renderProfileSideView() {
     const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
     return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"/>`;
   };
+
+  // Invisible thick hit targets on Rampe segments (handles stay above).
+  let segHits = "";
+  for (let i = 0; i < expanded.length - 1; i++) {
+    const a = expanded[i];
+    const b = expanded[i + 1];
+    segHits +=
+      `<line class="fp-side-seg" data-seg="${i}" ` +
+      `x1="${x(a.tSec).toFixed(1)}" y1="${y(toZ(a.tSec, a.hAgl)).toFixed(1)}" ` +
+      `x2="${x(b.tSec).toFixed(1)}" y2="${y(toZ(b.tSec, b.hAgl)).toFixed(1)}" ` +
+      `stroke="transparent" stroke-width="12" pointer-events="stroke"/>`;
+  }
 
   let terrainSvg = "";
   if (useAmsl) {
@@ -581,6 +693,7 @@ function renderProfileSideView() {
     terrainSvg +
     poly(steps, "#9c9b95", 1.5) +
     poly(ramp, "#1c5cab", 2) +
+    segHits +
     axes +
     handles.map((p, i) =>
       `<circle class="fp-side-pt" data-i="${i}" cx="${x(p.tSec).toFixed(1)}" ` +
@@ -620,10 +733,32 @@ function wireProfileSideView() {
       removeProfileTarget(i);
       return;
     }
+    cancelSideHover({ clearHint: false });
     host.setPointerCapture(e.pointerId);
     host.classList.add("dragging");
     sideDrag = { i, pointerId: e.pointerId, moved: false };
     updateSegmentRateHint(i);
+  });
+
+  host.addEventListener("pointerover", (e) => {
+    if (sideDrag || el("flightprofile-panel").hidden) return;
+    if (e.target.closest?.(".fp-side-pt")) {
+      cancelSideHover({ clearHint: true });
+      return;
+    }
+    const seg = e.target.closest?.(".fp-side-seg");
+    if (!seg) return;
+    const i = +seg.dataset.seg;
+    if (!Number.isFinite(i)) return;
+    scheduleSideHover(i);
+  });
+
+  host.addEventListener("pointerout", (e) => {
+    const seg = e.target.closest?.(".fp-side-seg");
+    if (!seg) return;
+    // Moving to another Rampe segment — pointerover will reschedule.
+    if (e.relatedTarget?.closest?.(".fp-side-seg")) return;
+    cancelSideHover({ clearHint: !sideDrag });
   });
 
   host.addEventListener("dblclick", (e) => {

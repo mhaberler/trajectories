@@ -264,6 +264,7 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   stroke: #fff;
   stroke-width: 1.5;
 }
+#fp-side .fp-side-seg { cursor: help; }
 #fp-side.dragging,
 #fp-side.dragging .fp-side-pt { cursor: grabbing; }
 #fp-side-resize {

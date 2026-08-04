@@ -350,8 +350,8 @@ function clearSegmentRateHint() {
 }
 
 const SIDE_HOVER_MS = 450;
-/** @type {{ seg: number|null, timer: number }} */
-let sideHover = { seg: null, timer: 0 };
+/** @type {{ kind: 'seg'|'pt'|null, i: number|null, timer: number, x: number, y: number, visible: boolean }} */
+let sideHover = { kind: null, i: null, timer: 0, x: 0, y: 0, visible: false };
 
 /** Mean vertical rate (m/s AGL) on expanded profile segment i → i+1. */
 function expandedSegmentRate(expanded, i) {
@@ -363,7 +363,7 @@ function expandedSegmentRate(expanded, i) {
   return (b.hAgl - a.hAgl) / dt;
 }
 
-/** Nearest non-synthetic marker on run to profile-relative tSec. */
+/** Nearest marker on run to profile-relative tSec (includes wind/met when present). */
 function markerNearProfileTime(run, tSec) {
   const marks = run?.r?.markers;
   if (!marks?.length || !run.r.points?.length) return null;
@@ -382,44 +382,167 @@ function markerNearProfileTime(run, tSec) {
   return best;
 }
 
-function formatSegmentHoverHint(expanded, i, run) {
+/** Map-style context for profile waypoint i (position + nearest met). */
+function profileWaypointContext(run, i) {
+  const w = profileTargets[i];
+  if (!w || !run?.r?.points?.length) return null;
+  const r = run.r;
+  const t0 = r.points[0].tMs;
+  const pos = pointAtTimeOnPath(r, w.tSec);
+  let nearestMet = null;
+  let bestD = Infinity;
+  for (const m of r.markers || []) {
+    const d = Math.abs(m.tMs - (t0 + w.tSec * 1000));
+    if (d < bestD) {
+      bestD = d;
+      nearestMet = m;
+    }
+  }
+  return {
+    lat: pos?.lat,
+    lon: pos?.lon,
+    z: pos?.z,
+    tSec: w.tSec,
+    targetAgl: w.targetAgl,
+    rate: w.rate,
+    u: nearestMet?.u,
+    v: nearestMet?.v,
+    met: bestD < 120_000 ? nearestMet?.met : undefined,
+  };
+}
+
+function appendWindMetRows(rows, m) {
+  if (m && Number.isFinite(m.u) && Number.isFinite(m.v)) {
+    const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
+    rows.push({ label: "Wind", value: `${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°` });
+  }
+  if (m?.met) {
+    if (Number.isFinite(m.met.t)) rows.push({ label: "T", value: `${m.met.t.toFixed(1)} °C` });
+    if (Number.isFinite(m.met.td)) rows.push({ label: "Td", value: `${m.met.td.toFixed(1)} °C` });
+    if (Number.isFinite(m.met.rh)) rows.push({ label: "RH", value: `${Math.round(m.met.rh)} %` });
+    if (Number.isFinite(m.met.p)) rows.push({ label: "p", value: `${m.met.p.toFixed(0)} hPa` });
+  }
+}
+
+/** @returns {{ label: string, value: string }[]} */
+function segmentHoverRows(expanded, i, run) {
   const a = expanded[i];
   const b = expanded[i + 1];
-  if (!a || !b) return "";
+  if (!a || !b) return [];
   const dt = b.tSec - a.tSec;
   const dh = b.hAgl - a.hAgl;
   const rate = expandedSegmentRate(expanded, i);
-  const parts = [
-    `t = ${Math.round(a.tSec / 60)}–${Math.round(b.tSec / 60)} min`,
-    fmtVertRate(rate),
+  /** @type {{ label: string, value: string }[]} */
+  const rows = [
+    { label: "Zeit", value: `${Math.round(a.tSec / 60)}–${Math.round(b.tSec / 60)} min` },
+    { label: "Vertikalrate", value: fmtVertRate(rate) },
   ];
   if (Number.isFinite(dh) && dt > 0) {
     const sign = dh > 0 ? "+" : "";
-    parts.push(`Δh ${sign}${Math.round(dh)} m`);
+    rows.push({ label: "Δh", value: `${sign}${Math.round(dh)} m` });
   }
-  const m = markerNearProfileTime(run, (a.tSec + b.tSec) / 2);
-  if (m && Number.isFinite(m.u) && Number.isFinite(m.v)) {
-    const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
-    parts.push(`Wind: ${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`);
+  appendWindMetRows(rows, markerNearProfileTime(run, (a.tSec + b.tSec) / 2));
+  return rows;
+}
+
+/** @returns {{ label: string, value: string }[]} */
+function markerHoverRows(i, run) {
+  const w = profileTargets[i];
+  if (!w) return [];
+  /** @type {{ label: string, value: string }[]} */
+  const rows = [
+    { label: "Zeit", value: `${Math.round(w.tSec / 60)} min` },
+    { label: "Höhe AGL", value: fmtHeight(w.targetAgl) },
+  ];
+  if (w.rate === "jump" || w.rate == null) {
+    rows.push({ label: "Rate", value: "Sprung" });
+  } else if (Number.isFinite(+w.rate)) {
+    rows.push({ label: "Rate", value: fmtVertRate(+w.rate) });
   }
-  if (m?.met) {
-    if (Number.isFinite(m.met.t)) parts.push(`T: ${m.met.t.toFixed(1)} °C`);
-    if (Number.isFinite(m.met.td)) parts.push(`Td: ${m.met.td.toFixed(1)} °C`);
-    if (Number.isFinite(m.met.rh)) parts.push(`RH: ${Math.round(m.met.rh)} %`);
-    if (Number.isFinite(m.met.p)) parts.push(`p: ${m.met.p.toFixed(0)} hPa`);
+  const ctx = profileWaypointContext(run, i);
+  if (ctx) {
+    if (Number.isFinite(ctx.z)) rows.push({ label: "Höhe NN", value: fmtHeight(ctx.z) });
+    appendWindMetRows(rows, ctx);
+    if (Number.isFinite(ctx.lat) && Number.isFinite(ctx.lon)) {
+      rows.push({ label: "Pos", value: `${ctx.lat.toFixed(4)}°N ${ctx.lon.toFixed(4)}°E` });
+    }
   }
-  return parts.join(" · ");
+  return rows;
+}
+
+function ensureSideHoverTip() {
+  let tip = el("fp-side-tip");
+  if (tip) return tip;
+  tip = document.createElement("div");
+  tip.id = "fp-side-tip";
+  tip.className = "fp-side-tip mono";
+  tip.hidden = true;
+  tip.setAttribute("role", "tooltip");
+  document.body.appendChild(tip);
+  return tip;
+}
+
+function hideSideHoverTip() {
+  const tip = el("fp-side-tip");
+  if (tip) {
+    tip.hidden = true;
+    tip.innerHTML = "";
+  }
+  sideHover.visible = false;
+}
+
+function positionSideHoverTip(clientX, clientY) {
+  const tip = el("fp-side-tip");
+  if (!tip || tip.hidden) return;
+  const pad = 12;
+  const ox = 14;
+  const oy = 16;
+  tip.style.left = "0px";
+  tip.style.top = "0px";
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let left = clientX + ox;
+  let top = clientY + oy;
+  if (left + tw + pad > window.innerWidth) left = clientX - tw - ox;
+  if (top + th + pad > window.innerHeight) top = clientY - th - oy;
+  left = Math.max(pad, Math.min(left, window.innerWidth - tw - pad));
+  top = Math.max(pad, Math.min(top, window.innerHeight - th - pad));
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function showSideHoverRows(rows) {
+  if (!rows.length) {
+    hideSideHoverTip();
+    return;
+  }
+  const tip = ensureSideHoverTip();
+  tip.innerHTML =
+    `<table><tbody>` +
+    rows.map((r) =>
+      `<tr><th>${r.label}</th><td>${r.value}</td></tr>`
+    ).join("") +
+    `</tbody></table>`;
+  tip.hidden = false;
+  sideHover.visible = true;
+  positionSideHoverTip(sideHover.x, sideHover.y);
 }
 
 function showSegmentHoverHint(segI) {
-  const box = el("fp-side-rates");
-  if (!box) return;
   const expanded = sideViewGeom?.expanded;
   if (!expanded || segI < 0 || segI >= expanded.length - 1) {
-    box.textContent = "";
+    hideSideHoverTip();
     return;
   }
-  box.textContent = formatSegmentHoverHint(expanded, segI, profileCandidateRun());
+  showSideHoverRows(segmentHoverRows(expanded, segI, profileCandidateRun()));
+}
+
+function showMarkerHoverHint(ptI) {
+  if (ptI < 0 || ptI >= profileTargets.length) {
+    hideSideHoverTip();
+    return;
+  }
+  showSideHoverRows(markerHoverRows(ptI, profileCandidateRun()));
 }
 
 function cancelSideHover({ clearHint = false } = {}) {
@@ -427,23 +550,27 @@ function cancelSideHover({ clearHint = false } = {}) {
     clearTimeout(sideHover.timer);
     sideHover.timer = 0;
   }
-  sideHover.seg = null;
-  if (clearHint && !sideDrag) clearSegmentRateHint();
+  sideHover.kind = null;
+  sideHover.i = null;
+  if (clearHint) hideSideHoverTip();
 }
 
-function scheduleSideHover(segI) {
+/** @param {'seg'|'pt'} kind */
+function scheduleSideHover(kind, i) {
   if (sideDrag) return;
-  if (sideHover.seg === segI) {
-    if (!sideHover.timer) return; // already showing this segment
+  if (sideHover.kind === kind && sideHover.i === i) {
+    if (!sideHover.timer) return; // already showing
     return; // timer already pending
   }
   if (sideHover.timer) clearTimeout(sideHover.timer);
-  if (sideHover.seg != null) clearSegmentRateHint();
-  sideHover.seg = segI;
+  if (sideHover.kind != null) hideSideHoverTip();
+  sideHover.kind = kind;
+  sideHover.i = i;
   sideHover.timer = setTimeout(() => {
     sideHover.timer = 0;
-    if (sideDrag || sideHover.seg !== segI) return;
-    showSegmentHoverHint(segI);
+    if (sideDrag || sideHover.kind !== kind || sideHover.i !== i) return;
+    if (kind === "seg") showSegmentHoverHint(i);
+    else showMarkerHoverHint(i);
   }, SIDE_HOVER_MS);
 }
 
@@ -613,13 +740,13 @@ function renderProfileSideView() {
   let hMax = Math.max(
     ...handles.map((p) => p.z),
     ...ramp.map((p) => p.z),
-    useAmsl ? hMin + 100 : Math.max(barMax, ...profileTargets.map((w) => w.targetAgl), 100),
+    useAmsl ? hMin + 1 : Math.max(...profileTargets.map((w) => w.targetAgl), 1),
   );
-  if (useAmsl) {
-    hMin = Math.max(0, hMin - 50);
-    hMax += 80;
-  }
-  if (hMax <= hMin) hMax = hMin + 100;
+  // Vertical axis always snaps to 1000 m bounds (floor min / ceil max).
+  const AXIS_M = 1000;
+  hMin = useAmsl ? Math.floor(Math.max(0, hMin) / AXIS_M) * AXIS_M : 0;
+  hMax = Math.ceil(hMax / AXIS_M) * AXIS_M;
+  if (hMax <= hMin) hMax = hMin + AXIS_M;
 
   const rect = host.getBoundingClientRect();
   const W = Math.max(160, Math.round(rect.width) || 320);
@@ -733,7 +860,7 @@ function wireProfileSideView() {
       removeProfileTarget(i);
       return;
     }
-    cancelSideHover({ clearHint: false });
+    cancelSideHover({ clearHint: true });
     host.setPointerCapture(e.pointerId);
     host.classList.add("dragging");
     sideDrag = { i, pointerId: e.pointerId, moved: false };
@@ -742,23 +869,37 @@ function wireProfileSideView() {
 
   host.addEventListener("pointerover", (e) => {
     if (sideDrag || el("flightprofile-panel").hidden) return;
-    if (e.target.closest?.(".fp-side-pt")) {
-      cancelSideHover({ clearHint: true });
+    sideHover.x = e.clientX;
+    sideHover.y = e.clientY;
+    const pt = e.target.closest?.(".fp-side-pt");
+    if (pt) {
+      const i = +pt.dataset.i;
+      if (!Number.isFinite(i)) return;
+      scheduleSideHover("pt", i);
       return;
     }
     const seg = e.target.closest?.(".fp-side-seg");
     if (!seg) return;
     const i = +seg.dataset.seg;
     if (!Number.isFinite(i)) return;
-    scheduleSideHover(i);
+    scheduleSideHover("seg", i);
+  });
+
+  host.addEventListener("pointermove", (e) => {
+    if (sideDrag || el("flightprofile-panel").hidden) return;
+    const hit = e.target.closest?.(".fp-side-pt") || e.target.closest?.(".fp-side-seg");
+    if (!hit) return;
+    sideHover.x = e.clientX;
+    sideHover.y = e.clientY;
+    if (sideHover.visible) positionSideHoverTip(e.clientX, e.clientY);
   });
 
   host.addEventListener("pointerout", (e) => {
-    const seg = e.target.closest?.(".fp-side-seg");
-    if (!seg) return;
-    // Moving to another Rampe segment — pointerover will reschedule.
-    if (e.relatedTarget?.closest?.(".fp-side-seg")) return;
-    cancelSideHover({ clearHint: !sideDrag });
+    const from = e.target.closest?.(".fp-side-pt") || e.target.closest?.(".fp-side-seg");
+    if (!from) return;
+    const to = e.relatedTarget;
+    if (to?.closest?.(".fp-side-pt") || to?.closest?.(".fp-side-seg")) return;
+    cancelSideHover({ clearHint: true });
   });
 
   host.addEventListener("dblclick", (e) => {

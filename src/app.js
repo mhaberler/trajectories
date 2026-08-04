@@ -1128,17 +1128,24 @@ function wireProfileSideView() {
     if (h === cur.targetAgl && tSec === cur.tSec && !sideDrag.moved) return;
     sideDrag.moved = true;
     profileTargets[i] = { ...cur, tSec, targetAgl: h };
+    cascadeProfileAltitude(i, h);
     renderProfileSideView();
     updateSegmentRateHint(i);
-    const row = el("fp-tbody").querySelector(`tr:nth-child(${i + 1})`);
+    const hDisp = String(Math.round(heightToDisplay(h)));
+    const rows = el("fp-tbody").querySelectorAll("tr");
+    const row = rows[i];
     const inpT = row?.querySelector('input[data-field="t"]');
-    const inpH = row?.querySelector('input[data-field="h"]');
     if (inpT) inpT.value = String(Math.round(tSec / 60));
-    if (inpH) inpH.value = String(Math.round(heightToDisplay(h)));
-    if (profileModalIndex === i) {
-      el("fp-modal-h").value = String(Math.round(heightToDisplay(h)));
+    for (let j = i; j < rows.length; j++) {
+      const inpH = rows[j]?.querySelector('input[data-field="h"]');
+      if (inpH) inpH.value = hDisp;
+    }
+    if (profileModalIndex != null && profileModalIndex >= i) {
+      el("fp-modal-h").value = hDisp;
       el("fp-modal-hlabel").textContent = fmtHeight(h);
-      el("fp-modal-title").textContent = `Marke · ${Math.round(tSec / 60)} min`;
+      if (profileModalIndex === i) {
+        el("fp-modal-title").textContent = `Marke · ${Math.round(tSec / 60)} min`;
+      }
       updateModalNote();
     }
   });
@@ -1305,6 +1312,14 @@ function afterProfileTargetsMutated() {
   if (state.profileEdit?.active) {
     const run = profileCandidateRun();
     if (run) paintProfileEditMap(run);
+  }
+}
+
+/** Set waypoint `fromIndex` and all later waypoints to the same AGL height. */
+function cascadeProfileAltitude(fromIndex, h) {
+  const agl = Math.max(0, Math.round(h));
+  for (let j = fromIndex; j < profileTargets.length; j++) {
+    profileTargets[j] = { ...profileTargets[j], targetAgl: agl };
   }
 }
 
@@ -1553,10 +1568,7 @@ function updateModalNote() {
 function applyModalToTarget() {
   if (profileModalIndex == null) return;
   const h = Math.max(0, Math.round(heightFromDisplay(+el("fp-modal-h").value)));
-  profileTargets[profileModalIndex] = {
-    ...profileTargets[profileModalIndex],
-    targetAgl: h,
-  };
+  cascadeProfileAltitude(profileModalIndex, h);
   el("fp-modal-hlabel").textContent = fmtHeight(h);
   updateModalNote();
   refreshProfileUI({ scheduleApi: true });
@@ -1918,8 +1930,16 @@ el("fp-dem-interval").addEventListener("change", () => {
   persist();
   if (demOverlayEnabled()) refreshDemHiOverlay();
 });
-el("fp-tbody").addEventListener("change", () => {
+el("fp-tbody").addEventListener("change", (e) => {
+  const inp = e.target;
+  const field = inp?.dataset?.field;
+  const tr = inp?.closest?.("tr");
+  const rows = [...el("fp-tbody").querySelectorAll("tr")];
+  const i = tr ? rows.indexOf(tr) : -1;
   readProfileTable();
+  if (field === "h" && i >= 0 && i < profileTargets.length) {
+    cascadeProfileAltitude(i, profileTargets[i].targetAgl);
+  }
   refreshProfileUI({ scheduleApi: true });
   persist();
 });

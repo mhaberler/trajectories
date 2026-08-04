@@ -931,9 +931,15 @@ function renderProfileSideView() {
     ...(demHi.length ? demHi.map((p) => p.z) : []),
     useAmsl ? hMin + 1 : Math.max(...profileTargets.map((w) => w.targetAgl), 1),
   );
-  // Vertical axis always snaps to 1000 m bounds (floor min / ceil max).
-  const AXIS_M = 1000;
-  hMin = useAmsl ? Math.floor(Math.max(0, hMin) / AXIS_M) * AXIS_M : 0;
+  // AMSL: start just below lowest ground (100 m floor) so terrain sits above the axis.
+  const AXIS_M = 100;
+  if (useAmsl) {
+    const rawMin = Math.max(0, hMin);
+    hMin = Math.floor(rawMin / AXIS_M) * AXIS_M;
+    if (hMin >= rawMin) hMin = Math.max(0, hMin - AXIS_M);
+  } else {
+    hMin = 0;
+  }
   hMax = Math.ceil(hMax / AXIS_M) * AXIS_M;
   if (hMax <= hMin) hMax = hMin + AXIS_M;
 

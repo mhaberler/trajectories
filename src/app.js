@@ -74,6 +74,7 @@ function persist() {
     fpTableVisible: !el("fp-table-block")?.hidden,
     fpDemOverlay: !!el("fp-dem")?.checked,
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
+    fpInheritMode: profileInheritMode(),
     view3dRight,
     view3dBottom,
   };
@@ -1131,18 +1132,20 @@ function wireProfileSideView() {
     cascadeProfileAltitude(i, h);
     renderProfileSideView();
     updateSegmentRateHint(i);
-    const hDisp = String(Math.round(heightToDisplay(h)));
     const rows = el("fp-tbody").querySelectorAll("tr");
     const row = rows[i];
     const inpT = row?.querySelector('input[data-field="t"]');
     if (inpT) inpT.value = String(Math.round(tSec / 60));
     for (let j = i; j < rows.length; j++) {
+      const w = profileTargets[j];
       const inpH = rows[j]?.querySelector('input[data-field="h"]');
-      if (inpH) inpH.value = hDisp;
+      if (inpH && w) inpH.value = String(Math.round(heightToDisplay(w.targetAgl)));
     }
     if (profileModalIndex != null && profileModalIndex >= i) {
-      el("fp-modal-h").value = hDisp;
-      el("fp-modal-hlabel").textContent = fmtHeight(h);
+      const mw = profileTargets[profileModalIndex];
+      const mh = mw?.targetAgl ?? h;
+      el("fp-modal-h").value = String(Math.round(heightToDisplay(mh)));
+      el("fp-modal-hlabel").textContent = fmtHeight(mh);
       if (profileModalIndex === i) {
         el("fp-modal-title").textContent = `Marke · ${Math.round(tSec / 60)} min`;
       }
@@ -1315,21 +1318,83 @@ function afterProfileTargetsMutated() {
   }
 }
 
-/** Set waypoint `fromIndex` and all later waypoints to the same AGL height. */
-function cascadeProfileAltitude(fromIndex, h) {
-  const agl = Math.max(0, Math.round(h));
-  for (let j = fromIndex; j < profileTargets.length; j++) {
-    profileTargets[j] = { ...profileTargets[j], targetAgl: agl };
-  }
+/** @returns {"amsl"|"agl"} inherit mode for cascade / add / insert (default AMSL). */
+function profileInheritMode() {
+  return el("fp-inherit-agl")?.checked ? "agl" : "amsl";
 }
 
-function insertProfileTarget(tSec, hAgl) {
+function modelTerrainSeries() {
+  return terrainSeriesFromRun(profileCandidateRun());
+}
+
+/**
+ * AGL at `tSec` matching earlier waypoint's AGL or AMSL (per inherit mode).
+ * @returns {number|null} null if AMSL mode and model terrain missing
+ */
+function inheritAglFromWaypoint(earlier, tSec) {
+  if (!earlier) return null;
+  if (profileInheritMode() === "agl") {
+    return Math.max(0, Math.round(earlier.targetAgl));
+  }
+  const series = modelTerrainSeries();
+  const g0 = terrainAt(series, earlier.tSec);
+  const g1 = terrainAt(series, tSec);
+  if (g0 == null || g1 == null || !Number.isFinite(g0) || !Number.isFinite(g1)) {
+    setStatus("AMSL-Vererbung: kein Modell-Gelände.", true);
+    return null;
+  }
+  return Math.max(0, Math.round(g0 + earlier.targetAgl - g1));
+}
+
+/**
+ * Set waypoint `fromIndex` to `h` AGL; cascade later markers by inherit mode.
+ * AMSL: later AGLs preserve AMSL of the edited marker via model orography.
+ * On missing terrain: edited marker only; later unchanged; status error.
+ * @returns {boolean} true if later markers were updated (or none exist)
+ */
+function cascadeProfileAltitude(fromIndex, h) {
+  const agl = Math.max(0, Math.round(h));
+  if (fromIndex < 0 || fromIndex >= profileTargets.length) return false;
+  profileTargets[fromIndex] = { ...profileTargets[fromIndex], targetAgl: agl };
+  if (fromIndex >= profileTargets.length - 1) return true;
+
+  if (profileInheritMode() === "agl") {
+    for (let j = fromIndex + 1; j < profileTargets.length; j++) {
+      profileTargets[j] = { ...profileTargets[j], targetAgl: agl };
+    }
+    return true;
+  }
+
+  const series = modelTerrainSeries();
+  const g0 = terrainAt(series, profileTargets[fromIndex].tSec);
+  if (g0 == null || !Number.isFinite(g0)) {
+    setStatus("AMSL-Vererbung: kein Modell-Gelände — spätere Marker unverändert.", true);
+    return false;
+  }
+  for (let j = fromIndex + 1; j < profileTargets.length; j++) {
+    const g = terrainAt(series, profileTargets[j].tSec);
+    if (g == null || !Number.isFinite(g)) {
+      setStatus("AMSL-Vererbung: kein Modell-Gelände — spätere Marker unverändert.", true);
+      return false;
+    }
+  }
+  const amsl = g0 + agl;
+  for (let j = fromIndex + 1; j < profileTargets.length; j++) {
+    const g = terrainAt(series, profileTargets[j].tSec);
+    profileTargets[j] = {
+      ...profileTargets[j],
+      targetAgl: Math.max(0, Math.round(amsl - g)),
+    };
+  }
+  return true;
+}
+
+function insertProfileTarget(tSec, _hAgl) {
   if (profileTargets.length >= FP_MAX_ROWS) {
     setStatus(`Maximal ${FP_MAX_ROWS} Profilpunkte.`, true);
     return false;
   }
   let t = Math.max(0, Math.round(tSec));
-  const h = Math.max(0, Math.round(hAgl));
   const sorted = [...profileTargets].sort((a, b) => a.tSec - b.tSec);
   const tMin = sorted[0].tSec;
   const tMax = sorted[sorted.length - 1].tSec;
@@ -1346,6 +1411,9 @@ function insertProfileTarget(tSec, hAgl) {
     setStatus("Kein freier Zeit-Slot für neuen Punkt.", true);
     return false;
   }
+  const earlier = [...sorted].reverse().find((w) => w.tSec < t) || sorted[0];
+  const h = inheritAglFromWaypoint(earlier, t);
+  if (h == null) return false;
   profileTargets.push({ tSec: t, targetAgl: h });
   profileTargets.sort((a, b) => a.tSec - b.tSec);
   afterProfileTargetsMutated();
@@ -1930,6 +1998,8 @@ el("fp-dem-interval").addEventListener("change", () => {
   persist();
   if (demOverlayEnabled()) refreshDemHiOverlay();
 });
+el("fp-inherit-amsl")?.addEventListener("change", () => persist());
+el("fp-inherit-agl")?.addEventListener("change", () => persist());
 el("fp-tbody").addEventListener("change", (e) => {
   const inp = e.target;
   const field = inp?.dataset?.field;
@@ -1947,10 +2017,10 @@ el("fp-add").addEventListener("click", () => {
   readProfileTable();
   if (profileTargets.length >= FP_MAX_ROWS) return;
   const last = profileTargets[profileTargets.length - 1];
-  profileTargets.push({
-    tSec: last.tSec + 1800,
-    targetAgl: last.targetAgl,
-  });
+  const tSec = last.tSec + 1800;
+  const targetAgl = inheritAglFromWaypoint(last, tSec);
+  if (targetAgl == null) return;
+  profileTargets.push({ tSec, targetAgl });
   refreshProfileUI({ scheduleApi: true });
   persist();
 });
@@ -2177,6 +2247,11 @@ if (saved.fpDemOverlay !== false) el("fp-dem").checked = true;
 else el("fp-dem").checked = false;
 if (Number.isFinite(saved.fpDemIntervalMin)) {
   el("fp-dem-interval").value = String(clampDemIntervalMin(saved.fpDemIntervalMin));
+}
+if (saved.fpInheritMode === "agl") {
+  if (el("fp-inherit-agl")) el("fp-inherit-agl").checked = true;
+} else if (el("fp-inherit-amsl")) {
+  el("fp-inherit-amsl").checked = true;
 }
 if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
   profileTargets = cloneTargets(FP_PRESETS.climbcruise);

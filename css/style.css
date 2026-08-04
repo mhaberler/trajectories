@@ -387,6 +387,15 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   margin: 4px 0 6px;
   font-size: 12px;
 }
+.fp-inherit-row .fp-inherit-label {
+  font-weight: 600;
+}
+.fp-inherit-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
 .fp-dem-toggle {
   display: inline-flex;
   align-items: center;

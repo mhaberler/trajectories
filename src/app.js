@@ -784,6 +784,8 @@ async function refreshDemHiOverlay() {
     }
     demHiState.loading = false;
     demHiState.error = null;
+    demHiState.series = [];
+    demHiState.key = "";
     setDemStatus("");
     updateDemLegend();
     renderProfileSideView();
@@ -794,6 +796,8 @@ async function refreshDemHiOverlay() {
   const pts = run?.r?.points;
   if (!pts || pts.length < 2) {
     setDemStatus("Kein Track");
+    renderProfileSideView();
+    attachDemHiToXsec();
     return;
   }
   const intervalSec = demIntervalSec();
@@ -810,7 +814,12 @@ async function refreshDemHiOverlay() {
   const gen = ++demHiState.gen;
   demHiState.loading = true;
   demHiState.error = null;
+  // New track/path: drop stale DEM so axis/profile don't keep the old ground.
+  demHiState.series = [];
+  demHiState.key = "";
   setDemStatus("Mapterhorn …");
+  renderProfileSideView();
+  attachDemHiToXsec();
   try {
     const series = await sampleTrackTerrain(pts, { intervalSec, signal: ac.signal });
     if (gen !== demHiState.gen) return;
@@ -827,6 +836,8 @@ async function refreshDemHiOverlay() {
     demHiState.loading = false;
     demHiState.error = err?.message || "Fehler";
     setDemStatus(demHiState.error);
+    renderProfileSideView();
+    attachDemHiToXsec();
   }
 }
 
@@ -924,14 +935,19 @@ function renderProfileSideView() {
   const ramp = expanded.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
   const handles = profileTargets.map((w) => ({ tSec: w.tSec, z: toZ(w.tSec, w.targetAgl) }));
 
-  let hMin = useAmsl ? Math.min(...groundSeries.map((p) => p.z), ...(demHi.length ? demHi.map((p) => p.z) : [])) : 0;
+  const groundZs = [
+    ...groundSeries.map((p) => p.z),
+    ...demHi.map((p) => p.z),
+  ].filter((z) => Number.isFinite(z));
+  let hMin = useAmsl && groundZs.length ? Math.min(...groundZs) : 0;
   let hMax = Math.max(
-    ...handles.map((p) => p.z),
-    ...ramp.map((p) => p.z),
-    ...(demHi.length ? demHi.map((p) => p.z) : []),
+    ...handles.map((p) => p.z).filter((z) => Number.isFinite(z)),
+    ...ramp.map((p) => p.z).filter((z) => Number.isFinite(z)),
+    ...demHi.map((p) => p.z).filter((z) => Number.isFinite(z)),
     useAmsl ? hMin + 1 : Math.max(...profileTargets.map((w) => w.targetAgl), 1),
   );
   // AMSL: start just below lowest ground (100 m floor) so terrain sits above the axis.
+  // Recalculated whenever renderProfileSideView runs (after traj + each DEM path).
   const AXIS_M = 100;
   if (useAmsl) {
     const rawMin = Math.max(0, hMin);
@@ -1329,24 +1345,25 @@ function profileInheritMode() {
   return el("fp-inherit-agl")?.checked ? "agl" : "amsl";
 }
 
-function modelTerrainSeries() {
-  return terrainSeriesFromRun(profileCandidateRun());
+/** Mapterhorn DEM series for AMSL inherit (not model traj orography). */
+function inheritTerrainSeries() {
+  return demHiState.series.length >= 2 ? demHiState.series : [];
 }
 
 /**
  * AGL at `tSec` matching earlier waypoint's AGL or AMSL (per inherit mode).
- * @returns {number|null} null if AMSL mode and model terrain missing
+ * AMSL uses Mapterhorn DEM ground. @returns {number|null} null if DEM missing
  */
 function inheritAglFromWaypoint(earlier, tSec) {
   if (!earlier) return null;
   if (profileInheritMode() === "agl") {
     return Math.max(0, Math.round(earlier.targetAgl));
   }
-  const series = modelTerrainSeries();
+  const series = inheritTerrainSeries();
   const g0 = terrainAt(series, earlier.tSec);
   const g1 = terrainAt(series, tSec);
   if (g0 == null || g1 == null || !Number.isFinite(g0) || !Number.isFinite(g1)) {
-    setStatus("AMSL-Vererbung: kein Modell-Gelände.", true);
+    setStatus("AMSL-Vererbung: kein Mapterhorn-Gelände.", true);
     return null;
   }
   return Math.max(0, Math.round(g0 + earlier.targetAgl - g1));
@@ -1354,8 +1371,8 @@ function inheritAglFromWaypoint(earlier, tSec) {
 
 /**
  * Set waypoint `fromIndex` to `h` AGL; cascade later markers by inherit mode.
- * AMSL: later AGLs preserve AMSL of the edited marker via model orography.
- * On missing terrain: edited marker only; later unchanged; status error.
+ * AMSL: later AGLs preserve AMSL of the edited marker via Mapterhorn DEM.
+ * On missing DEM: edited marker only; later unchanged; status error.
  * @returns {boolean} true if later markers were updated (or none exist)
  */
 function cascadeProfileAltitude(fromIndex, h) {
@@ -1371,16 +1388,16 @@ function cascadeProfileAltitude(fromIndex, h) {
     return true;
   }
 
-  const series = modelTerrainSeries();
+  const series = inheritTerrainSeries();
   const g0 = terrainAt(series, profileTargets[fromIndex].tSec);
   if (g0 == null || !Number.isFinite(g0)) {
-    setStatus("AMSL-Vererbung: kein Modell-Gelände — spätere Marker unverändert.", true);
+    setStatus("AMSL-Vererbung: kein Mapterhorn-Gelände — spätere Marker unverändert.", true);
     return false;
   }
   for (let j = fromIndex + 1; j < profileTargets.length; j++) {
     const g = terrainAt(series, profileTargets[j].tSec);
     if (g == null || !Number.isFinite(g)) {
-      setStatus("AMSL-Vererbung: kein Modell-Gelände — spätere Marker unverändert.", true);
+      setStatus("AMSL-Vererbung: kein Mapterhorn-Gelände — spätere Marker unverändert.", true);
       return false;
     }
   }
@@ -2725,6 +2742,8 @@ async function runTrajectoriesViaApi({
     el("view3dbtn").disabled = false;
     if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
     setStatus(`API: ${keepSiblings ? "Profil" : `${runs.length} Trajektorie(n)`} · ${fmtMs(ms)}`);
+    // Recalc profile Y-axis from new traj terrain immediately; DEM refresh redraws again.
+    renderProfileSideView();
     refreshDemHiOverlay();
   } catch (err) {
     if (profileGen != null && profileGen !== state.profileRedrawGen) return;
@@ -2994,7 +3013,10 @@ async function runTrajectories() {
     } else {
       setStatus("");
     }
-    if (!scrub) refreshDemHiOverlay();
+    if (!scrub) {
+      renderProfileSideView();
+      refreshDemHiOverlay();
+    }
   } catch (err) {
     setStatus(`Fehler: ${err.message} · ${fmtMs(performance.now() - t0)}`, true);
   } finally {

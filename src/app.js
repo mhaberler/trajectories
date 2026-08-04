@@ -11,6 +11,7 @@ import {
 } from "./units.js";
 import { initGeocode } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
+import { sampleTrackTerrain, trackSampleKey } from "./dem/mapterhorn.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -71,6 +72,8 @@ function persist() {
     panelWidth: Math.round(el("panel").getBoundingClientRect().width),
     fpSideHeight: Math.round(el("fp-side").getBoundingClientRect().height) || 110,
     fpTableVisible: !el("fp-table-block")?.hidden,
+    fpDemOverlay: !!el("fp-dem")?.checked,
+    fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     view3dRight,
     view3dBottom,
   };
@@ -732,6 +735,100 @@ function terrainAt(series, tSec) {
   return last.z;
 }
 
+function clampDemIntervalMin(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(30, Math.max(0.5, Math.round(n * 2) / 2));
+}
+
+/** @type {{ key: string, series: { tSec: number, z: number }[], loading: boolean, error: string|null, gen: number }} */
+const demHiState = { key: "", series: [], loading: false, error: null, gen: 0 };
+/** @type {AbortController | null} */
+let demHiAbort = null;
+
+function demOverlayEnabled() {
+  return !!el("fp-dem")?.checked;
+}
+
+function demIntervalSec() {
+  return clampDemIntervalMin(+el("fp-dem-interval")?.value) * 60;
+}
+
+function setDemStatus(msg) {
+  const s = el("fp-dem-status");
+  if (s) s.textContent = msg || "";
+}
+
+function updateDemLegend() {
+  const leg = el("fp-side-legend")?.querySelector(".fp-leg-dem");
+  if (leg) leg.hidden = !(demOverlayEnabled() && demHiState.series.length >= 2);
+}
+
+function attachDemHiToXsec() {
+  if (!state.xsec) return;
+  if (demOverlayEnabled() && demHiState.series.length >= 2) {
+    state.xsec.terrainHi = demHiState.series;
+  } else {
+    delete state.xsec.terrainHi;
+  }
+  if (!el("xsec").hidden) renderCrossSection(el("xsec-body"), state.xsec);
+}
+
+async function refreshDemHiOverlay() {
+  updateDemLegend();
+  if (!demOverlayEnabled()) {
+    if (demHiAbort) {
+      demHiAbort.abort();
+      demHiAbort = null;
+    }
+    demHiState.loading = false;
+    demHiState.error = null;
+    setDemStatus("");
+    updateDemLegend();
+    renderProfileSideView();
+    attachDemHiToXsec();
+    return;
+  }
+  const run = profileCandidateRun() || state.lastRuns?.runs?.[0];
+  const pts = run?.r?.points;
+  if (!pts || pts.length < 2) {
+    setDemStatus("Kein Track");
+    return;
+  }
+  const intervalSec = demIntervalSec();
+  const key = `${runKey(run)}|${trackSampleKey(pts, intervalSec)}`;
+  if (key === demHiState.key && demHiState.series.length >= 2 && !demHiState.loading) {
+    updateDemLegend();
+    renderProfileSideView();
+    attachDemHiToXsec();
+    return;
+  }
+  if (demHiAbort) demHiAbort.abort();
+  const ac = new AbortController();
+  demHiAbort = ac;
+  const gen = ++demHiState.gen;
+  demHiState.loading = true;
+  demHiState.error = null;
+  setDemStatus("Mapterhorn …");
+  try {
+    const series = await sampleTrackTerrain(pts, { intervalSec, signal: ac.signal });
+    if (gen !== demHiState.gen) return;
+    demHiState.key = key;
+    demHiState.series = series;
+    demHiState.loading = false;
+    setDemStatus(series.length >= 2 ? `${series.length} Punkte` : "keine Daten");
+    updateDemLegend();
+    renderProfileSideView();
+    attachDemHiToXsec();
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    if (gen !== demHiState.gen) return;
+    demHiState.loading = false;
+    demHiState.error = err?.message || "Fehler";
+    setDemStatus(demHiState.error);
+  }
+}
+
 function niceTicks(min, max, count = 4) {
   const span = max - min;
   if (!(span > 0)) return [min];
@@ -812,22 +909,25 @@ function renderProfileSideView() {
 
   const run = profileCandidateRun();
   const terrain = terrainSeriesFromRun(run);
-  const useAmsl = terrain.length >= 2;
+  const demHi = (demOverlayEnabled() && demHiState.series.length >= 2) ? demHiState.series : [];
+  const groundSeries = terrain.length >= 2 ? terrain : demHi;
+  const useAmsl = groundSeries.length >= 2;
   const tMax = Math.max(...profileTargets.map((w) => w.tSec), 1);
 
   const toZ = (tSec, hAgl) => {
     if (!useAmsl) return hAgl;
-    const g = terrainAt(terrain, tSec);
+    const g = terrainAt(groundSeries, tSec);
     return (g ?? 0) + hAgl;
   };
 
   const ramp = expanded.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
   const handles = profileTargets.map((w) => ({ tSec: w.tSec, z: toZ(w.tSec, w.targetAgl) }));
 
-  let hMin = useAmsl ? Math.min(...terrain.map((p) => p.z)) : 0;
+  let hMin = useAmsl ? Math.min(...groundSeries.map((p) => p.z), ...(demHi.length ? demHi.map((p) => p.z) : [])) : 0;
   let hMax = Math.max(
     ...handles.map((p) => p.z),
     ...ramp.map((p) => p.z),
+    ...(demHi.length ? demHi.map((p) => p.z) : []),
     useAmsl ? hMin + 1 : Math.max(...profileTargets.map((w) => w.targetAgl), 1),
   );
   // Vertical axis always snaps to 1000 m bounds (floor min / ceil max).
@@ -842,14 +942,14 @@ function renderProfileSideView() {
   const pad = { l: 44, r: 10, t: 10, b: 22 };
   const iw = W - pad.l - pad.r;
   const ih = H - pad.t - pad.b;
-  sideViewGeom = { tMax, hMin, hMax, pad, iw, ih, W, H, terrain, useAmsl, expanded };
+  sideViewGeom = { tMax, hMin, hMax, pad, iw, ih, W, H, terrain: groundSeries, useAmsl, expanded };
 
   const x = (t) => pad.l + (t / tMax) * iw;
   const y = (z) => pad.t + ih - ((z - hMin) / (hMax - hMin)) * ih;
-  const poly = (pts, stroke, width) => {
+  const poly = (pts, stroke, width, extra = "") => {
     if (pts.length < 2) return "";
     const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
-    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"/>`;
+    return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"${extra}/>`;
   };
 
   // Invisible thick hit targets on profile segments (handles stay above).
@@ -865,7 +965,21 @@ function renderProfileSideView() {
   }
 
   let terrainSvg = "";
-  if (useAmsl) {
+  // Grey blob = Mapterhorn; black polyline = model terrain (when DEM on).
+  // Without DEM: model keeps the grey fill alone.
+  if (demHi.length >= 2) {
+    const top = demHi.map((p, i) =>
+      `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
+    const close =
+      `L${x(demHi[demHi.length - 1].tSec).toFixed(1)},${(pad.t + ih).toFixed(1)} ` +
+      `L${x(demHi[0].tSec).toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
+    terrainSvg =
+      `<path d="${top} ${close}" fill="#d8d2c4" fill-opacity="0.85" stroke="none" pointer-events="none"/>` +
+      poly(demHi, "#a89f8a", 1);
+    if (terrain.length >= 2) {
+      terrainSvg += poly(terrain.map((p) => ({ tSec: p.tSec, z: p.z })), "#1a1a18", 1.5);
+    }
+  } else if (terrain.length >= 2) {
     const top = terrain.map((p, i) =>
       `${i ? "L" : "M"}${x(p.tSec).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
     const close =
@@ -1315,6 +1429,8 @@ function enterProfileFromCandidate(run) {
 
 function tryPickCandidate(run) {
   enterProfileFromCandidate(run);
+  demHiState.key = "";
+  refreshDemHiOverlay();
 }
 
 function highlightResultCandidate(key) {
@@ -1792,6 +1908,16 @@ el("fp-preset").addEventListener("change", () => {
 el("fp-table-toggle").addEventListener("click", () => {
   setFpTableVisible(!!el("fp-table-block").hidden, { save: true });
 });
+el("fp-dem").addEventListener("change", () => {
+  persist();
+  refreshDemHiOverlay();
+});
+el("fp-dem-interval").addEventListener("change", () => {
+  el("fp-dem-interval").value = String(clampDemIntervalMin(+el("fp-dem-interval").value));
+  demHiState.key = ""; // force resample
+  persist();
+  if (demOverlayEnabled()) refreshDemHiOverlay();
+});
 el("fp-tbody").addEventListener("change", () => {
   readProfileTable();
   refreshProfileUI({ scheduleApi: true });
@@ -2027,6 +2153,11 @@ if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
   el("fp-preset").value = saved.profilePreset;
 }
 setFpTableVisible(saved.fpTableVisible !== false);
+if (saved.fpDemOverlay !== false) el("fp-dem").checked = true;
+else el("fp-dem").checked = false;
+if (Number.isFinite(saved.fpDemIntervalMin)) {
+  el("fp-dem-interval").value = String(clampDemIntervalMin(saved.fpDemIntervalMin));
+}
 if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
   profileTargets = cloneTargets(FP_PRESETS.climbcruise);
 }
@@ -2493,6 +2624,7 @@ async function runTrajectoriesViaApi({
     el("view3dbtn").disabled = false;
     if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
     setStatus(`API: ${keepSiblings ? "Profil" : `${runs.length} Trajektorie(n)`} · ${fmtMs(ms)}`);
+    refreshDemHiOverlay();
   } catch (err) {
     if (profileGen != null && profileGen !== state.profileRedrawGen) return;
     const ms = performance.now() - t0;
@@ -2761,6 +2893,7 @@ async function runTrajectories() {
     } else {
       setStatus("");
     }
+    if (!scrub) refreshDemHiOverlay();
   } catch (err) {
     setStatus(`Fehler: ${err.message} · ${fmtMs(performance.now() - t0)}`, true);
   } finally {
@@ -2975,6 +3108,7 @@ function showCrossSection(show) {
     el("xsec-hint").textContent = state.xsec.overlay
       ? "Höhe über NN · Gelände entlang des Referenzpfads"
       : "Höhe über NN · Gelände entlang des jeweiligen Pfades";
+    attachDemHiToXsec();
     renderCrossSection(el("xsec-body"), state.xsec);
   }
 }

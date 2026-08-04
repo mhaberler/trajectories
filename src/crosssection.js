@@ -49,6 +49,11 @@ export function renderCrossSection(host, data) {
 
   const xMax = Math.max(...series.map((s) => s.pts.at(-1).h)) || 1;
   const zAll = series.flatMap((s) => s.pts.flatMap((p) => Number.isFinite(p.g) ? [p.z, p.g] : [p.z]));
+  if (Array.isArray(data.terrainHi)) {
+    for (const p of data.terrainHi) {
+      if (Number.isFinite(p?.z)) zAll.push(p.z);
+    }
+  }
   const zLo = Math.min(...zAll);
   const zHi = Math.max(...zAll);
   const pad = Math.max(60, (zHi - zLo) * 0.06);
@@ -88,15 +93,36 @@ export function renderCrossSection(host, data) {
       );
     }
 
-    // Gelände entlang des Pfades der ersten Serie der Gruppe (Referenz).
-    const gPts = group[0].pts.filter((p) => Number.isFinite(p.g));
-    if (gPts.length > 1) {
-      const line = gPts.map((p) => `${x(p.h).toFixed(1)},${y(p.g).toFixed(1)}`).join(" ");
+    // Terrain: grey fill = Mapterhorn (first strip); black line = model orography.
+    const hi = (i === 0 && Array.isArray(data.terrainHi)) ? data.terrainHi : null;
+    const hiPts = hi && hi.length > 1
+      ? hi.map((p) => ({ h: p.tSec / 3600, z: p.z }))
+        .filter((p) => Number.isFinite(p.h) && Number.isFinite(p.z))
+      : [];
+    if (hiPts.length > 1) {
+      const line = hiPts.map((p) => `${x(p.h).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
       svg.append(mk("polygon", {
-        points: `${x(gPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(gPts.at(-1).h).toFixed(1)},${bottom.toFixed(1)}`,
+        points: `${x(hiPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(hiPts.at(-1).h).toFixed(1)},${bottom.toFixed(1)}`,
         fill: TERRAIN_FILL,
       }));
       svg.append(mk("polyline", { points: line, fill: "none", stroke: TERRAIN_EDGE, "stroke-width": 1 }));
+    }
+
+    const gPts = group[0].pts.filter((p) => Number.isFinite(p.g));
+    if (gPts.length > 1) {
+      const line = gPts.map((p) => `${x(p.h).toFixed(1)},${y(p.g).toFixed(1)}`).join(" ");
+      if (hiPts.length > 1) {
+        // Model terrain as black polyline when Mapterhorn fill is present.
+        svg.append(mk("polyline", {
+          points: line, fill: "none", stroke: INK, "stroke-width": 1.5,
+        }));
+      } else {
+        svg.append(mk("polygon", {
+          points: `${x(gPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(gPts.at(-1).h).toFixed(1)},${bottom.toFixed(1)}`,
+          fill: TERRAIN_FILL,
+        }));
+        svg.append(mk("polyline", { points: line, fill: "none", stroke: TERRAIN_EDGE, "stroke-width": 1 }));
+      }
     }
 
     // Trajektorien und Zeitmarken.

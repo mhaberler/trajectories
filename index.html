@@ -90,26 +90,42 @@
           <option value="empty">Leer</option>
         </select>
       </label>
+      <div class="fp-saved-row">
+        <input type="text" id="fp-save-name" maxlength="40" placeholder="Name…"
+               aria-label="Name für gespeichertes Profil" />
+        <button type="button" id="fp-save" class="secondary">Speichern</button>
+        <select id="fp-saved" aria-label="Gespeicherte Profile">
+          <option value="">— keine gespeichert —</option>
+        </select>
+        <button type="button" id="fp-apply-saved" class="secondary">Übernehmen</button>
+        <button type="button" id="fp-del-saved" class="secondary">Löschen</button>
+      </div>
       <div id="fp-side-wrap">
-        <div id="fp-side" aria-label="Höhenprofil Ziel und Rampe"></div>
+        <div id="fp-side" aria-label="Höhenprofil über Zeit"></div>
         <div id="fp-side-resize" role="separator" aria-orientation="horizontal"
              aria-label="Profilhöhe einstellen" tabindex="0" title="Ziehen zum Ändern der Höhe"></div>
       </div>
       <div id="fp-side-rates" class="hint mono" aria-live="polite"></div>
       <div id="fp-side-legend" class="hint">
         <span class="fp-leg-terrain">Gelände</span>
-        <span class="fp-leg-target">Ziel</span>
-        <span class="fp-leg-expand">Rampe</span>
+        <span class="fp-leg-expand">Profil</span>
       </div>
-      <table id="fp-table" aria-label="Flugprofil-Wegpunkte">
-        <thead>
-          <tr><th>Zeit (min)</th><th>Höhe AGL</th></tr>
-        </thead>
-        <tbody id="fp-tbody"></tbody>
-      </table>
-      <div class="fp-actions">
-        <button type="button" id="fp-add" class="secondary">Zeile +</button>
-        <button type="button" id="fp-rm" class="secondary">Zeile −</button>
+      <button type="button" id="fp-table-toggle" class="fp-table-toggle"
+              aria-expanded="true" aria-controls="fp-table-block">
+        <span class="fp-table-caret" aria-hidden="true"></span>
+        <span class="fp-table-toggle-label">Tabelle</span>
+      </button>
+      <div id="fp-table-block">
+        <table id="fp-table" aria-label="Flugprofil-Wegpunkte">
+          <thead>
+            <tr><th>Zeit (min)</th><th>Höhe AGL</th></tr>
+          </thead>
+          <tbody id="fp-tbody"></tbody>
+        </table>
+        <div class="fp-actions">
+          <button type="button" id="fp-add" class="secondary">Zeile +</button>
+          <button type="button" id="fp-rm" class="secondary">Zeile −</button>
+        </div>
       </div>
       <div id="fp-hint" class="hint mono"></div>
       <div id="fp-candhint" class="hint mono"></div>
@@ -126,16 +142,6 @@
           <span id="fp-modal-hlabel" class="mono">–</span>
         </label>
         <input type="range" id="fp-modal-h" min="0" max="6000" step="10" />
-        <fieldset class="fp-modal-mode">
-          <legend>Übergang</legend>
-          <label><input type="radio" name="fp-mode" value="jump" checked /> Sprung</label>
-          <label><input type="radio" name="fp-mode" value="default" /> Standardrate</label>
-          <label><input type="radio" name="fp-mode" value="custom" /> Rate</label>
-        </fieldset>
-        <label class="row" id="fp-modal-rate-row" hidden>
-          <span class="label">Rate (m/s)</span>
-          <input type="number" id="fp-modal-rate" min="1" max="7" step="0.5" value="3" />
-        </label>
         <p id="fp-modal-note" class="hint mono"></p>
         <div id="fp-modal-met" class="fp-modal-met mono" hidden></div>
         <button type="button" id="fp-modal-del" class="secondary" hidden>Punkt löschen</button>
@@ -176,14 +182,6 @@
         <span class="label">Zusatzparameter <span class="hint">(T, Td, RH an den Marken)</span></span>
         <input type="checkbox" id="metextras" />
       </label>
-      <div class="grid2">
-        <label>Steigrate (m/s)
-          <input type="number" id="ascentrate" min="1" max="7" step="0.5" value="3" />
-        </label>
-        <label>Sinkrate (m/s)
-          <input type="number" id="descentrate" min="1" max="7" step="0.5" value="3" />
-        </label>
-      </div>
       <label class="row">
         <span class="label">Lineal-Maximum <span class="hint">(oberes Ende des Höhenbalkens)</span></span>
         <select id="barmax"></select>

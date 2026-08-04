@@ -10,7 +10,7 @@ import {
   heightToDisplay, heightFromDisplay, heightSliderCfg,
 } from "./units.js";
 import { initGeocode } from "./geocode.js";
-import { expandProfile, targetStepPolyline } from "./profileExpand.js";
+import { expandProfile } from "./profileExpand.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -60,13 +60,17 @@ function persist() {
     useApi: el("useapi").checked,
     flightProfile: el("flightprofile").checked,
     profileTargets: profileTargets.map((w) => ({
-      tSec: w.tSec, targetAgl: w.targetAgl, rate: w.rate,
+      tSec: w.tSec, targetAgl: w.targetAgl,
     })),
     profilePreset: el("fp-preset").value,
-    ascentRate: clampRate(+el("ascentrate").value),
-    descentRate: clampRate(+el("descentrate").value),
+    savedProfiles: savedProfiles.map((p) => ({
+      id: p.id,
+      name: p.name,
+      targets: p.targets.map((w) => ({ tSec: w.tSec, targetAgl: w.targetAgl })),
+    })),
     panelWidth: Math.round(el("panel").getBoundingClientRect().width),
     fpSideHeight: Math.round(el("fp-side").getBoundingClientRect().height) || 110,
+    fpTableVisible: !el("fp-table-block")?.hidden,
     view3dRight,
     view3dBottom,
   };
@@ -141,9 +145,8 @@ const bar = el("heightbar");
 // --- Flugprofil (AGL über Zeit, API-only) -----------------------------------
 const FP_MAX_ROWS = 12;
 const FP_DIM_OPACITY = 0.18;
+const FP_SAVED_MAX = 20;
 const FP_PRESETS = {
-  // Heights/times from the Gneixendorf sketch; climb/descent rates come from
-  // Steigrate / Sinkrate when the preset is applied.
   climbcruise: [
     { tSec: 0, targetAgl: 150 },
     { tSec: 1200, targetAgl: 150 },
@@ -157,45 +160,128 @@ const FP_PRESETS = {
   ],
 };
 
-function clampRate(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 3;
-  return Math.min(7, Math.max(1, Math.round(n * 2) / 2));
-}
-
-/** Aufstieg–Reiseflug–Sinkflug with current Steig-/Sinkrate. */
-function climbCruiseTargets() {
-  const asc = clampRate(+el("ascentrate").value);
-  const desc = clampRate(+el("descentrate").value);
-  const base = FP_PRESETS.climbcruise;
-  return [
-    { tSec: base[0].tSec, targetAgl: base[0].targetAgl, rate: "jump" },
-    { tSec: base[1].tSec, targetAgl: base[1].targetAgl, rate: "jump" }, // low hold
-    { tSec: base[2].tSec, targetAgl: base[2].targetAgl, rate: asc },    // Steigrate → cruise
-    { tSec: base[3].tSec, targetAgl: base[3].targetAgl, rate: "jump" }, // cruise hold
-    { tSec: base[4].tSec, targetAgl: base[4].targetAgl, rate: desc },   // Sinkrate → end
-  ];
-}
-
 function defaultConstantTargets() {
   const h = activeHeight != null ? activeHeight : 500;
   const hours = Math.min(72, Math.max(1, +el("duration").value || 12));
   return [
-    { tSec: 0, targetAgl: h, rate: "jump" },
-    { tSec: hours * 3600, targetAgl: h, rate: "jump" },
+    { tSec: 0, targetAgl: h },
+    { tSec: hours * 3600, targetAgl: h },
   ];
 }
 
 function cloneTargets(list) {
   return list.map((w) => ({
-    tSec: w.tSec,
-    targetAgl: w.targetAgl ?? w.hAgl,
-    rate: w.rate === undefined ? "jump" : w.rate,
+    tSec: +w.tSec,
+    targetAgl: Math.max(0, +(w.targetAgl ?? w.hAgl)),
   }));
 }
 
-/** @type {{ tSec: number, targetAgl: number, rate: 'jump' | number }[]} */
-let profileTargets = climbCruiseTargets();
+/** @type {{ tSec: number, targetAgl: number }[]} */
+let profileTargets = cloneTargets(FP_PRESETS.climbcruise);
+
+/** @type {{ id: string, name: string, targets: { tSec: number, targetAgl: number }[] }[]} */
+let savedProfiles = [];
+
+function normalizeSavedProfiles(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const p of raw) {
+    if (!p || typeof p.name !== "string") continue;
+    const name = p.name.trim().slice(0, 40);
+    if (!name) continue;
+    const targets = cloneTargets(Array.isArray(p.targets) ? p.targets : []);
+    if (validateProfileTargets(targets)) continue;
+    out.push({
+      id: typeof p.id === "string" && p.id ? p.id : `p-${Date.now()}-${out.length}`,
+      name,
+      targets,
+    });
+    if (out.length >= FP_SAVED_MAX) break;
+  }
+  return out;
+}
+
+function renderSavedProfileSelect(selectId = null) {
+  const sel = el("fp-saved");
+  if (!sel) return;
+  const keep = selectId ?? sel.value;
+  sel.replaceChildren();
+  if (!savedProfiles.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— keine gespeichert —";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    el("fp-apply-saved").disabled = true;
+    el("fp-del-saved").disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const p of savedProfiles) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    sel.appendChild(opt);
+  }
+  if (keep && savedProfiles.some((p) => p.id === keep)) sel.value = keep;
+  el("fp-apply-saved").disabled = false;
+  el("fp-del-saved").disabled = false;
+}
+
+function saveCurrentProfile() {
+  const name = (el("fp-save-name").value || "").trim().slice(0, 40);
+  if (!name) {
+    setStatus("Bitte einen Namen für das Profil eingeben.", true);
+    return;
+  }
+  const err = validateProfileTargets(profileTargets);
+  if (err) {
+    setStatus(err, true);
+    return;
+  }
+  const targets = cloneTargets(profileTargets);
+  const key = name.toLowerCase();
+  const existing = savedProfiles.find((p) => p.name.toLowerCase() === key);
+  if (existing) {
+    existing.targets = targets;
+    existing.name = name;
+    renderSavedProfileSelect(existing.id);
+  } else {
+    if (savedProfiles.length >= FP_SAVED_MAX) {
+      setStatus(`Maximal ${FP_SAVED_MAX} gespeicherte Profile.`, true);
+      return;
+    }
+    const id = `p-${Date.now()}`;
+    savedProfiles.push({ id, name, targets });
+    savedProfiles.sort((a, b) => a.name.localeCompare(b.name, "de"));
+    renderSavedProfileSelect(id);
+  }
+  el("fp-save-name").value = name;
+  persist();
+  setStatus(`Profil „${name}“ gespeichert.`);
+}
+
+function applySavedProfile() {
+  const id = el("fp-saved").value;
+  const hit = savedProfiles.find((p) => p.id === id);
+  if (!hit) return;
+  state.profileEdit = null;
+  profileTargets = cloneTargets(hit.targets);
+  el("fp-save-name").value = hit.name;
+  refreshProfileUI({ scheduleApi: true });
+  el("fp-candhint").textContent = `Gespeichertes Profil „${hit.name}“ übernommen.`;
+}
+
+function deleteSavedProfile() {
+  const id = el("fp-saved").value;
+  const hit = savedProfiles.find((p) => p.id === id);
+  if (!hit) return;
+  if (!confirm(`Profil „${hit.name}“ löschen?`)) return;
+  savedProfiles = savedProfiles.filter((p) => p.id !== id);
+  renderSavedProfileSelect();
+  persist();
+  setStatus(`Profil „${hit.name}“ gelöscht.`);
+}
 
 function runKey(run) {
   return `${run.heightM}|${run.method}|${run.label}`;
@@ -205,9 +291,21 @@ function applyProfilePreset(key) {
   state.profileEdit = null;
   if (key === "constant") profileTargets = defaultConstantTargets();
   else if (key === "empty") profileTargets = cloneTargets(FP_PRESETS.empty);
-  else profileTargets = climbCruiseTargets();
+  else profileTargets = cloneTargets(FP_PRESETS.climbcruise);
   refreshProfileUI({ scheduleApi: false });
   el("fp-candhint").textContent = "";
+}
+
+function setFpTableVisible(visible, { save = false } = {}) {
+  const block = el("fp-table-block");
+  const btn = el("fp-table-toggle");
+  if (!block || !btn) return;
+  const on = !!visible;
+  block.hidden = !on;
+  btn.setAttribute("aria-expanded", on ? "true" : "false");
+  btn.title = on ? "Tabelle ausblenden" : "Tabelle einblenden";
+  btn.setAttribute("aria-label", on ? "Tabelle ausblenden" : "Tabelle einblenden");
+  if (save) persist();
 }
 
 function renderProfileTable() {
@@ -264,11 +362,9 @@ function readProfileTable() {
     const min = Number(tInp?.value);
     const hDisp = Number(hInp?.value);
     if (!Number.isFinite(min) || !Number.isFinite(hDisp)) continue;
-    const prevRate = profileTargets[i]?.rate ?? "jump";
     next.push({
       tSec: Math.max(0, Math.round(min * 60)),
       targetAgl: Math.max(0, Math.round(heightFromDisplay(hDisp))),
-      rate: prevRate,
     });
   }
   if (next.length >= 2) profileTargets = next;
@@ -306,7 +402,7 @@ function updateProfileHint() {
   }
   const lastH = profileTargets[profileTargets.length - 1].tSec / 3600;
   hint.textContent =
-    `${profileTargets.length} Ziele · ${expanded.length} API-Punkte · bis ${lastH.toFixed(lastH < 10 ? 1 : 0)} h`;
+    `${profileTargets.length} Punkte · bis ${lastH.toFixed(lastH < 10 ? 1 : 0)} h`;
   hint.classList.remove("error");
 }
 
@@ -404,7 +500,6 @@ function profileWaypointContext(run, i) {
     z: pos?.z,
     tSec: w.tSec,
     targetAgl: w.targetAgl,
-    rate: w.rate,
     u: nearestMet?.u,
     v: nearestMet?.v,
     met: bestD < 120_000 ? nearestMet?.met : undefined,
@@ -454,11 +549,6 @@ function markerHoverRows(i, run) {
     { label: "Zeit", value: `${Math.round(w.tSec / 60)} min` },
     { label: "Höhe AGL", value: fmtHeight(w.targetAgl) },
   ];
-  if (w.rate === "jump" || w.rate == null) {
-    rows.push({ label: "Rate", value: "Sprung" });
-  } else if (Number.isFinite(+w.rate)) {
-    rows.push({ label: "Rate", value: fmtVertRate(+w.rate) });
-  }
   const ctx = profileWaypointContext(run, i);
   if (ctx) {
     if (Number.isFinite(ctx.z)) rows.push({ label: "Höhe NN", value: fmtHeight(ctx.z) });
@@ -731,8 +821,6 @@ function renderProfileSideView() {
     return (g ?? 0) + hAgl;
   };
 
-  const stepsAgl = targetStepPolyline(profileTargets);
-  const steps = stepsAgl.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
   const ramp = expanded.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
   const handles = profileTargets.map((w) => ({ tSec: w.tSec, z: toZ(w.tSec, w.targetAgl) }));
 
@@ -764,7 +852,7 @@ function renderProfileSideView() {
     return `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${width}" pointer-events="none"/>`;
   };
 
-  // Invisible thick hit targets on Rampe segments (handles stay above).
+  // Invisible thick hit targets on profile segments (handles stay above).
   let segHits = "";
   for (let i = 0; i < expanded.length - 1; i++) {
     const a = expanded[i];
@@ -818,7 +906,6 @@ function renderProfileSideView() {
   host.innerHTML =
     `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
     terrainSvg +
-    poly(steps, "#9c9b95", 1.5) +
     poly(ramp, "#1c5cab", 2) +
     segHits +
     axes +
@@ -1130,7 +1217,7 @@ function insertProfileTarget(tSec, hAgl) {
     setStatus("Kein freier Zeit-Slot für neuen Punkt.", true);
     return false;
   }
-  profileTargets.push({ tSec: t, targetAgl: h, rate: "jump" });
+  profileTargets.push({ tSec: t, targetAgl: h });
   profileTargets.sort((a, b) => a.tSec - b.tSec);
   afterProfileTargetsMutated();
   setStatus(`Profilpunkt bei ${Math.round(t / 60)} min · ${fmtHeight(h)} AGL`);
@@ -1182,9 +1269,6 @@ function applyProfileUI() {
   applyModeUI();
 }
 
-function defaultRateForDelta(dh) {
-  return dh >= 0 ? clampRate(+el("ascentrate").value) : clampRate(+el("descentrate").value);
-}
 
 function enterProfileFromCandidate(run) {
   if (!state.lastRuns?.runs?.length) return;
@@ -1210,7 +1294,6 @@ function enterProfileFromCandidate(run) {
   profileTargets = uniq.map((t) => ({
     tSec: t,
     targetAgl: run.heightM,
-    rate: "jump",
   }));
 
   const key = runKey(run);
@@ -1303,18 +1386,6 @@ function openProfileModal(index, markerCtx = null) {
   slider.step = String(cfg.step);
   slider.value = String(Math.round(heightToDisplay(w.targetAgl)));
   el("fp-modal-hlabel").textContent = fmtHeight(w.targetAgl);
-  const rate = w.rate;
-  let modeVal = "jump";
-  if (rate !== "jump" && rate != null) {
-    const asc = clampRate(+el("ascentrate").value);
-    const desc = clampRate(+el("descentrate").value);
-    modeVal = (rate === asc || rate === desc) ? "default" : "custom";
-    el("fp-modal-rate").value = String(rate);
-  }
-  for (const r of el("fp-modal").querySelectorAll('input[name="fp-mode"]')) {
-    r.checked = r.value === modeVal;
-  }
-  el("fp-modal-rate-row").hidden = modeVal !== "custom";
   el("fp-modal-title").textContent = `Marke · ${Math.round(w.tSec / 60)} min`;
   updateModalNote();
   const dir = markerCtx
@@ -1358,47 +1429,17 @@ function updateModalNote() {
     rateParts.push(`${fmtVertRate(geo)} →`);
   }
   const rateLine = rateParts.length ? `Vertikalrate ${rateParts.join(" · ")}` : "";
-
-  if (i === 0) {
-    el("fp-modal-note").textContent = rateLine
-      ? `Startpunkt · ${rateLine}`
-      : "Startpunkt: Höhe ohne Rampe davor.";
-    return;
-  }
-  const w = profileTargets[i];
-  const prev = profileTargets[i - 1];
-  const dh = h - prev.targetAgl;
-  const mode = el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value;
-  let rampNote = "";
-  if (mode === "jump" || Math.abs(dh) < 1) {
-    rampNote = "Sprung: steile Linie über das ganze Intervall.";
-  } else {
-    const r = mode === "custom"
-      ? clampRate(+el("fp-modal-rate").value)
-      : defaultRateForDelta(dh);
-    const need = Math.abs(dh) / r;
-    const gap = w.tSec - prev.tSec;
-    rampNote = need > gap
-      ? `Gap ${(gap).toFixed(0)} s zu kurz für ${r} m/s → Rate wird geclampt.`
-      : `Rampe ${(need).toFixed(0)} s · Start bei t=${Math.round((w.tSec - need) / 60)} min`;
-  }
-  el("fp-modal-note").textContent = rateLine ? `${rateLine}\n${rampNote}` : rampNote;
+  el("fp-modal-note").textContent = i === 0
+    ? (rateLine ? `Startpunkt · ${rateLine}` : "Startpunkt")
+    : (rateLine || "Höhe mit Schieberegler ändern; Zeit per Ziehen im Profil.");
 }
 
 function applyModalToTarget() {
   if (profileModalIndex == null) return;
   const h = Math.max(0, Math.round(heightFromDisplay(+el("fp-modal-h").value)));
-  const mode = el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value || "jump";
-  const prevH = profileModalIndex > 0
-    ? profileTargets[profileModalIndex - 1].targetAgl
-    : h;
-  let rate = "jump";
-  if (mode === "default") rate = defaultRateForDelta(h - prevH);
-  else if (mode === "custom") rate = clampRate(+el("fp-modal-rate").value);
   profileTargets[profileModalIndex] = {
     ...profileTargets[profileModalIndex],
     targetAgl: h,
-    rate: profileModalIndex === 0 ? "jump" : rate,
   };
   el("fp-modal-hlabel").textContent = fmtHeight(h);
   updateModalNote();
@@ -1748,6 +1789,9 @@ el("fp-preset").addEventListener("change", () => {
   applyProfilePreset(el("fp-preset").value);
   persist();
 });
+el("fp-table-toggle").addEventListener("click", () => {
+  setFpTableVisible(!!el("fp-table-block").hidden, { save: true });
+});
 el("fp-tbody").addEventListener("change", () => {
   readProfileTable();
   refreshProfileUI({ scheduleApi: true });
@@ -1760,7 +1804,6 @@ el("fp-add").addEventListener("click", () => {
   profileTargets.push({
     tSec: last.tSec + 1800,
     targetAgl: last.targetAgl,
-    rate: "jump",
   });
   refreshProfileUI({ scheduleApi: true });
   persist();
@@ -1786,21 +1829,14 @@ el("fp-modal-del")?.addEventListener("click", () => {
   removeProfileTarget(i);
 });
 el("fp-modal-h").addEventListener("input", applyModalToTarget);
-el("fp-modal-rate").addEventListener("change", applyModalToTarget);
-for (const r of el("fp-modal").querySelectorAll('input[name="fp-mode"]')) {
-  r.addEventListener("change", () => {
-    el("fp-modal-rate-row").hidden =
-      el("fp-modal").querySelector('input[name="fp-mode"]:checked')?.value !== "custom";
-    applyModalToTarget();
-  });
-}
-el("ascentrate").addEventListener("change", () => {
-  el("ascentrate").value = String(clampRate(+el("ascentrate").value));
-  persist();
-});
-el("descentrate").addEventListener("change", () => {
-  el("descentrate").value = String(clampRate(+el("descentrate").value));
-  persist();
+el("fp-save").addEventListener("click", saveCurrentProfile);
+el("fp-apply-saved").addEventListener("click", applySavedProfile);
+el("fp-del-saved").addEventListener("click", deleteSavedProfile);
+el("fp-save-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    saveCurrentProfile();
+  }
 });
 
 // --- Methoden (Berechnungsarten): eine oder mehrere per Häkchen -------------
@@ -1976,15 +2012,12 @@ el("metextras").addEventListener("change", () => {
 });
 
 // Flugprofil wiederherstellen (nach useApi/liveMode, vor settingsReady)
+savedProfiles = normalizeSavedProfiles(saved.savedProfiles);
+renderSavedProfileSelect();
 const savedTargets = Array.isArray(saved.profileTargets) ? saved.profileTargets
   : Array.isArray(saved.profileWaypoints) ? saved.profileWaypoints : null;
 if (savedTargets?.length >= 2) {
-  const restored = savedTargets
-    .map((w) => ({
-      tSec: +w.tSec,
-      targetAgl: +(w.targetAgl ?? w.hAgl),
-      rate: w.rate === "jump" || w.rate == null ? "jump" : +w.rate,
-    }))
+  const restored = cloneTargets(savedTargets)
     .filter((w) => Number.isFinite(w.tSec) && Number.isFinite(w.targetAgl));
   if (restored.length >= 2 && !validateProfileTargets(restored)) {
     profileTargets = restored;
@@ -1993,11 +2026,9 @@ if (savedTargets?.length >= 2) {
 if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
   el("fp-preset").value = saved.profilePreset;
 }
-if (Number.isFinite(saved.ascentRate)) el("ascentrate").value = String(clampRate(saved.ascentRate));
-if (Number.isFinite(saved.descentRate)) el("descentrate").value = String(clampRate(saved.descentRate));
-// Rebuild default climbcruise after rates are known (skip if waypoints were restored).
+setFpTableVisible(saved.fpTableVisible !== false);
 if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
-  profileTargets = climbCruiseTargets();
+  profileTargets = cloneTargets(FP_PRESETS.climbcruise);
 }
 if (saved.flightProfile) {
   el("flightprofile").checked = true;

@@ -136,7 +136,7 @@ Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection 
 | `marker_interval_climbing` | denser markers on climb/descent (minutes, default 10) |
 | `clearance_m` | stop when AGL &lt; clearance (default 0) |
 
-Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Web UI: **Flugprofil** (presets, waypoint table, pick a candidate track, marker modal with jump/rate ramps, altitude–time side view); rates expand client-side into `profile_*`; results draw on map, cross-section, and 3D.
+Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Web UI: **Flugprofil** (built-in presets, named saved profiles in localStorage, waypoint table + 2D side-view edit, pick a candidate track); waypoints expand client-side into `profile_*`; results draw on map, cross-section, and 3D.
 
 ```bash
 curl -sG 'https://trajectory.mah.priv.at/v1/trajectory' \

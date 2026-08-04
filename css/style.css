@@ -200,6 +200,34 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 #heighthint.error { color: #b3261e; font-weight: 600; }
 
 #flightprofile-panel { margin: 4px 0 10px; }
+.fp-table-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #52514e;
+  cursor: pointer;
+}
+.fp-table-toggle:hover { color: #1c5cab; }
+.fp-table-caret {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 5px 0 5px 7px;
+  border-color: transparent transparent transparent currentColor;
+  transition: transform 0.12s ease;
+}
+.fp-table-toggle[aria-expanded="true"] .fp-table-caret {
+  transform: rotate(90deg);
+}
+#fp-table-block[hidden] { display: none; }
 #fp-table {
   width: 100%;
   border-collapse: collapse;
@@ -336,9 +364,8 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 }
 #fp-side-rates:empty { display: none; }
 #fp-side-legend { display: flex; gap: 12px; margin: 4px 0; flex-wrap: wrap; }
-.fp-leg-target::before,
-.fp-leg-expand::before,
-.fp-leg-terrain::before {
+.fp-leg-terrain::before,
+.fp-leg-expand::before {
   content: "";
   display: inline-block;
   width: 14px;
@@ -347,8 +374,25 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   vertical-align: middle;
 }
 .fp-leg-terrain::before { background: #a89f8a; height: 6px; width: 12px; border-radius: 1px; }
-.fp-leg-target::before { background: #9c9b95; }
 .fp-leg-expand::before { background: #1c5cab; }
+
+.fp-saved-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 6px 0 8px;
+}
+.fp-saved-row #fp-save-name {
+  flex: 1 1 7rem;
+  min-width: 5rem;
+  max-width: 12rem;
+}
+.fp-saved-row #fp-saved {
+  flex: 1 1 8rem;
+  min-width: 7rem;
+}
+.fp-saved-row button { flex: 0 0 auto; }
 
 .fp-modal {
   position: fixed;
@@ -379,18 +423,6 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   font-size: 20px;
   cursor: pointer;
   color: #52514e;
-}
-.fp-modal-mode {
-  border: 1px solid #c9c8c2;
-  border-radius: 5px;
-  margin: 10px 0 6px;
-  padding: 6px 8px;
-}
-.fp-modal-mode legend { padding: 0 4px; font-size: 12px; color: #52514e; }
-.fp-modal-mode label {
-  display: block;
-  padding: 2px 0;
-  cursor: pointer;
 }
 #fp-modal-h { width: 100%; margin: 4px 0 8px; }
 .fp-modal-met {

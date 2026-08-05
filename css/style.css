@@ -242,6 +242,13 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   padding: 2px 4px 4px 0;
 }
 #fp-table td { padding: 2px 6px 2px 0; }
+#fp-table th:nth-child(3),
+#fp-table td.fp-amsl-cell {
+  text-align: right;
+  white-space: nowrap;
+  color: #7a7970;
+  padding-right: 0;
+}
 #fp-table input[type="number"] {
   width: 100%;
   font: inherit;

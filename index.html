@@ -132,7 +132,7 @@
           <input type="radio" name="fp-inherit" id="fp-inherit-agl" value="agl" />
           AGL
         </label>
-        <span class="hint">spätere Marker · AMSL = konstante NN-Höhe</span>
+        <span id="fp-inherit-hint" class="hint">spätere Marker · AMSL = konstante NN-Höhe</span>
       </div>
       <button type="button" id="fp-table-toggle" class="fp-table-toggle"
               aria-expanded="true" aria-controls="fp-table-block">
@@ -142,7 +142,7 @@
       <div id="fp-table-block">
         <table id="fp-table" aria-label="Flugprofil-Wegpunkte">
           <thead>
-            <tr><th>Zeit (min)</th><th>Höhe AGL</th></tr>
+            <tr><th>Zeit (min)</th><th>Höhe AGL</th><th>AMSL</th></tr>
           </thead>
           <tbody id="fp-tbody"></tbody>
         </table>

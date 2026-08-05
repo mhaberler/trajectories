@@ -323,6 +323,14 @@ function setFpTableVisible(visible, { save = false } = {}) {
   if (save) persist();
 }
 
+/** Display AMSL for a waypoint (informational; not an editable table field). */
+function profileTableAmslText(w) {
+  const amsl = waypointAmsl(w);
+  if (amsl == null) return "–";
+  const unit = heightUnit();
+  return `${Math.round(heightToDisplay(amsl))} ${unit === "ft" ? "ft" : "m"}`;
+}
+
 function renderProfileTable() {
   const tbody = el("fp-tbody");
   tbody.replaceChildren();
@@ -359,8 +367,14 @@ function renderProfileTable() {
     wrap.appendChild(inpH);
     wrap.appendChild(u);
     tdH.appendChild(wrap);
+    const tdAmsl = document.createElement("td");
+    tdAmsl.className = "fp-amsl-cell hint mono";
+    tdAmsl.dataset.field = "amsl";
+    tdAmsl.title = "NN-Höhe (aus AGL + Gelände; nicht gespeichert)";
+    tdAmsl.textContent = profileTableAmslText(w);
     tr.appendChild(tdT);
     tr.appendChild(tdH);
+    tr.appendChild(tdAmsl);
     tbody.appendChild(tr);
   }
   el("fp-add").disabled = profileTargets.length >= FP_MAX_ROWS;
@@ -914,7 +928,7 @@ function sideViewClientToAgl(clientY, tSecForTerrain = null) {
   if (!g?.useAmsl) return z;
   const t = tSecForTerrain ?? (sideDrag != null ? profileTargets[sideDrag.i]?.tSec : null);
   if (t == null) return z;
-  const ground = terrainAt(g.terrain, t);
+  const ground = terrainAt(g.terrain.length >= 2 ? g.terrain : profileGroundSeries(), t);
   return Math.round(Math.min(barMax, Math.max(0, z - (ground ?? 0))));
 }
 
@@ -941,25 +955,28 @@ function renderProfileSideView() {
   const run = profileCandidateRun();
   const terrain = terrainSeriesFromRun(run);
   const demHi = (demOverlayEnabled() && demHiState.series.length >= 2) ? demHiState.series : [];
-  const groundSeries = terrain.length >= 2 ? terrain : demHi;
-  const useAmsl = groundSeries.length >= 2 || demHi.length >= 2;
+  // One ground series for axis + AGL↔AMSL (DEM when on, else model) — never mix.
+  const groundSeries = profileGroundSeries();
+  const useAmsl = groundSeries.length >= 2;
   const tMax = Math.max(...profileTargets.map((w) => w.tSec), 1);
   const inheritAmsl = profileInheritMode() === "amsl";
 
   const toZ = (tSec, hAgl) => {
     if (!useAmsl) return hAgl;
-    const g = terrainAt(groundSeries.length >= 2 ? groundSeries : demHi, tSec);
+    const g = terrainAt(groundSeries, tSec);
     return (g ?? 0) + hAgl;
   };
 
-  // AMSL inherit: markers store absolute NN; draw that (flat after cascade). Else AGL+ground.
+  // AMSL inherit: prefer stored absolute NN (flat after cascade). Else AGL+ground.
   const handles = profileTargets.map((w) => ({
     tSec: w.tSec,
     z: (inheritAmsl && Number.isFinite(w.targetAmsl))
       ? w.targetAmsl
       : toZ(w.tSec, w.targetAgl),
   }));
-  const ramp = (inheritAmsl && profileTargets.every((w) => Number.isFinite(w.targetAmsl)))
+  // AMSL mode: blue line = piecewise-linear through handles (not AGL-expanded×model).
+  // Otherwise a V appears when only some markers have targetAmsl / model≠DEM.
+  const ramp = inheritAmsl
     ? handles
     : expanded.map((p) => ({ tSec: p.tSec, z: toZ(p.tSec, p.hAgl) }));
 
@@ -995,7 +1012,7 @@ function renderProfileSideView() {
   const ih = H - pad.t - pad.b;
   sideViewGeom = {
     tMax, hMin, hMax, pad, iw, ih, W, H,
-    terrain: groundSeries.length >= 2 ? groundSeries : demHi,
+    terrain: groundSeries,
     useAmsl,
     expanded,
   };
@@ -1179,13 +1196,14 @@ function wireProfileSideView() {
     if (rawT == null) return;
     const tSec = clampProfileTime(i, rawT);
     const cur = profileTargets[i];
+    // AMSL inherit + AMSL axis: edit absolute NN and copy that value to the right.
     const amslMode = profileInheritMode() === "amsl" && !!sideViewGeom?.useAmsl;
     const hEdit = amslMode
       ? sideViewClientToZ(e.clientY)
       : sideViewClientToAgl(e.clientY, tSec);
     if (hEdit == null) return;
     const prevKey = amslMode
-      ? (Number.isFinite(cur.targetAmsl) ? cur.targetAmsl : null)
+      ? (Number.isFinite(cur.targetAmsl) ? cur.targetAmsl : Math.round(toZPreview(cur)))
       : cur.targetAgl;
     if (hEdit === prevKey && tSec === cur.tSec && !sideDrag.moved) return;
     sideDrag.moved = true;
@@ -1201,6 +1219,8 @@ function wireProfileSideView() {
       const w = profileTargets[j];
       const inpH = rows[j]?.querySelector('input[data-field="h"]');
       if (inpH && w) inpH.value = String(Math.round(heightToDisplay(w.targetAgl)));
+      const amslCell = rows[j]?.querySelector('[data-field="amsl"]');
+      if (amslCell && w) amslCell.textContent = profileTableAmslText(w);
     }
     if (profileModalIndex != null && profileModalIndex >= i) {
       const mw = profileTargets[profileModalIndex];
@@ -1384,23 +1404,48 @@ function profileInheritMode() {
   return el("fp-inherit-agl")?.checked ? "agl" : "amsl";
 }
 
-/** Ground for AGL↔AMSL *encoding* only (API/table) — not used to decide inherited AMSL. */
-function profileEncodeGroundSeries() {
+/**
+ * Single ground series for side-view AMSL axis and AGL↔AMSL encoding.
+ * Prefer Mapterhorn when the overlay is on; else model traj orography.
+ */
+function profileGroundSeries() {
   if (demOverlayEnabled() && demHiState.series.length >= 2) return demHiState.series;
   return terrainSeriesFromRun(profileCandidateRun());
 }
 
+/** @deprecated alias — same as profileGroundSeries */
+function profileEncodeGroundSeries() {
+  return profileGroundSeries();
+}
+
 function encodeAglFromAmsl(amsl, tSec, fallbackAgl = 0) {
-  const g = terrainAt(profileEncodeGroundSeries(), tSec);
+  const g = terrainAt(profileGroundSeries(), tSec);
   if (g == null || !Number.isFinite(g)) return Math.max(0, Math.round(fallbackAgl));
   return Math.max(0, Math.round(amsl - g));
 }
 
 function waypointAmsl(w) {
   if (Number.isFinite(w?.targetAmsl)) return Math.round(w.targetAmsl);
-  const g = terrainAt(profileEncodeGroundSeries(), w.tSec);
+  const g = terrainAt(profileGroundSeries(), w.tSec);
   if (g == null || !Number.isFinite(g)) return null;
   return Math.round(g + w.targetAgl);
+}
+
+/** Chart AMSL (or AGL if no ground) for early-out while dragging. */
+function toZPreview(w) {
+  if (!w) return null;
+  if (Number.isFinite(w.targetAmsl)) return Math.round(w.targetAmsl);
+  const g = terrainAt(profileGroundSeries(), w.tSec);
+  if (g == null || !Number.isFinite(g)) return Math.round(w.targetAgl);
+  return Math.round(g + w.targetAgl);
+}
+
+function updateInheritHint() {
+  const hint = el("fp-inherit-hint");
+  if (!hint) return;
+  hint.textContent = profileInheritMode() === "agl"
+    ? "spätere Marker · AGL = konstante Höhe über Grund"
+    : "spätere Marker · AMSL = konstante NN-Höhe";
 }
 
 /**
@@ -1426,10 +1471,10 @@ function inheritWaypointFromEarlier(earlier, tSec) {
 }
 
 /**
- * Cascade height from `fromIndex` to the right.
+ * Cascade height from `fromIndex` to the right (inclusive).
  * AGL mode: `h` is AGL — copy to later markers.
  * AMSL mode: `h` is absolute AMSL (m NN) — copy that AMSL to later markers;
- *   AGL is only re-encoded for API/table (not part of inheritance).
+ *   AGL is re-encoded from the same ground series the side view uses.
  * @returns {boolean}
  */
 function cascadeProfileAltitude(fromIndex, h) {
@@ -1438,17 +1483,17 @@ function cascadeProfileAltitude(fromIndex, h) {
 
   if (profileInheritMode() === "agl") {
     for (let j = fromIndex; j < profileTargets.length; j++) {
-      const { targetAmsl: _drop, ...rest } = profileTargets[j];
-      profileTargets[j] = { ...rest, targetAgl: val };
+      const w = profileTargets[j];
+      profileTargets[j] = { tSec: w.tSec, targetAgl: val };
     }
     return true;
   }
 
-  // AMSL: propagate the absolute NN value; encode AGL per time for API only.
+  // AMSL: same NN height on this marker and every marker to the right.
   for (let j = fromIndex; j < profileTargets.length; j++) {
     const w = profileTargets[j];
     profileTargets[j] = {
-      ...w,
+      tSec: w.tSec,
       targetAmsl: val,
       targetAgl: encodeAglFromAmsl(val, w.tSec, w.targetAgl),
     };
@@ -2074,10 +2119,12 @@ el("fp-dem-interval").addEventListener("change", () => {
   if (demOverlayEnabled()) refreshDemHiOverlay();
 });
 el("fp-inherit-amsl")?.addEventListener("change", () => {
+  updateInheritHint();
   persist();
   renderProfileSideView();
 });
 el("fp-inherit-agl")?.addEventListener("change", () => {
+  updateInheritHint();
   persist();
   renderProfileSideView();
 });
@@ -2339,6 +2386,7 @@ if (saved.fpInheritMode === "agl") {
 } else if (el("fp-inherit-amsl")) {
   el("fp-inherit-amsl").checked = true;
 }
+updateInheritHint();
 if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
   profileTargets = cloneTargets(FP_PRESETS.climbcruise);
 }

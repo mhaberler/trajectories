@@ -348,3 +348,50 @@ def test_trajectory_profile_happy_path(mock_compute):
     assert kwargs["marker_interval_climbing_min"] == 10
     assert kwargs["clearance_m"] == 0
     assert kwargs["methods"] == ["height"]
+
+
+def test_elevation_line_validation_too_few_points():
+    r = client.post(
+        "/v1/elevation/line",
+        json={"points": [{"lat": 47.8, "lon": 11.3, "t_sec": 0}], "interval_sec": 60},
+    )
+    assert r.status_code == 400
+    assert r.json().get("error") is True
+
+
+@patch("trajectories.mapterhorn.sample_line")
+def test_elevation_line_happy_path(mock_sample):
+    mock_sample.return_value = [
+        {"t_sec": 0.0, "lat": 47.8, "lon": 11.3, "z": 612.5},
+        {"t_sec": 60.0, "lat": 47.805, "lon": 11.305, "z": 620.0},
+        {"t_sec": 120.0, "lat": 47.81, "lon": 11.31, "z": 630.25},
+    ]
+    r = client.post(
+        "/v1/elevation/line",
+        json={
+            "points": [
+                {"lat": 47.8, "lon": 11.3, "t_sec": 0},
+                {"lat": 47.81, "lon": 11.31, "t_sec": 120},
+            ],
+            "interval_sec": 60,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "FeatureCollection"
+    assert body["properties"]["count"] == 3
+    assert len(body["features"]) == 3
+    assert body["features"][0]["properties"]["elevation"] == 612.5
+    assert body["features"][0]["properties"]["t_sec"] == 0.0
+    mock_sample.assert_called_once()
+
+
+@patch("trajectories.mapterhorn.elevation_at", return_value=555.25)
+def test_elevation_point_happy_path(mock_elev):
+    r = client.post("/v1/elevation/point", json={"lat": 47.8, "lon": 11.3})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "Feature"
+    assert body["geometry"]["coordinates"] == [11.3, 47.8]
+    assert body["properties"]["elevation"] == 555.25
+    mock_elev.assert_called_once()

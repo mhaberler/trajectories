@@ -136,7 +136,7 @@ Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection 
 | `marker_interval_climbing` | denser markers on climb/descent (minutes, default 10) |
 | `clearance_m` | stop when AGL &lt; clearance (default 0) |
 
-Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Web UI: **Flugprofil** (built-in presets, named saved profiles in localStorage, waypoint table + 2D side-view edit, pick a candidate track); waypoints expand client-side into `profile_*`; results draw on map, cross-section, and 3D. Optional **Mapterhorn** DEM overlay (browser PMTiles) densifies terrain along the candidate track for side view / Querschnitt; future: server-side `terrain_hires_m` on the API.
+Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Web UI: **Flugprofil** (built-in presets, named saved profiles in localStorage, waypoint table + 2D side-view edit, pick a candidate track); waypoints expand client-side into `profile_*`; results draw on map, cross-section, and 3D. Optional **Mapterhorn** DEM overlay densifies terrain along the candidate track via `POST /v1/elevation/line` (server PMTiles + ≤5 GiB disk tile cache); side view / Querschnitt consume the GeoJSON samples.
 
 ```bash
 curl -sG 'https://trajectory.mah.priv.at/v1/trajectory' \

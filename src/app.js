@@ -11,7 +11,7 @@ import {
 } from "./units.js";
 import { initGeocode } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
-import { sampleTrackTerrain, trackSampleKey } from "./dem/mapterhorn.js";
+import { trackSampleKey } from "./dem/mapterhorn.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -803,6 +803,38 @@ function attachDemHiToXsec() {
   if (!el("xsec").hidden) renderCrossSection(el("xsec-body"), state.xsec);
 }
 
+async function fetchElevationLine(pts, intervalSec, signal) {
+  const t0 = pts[0].tMs;
+  const body = {
+    points: pts.map((p) => ({
+      lat: p.lat,
+      lon: p.lon,
+      t_sec: (p.tMs - t0) / 1000,
+    })),
+    interval_sec: Math.max(15, intervalSec),
+  };
+  const resp = await fetch(`${TRAJECTORY_API}/v1/elevation/line`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || data?.error) {
+    throw new Error(data?.reason || `DEM HTTP ${resp.status}`);
+  }
+  const feats = Array.isArray(data?.features) ? data.features : [];
+  /** @type {{ tSec: number, z: number }[]} */
+  const series = [];
+  for (const f of feats) {
+    const tSec = +f?.properties?.t_sec;
+    const z = +f?.properties?.elevation;
+    if (Number.isFinite(tSec) && Number.isFinite(z)) series.push({ tSec, z });
+  }
+  series.sort((a, b) => a.tSec - b.tSec);
+  return series;
+}
+
 async function refreshDemHiOverlay() {
   updateDemLegend();
   if (!demOverlayEnabled()) {
@@ -849,7 +881,7 @@ async function refreshDemHiOverlay() {
   renderProfileSideView();
   attachDemHiToXsec();
   try {
-    const series = await sampleTrackTerrain(pts, { intervalSec, signal: ac.signal });
+    const series = await fetchElevationLine(pts, intervalSec, ac.signal);
     if (gen !== demHiState.gen) return;
     demHiState.key = key;
     demHiState.series = series;

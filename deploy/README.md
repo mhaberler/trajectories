@@ -37,6 +37,18 @@ source python/.venv/bin/activate
 pip install -e "python/[api,om]"
 ```
 
+`api` extras include FastAPI/uvicorn plus **Pillow** and **pmtiles** for Mapterhorn DEM (`POST /v1/elevation/*`).
+
+Mapterhorn on-disk tile cache (default **5 GiB**):
+
+```bash
+sudo mkdir -p /var/cache/trajectories/mapterhorn
+sudo chown openmeteo-api:openmeteo-api /var/cache/trajectories/mapterhorn
+# optional overrides in /etc/default/trajectories-api.env:
+#   TRAJECTORIES_MAPTERHORN_CACHE=/var/cache/trajectories/mapterhorn
+#   TRAJECTORIES_MAPTERHORN_CACHE_MAX_BYTES=5368709120
+```
+
 ## 2. systemd
 
 Runs as user `openmeteo-api`. Grant traverse on `/home/mah` (home is mode 700):

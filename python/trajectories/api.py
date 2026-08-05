@@ -10,6 +10,7 @@ from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
@@ -32,12 +33,14 @@ app = FastAPI(
         "are GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
         "properties.terrain_m (model orography m AMSL, parallel to coordinates). "
         "Point wind samples are available at GET /v1/wind (flat JSON). "
-        "Optional kinematic AGL flight profiles via profile_time + profile_height."
+        "Optional kinematic AGL flight profiles via profile_time + profile_height. "
+        "Mapterhorn DEM: POST /v1/elevation/point and /v1/elevation/line (GeoJSON)."
     ),
     version="0.1.0",
     openapi_tags=[
         {"name": "trajectory", "description": "Compute wind trajectories"},
         {"name": "wind", "description": "Sample wind at a single point"},
+        {"name": "elevation", "description": "Mapterhorn DEM elevation samples"},
         {"name": "meta", "description": "Health and service metadata"},
     ],
 )
@@ -46,7 +49,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -497,3 +500,98 @@ def wind(
 
     cache.put(key, result)
     return result
+
+
+class ElevationPointBody(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+
+
+class ElevationLinePoint(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    t_sec: float = Field(..., description="Time along track (seconds, absolute or relative)")
+
+
+class ElevationLineBody(BaseModel):
+    points: list[ElevationLinePoint] = Field(..., min_length=2)
+    interval_sec: float = Field(60, ge=15, le=3600)
+
+
+@app.post(
+    "/v1/elevation/point",
+    tags=["elevation"],
+    summary="Mapterhorn elevation at a point",
+    response_description="GeoJSON Feature Point",
+)
+def elevation_point(body: ElevationPointBody) -> JSONResponse:
+    try:
+        from . import mapterhorn as mapterhorn_dem
+    except ImportError as exc:
+        return _om_error(500, str(exc))
+    try:
+        elev = mapterhorn_dem.elevation_at(body.lat, body.lon)
+    except ImportError as exc:
+        return _om_error(500, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _om_error(500, f"DEM error: {exc}")
+    if elev is None or not math.isfinite(elev):
+        return _om_error(404, "No elevation at this location")
+    return JSONResponse(
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [body.lon, body.lat]},
+            "properties": {"elevation": round(float(elev), 2)},
+        }
+    )
+
+
+@app.post(
+    "/v1/elevation/line",
+    tags=["elevation"],
+    summary="Mapterhorn elevation samples along a timed polyline",
+    response_description="GeoJSON FeatureCollection of Points",
+)
+def elevation_line(body: ElevationLineBody) -> JSONResponse:
+    try:
+        from . import mapterhorn as mapterhorn_dem
+    except ImportError as exc:
+        return _om_error(500, str(exc))
+    if len(body.points) > mapterhorn_dem.MAX_LINE_POINTS:
+        return _om_error(
+            400,
+            f"Too many points (max {mapterhorn_dem.MAX_LINE_POINTS})",
+        )
+    pts = [{"lat": p.lat, "lon": p.lon, "t_sec": p.t_sec} for p in body.points]
+    try:
+        samples = mapterhorn_dem.sample_line(pts, body.interval_sec)
+    except ImportError as exc:
+        return _om_error(500, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _om_error(500, f"DEM error: {exc}")
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [s["lon"], s["lat"]],
+            },
+            "properties": {
+                "t_sec": s["t_sec"],
+                "elevation": round(s["z"], 2),
+            },
+        }
+        for s in samples
+    ]
+    return JSONResponse(
+        {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {
+                "interval_sec": max(
+                    mapterhorn_dem.MIN_INTERVAL_SEC, float(body.interval_sec)
+                ),
+                "count": len(features),
+            },
+        }
+    )

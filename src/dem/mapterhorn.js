@@ -6,9 +6,9 @@
  *   z > 12 → 6-{rx}-{ry}.pmtiles  (rx = x>>(z-6), ry = y>>(z-6))
  * Try z=15 … fall back to planet maxZoom (12).
  *
- * FUTURE: dense along-track sampling could move to the API
- * (e.g. terrain_hires_m on GeoJSON) so clients share cache and skip
- * browser tile I/O — do not remove this module until then.
+ * FUTURE: dense along-track sampling moved to the API
+ * (POST /v1/elevation/line). This module remains as a reference / offline
+ * fallback; the Flugprofil UI uses the API path.
  */
 
 import { PMTiles } from "pmtiles";

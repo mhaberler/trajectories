@@ -59,7 +59,6 @@ function persist() {
     methods: selectedMethods(),
     metExtras: el("metextras").checked,
     useApi: el("useapi").checked,
-    flightProfile: el("flightprofile").checked,
     profileTargets: profileTargets.map((w) => {
       const o = { tSec: w.tSec, targetAgl: w.targetAgl };
       if (Number.isFinite(w.targetAmsl)) o.targetAmsl = w.targetAmsl;
@@ -2420,11 +2419,6 @@ if (saved.fpInheritMode === "agl") {
 updateInheritHint();
 if (!(savedTargets?.length >= 2) && el("fp-preset").value === "climbcruise") {
   profileTargets = cloneTargets(FP_PRESETS.climbcruise);
-}
-if (saved.flightProfile) {
-  el("flightprofile").checked = true;
-  if (!el("useapi").checked) el("useapi").checked = true;
-  if (el("livemode").checked) el("livemode").checked = false;
 }
 applyProfileUI();
 

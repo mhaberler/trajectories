@@ -553,7 +553,7 @@ function appendWindMetRows(rows, m) {
 }
 
 /** @returns {{ label: string, value: string }[]} */
-function segmentHoverRows(expanded, i, run) {
+function segmentHoverRows(expanded, i) {
   const a = expanded[i];
   const b = expanded[i + 1];
   if (!a || !b) return [];
@@ -569,7 +569,6 @@ function segmentHoverRows(expanded, i, run) {
     const sign = dh > 0 ? "+" : "";
     rows.push({ label: "Δh", value: `${sign}${Math.round(dh)} m` });
   }
-  appendWindMetRows(rows, markerNearProfileTime(run, (a.tSec + b.tSec) / 2));
   return rows;
 }
 
@@ -657,7 +656,7 @@ function showSegmentHoverHint(segI) {
     hideSideHoverTip();
     return;
   }
-  showSideHoverRows(segmentHoverRows(expanded, segI, profileCandidateRun()));
+  showSideHoverRows(segmentHoverRows(expanded, segI));
 }
 
 function showMarkerHoverHint(ptI) {

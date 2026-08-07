@@ -3748,8 +3748,33 @@ function buildGPX({ runs, modelKey, t0Ms, direction }) {
   return out.join("\n");
 }
 
-/** KML — jede Trajektorie als eigenes Placemark mit eigenem LineStyle (Farbe
- *  als aabbggrr). Höhen absolut (AMSL); tessellate für saubere Bodenprojektion. */
+/** HTML balloon body for a trajectory marker (Google Earth clickable Point).
+ *  Same fields/formatting as the map marker popup. */
+function kmlMarkerDescription(m, label) {
+  const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
+  const rows = [
+    `<strong>${xmlEsc(fmtTime(m.tMs))}</strong>`,
+    xmlEsc(label),
+    Number.isFinite(m.z) ? `Höhe: ${xmlEsc(fmtHeight(m.z))} NN` : null,
+    Number.isFinite(m.u) && Number.isFinite(m.v)
+      ? `Wind: ${xmlEsc(fmtWind(Math.hypot(m.u, m.v)))} aus ${Math.round(dir)}°`
+      : null,
+    Number.isFinite(m.met?.t) ? `T: ${m.met.t.toFixed(1)} °C` : null,
+    Number.isFinite(m.met?.td) ? `Td: ${m.met.td.toFixed(1)} °C` : null,
+    Number.isFinite(m.met?.rh) ? `RH: ${Math.round(m.met.rh)} %` : null,
+    Number.isFinite(m.met?.p) ? `p: ${m.met.p.toFixed(0)} hPa` : null,
+    `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E`,
+  ].filter(Boolean);
+  return `<![CDATA[<div>${rows.join("<br/>")}</div>]]>`;
+}
+
+/** Stable Style id from track color (#rrggbb → hex without #). */
+function kmlStyleId(hex) {
+  return `m-${String(hex).replace("#", "").toLowerCase()}`;
+}
+
+/** KML — Folder per track: LineString + clickable marker Point Placemarks
+ *  (HTML description balloons). Höhen absolut (AMSL); tessellate für Boden. */
 function buildKML({ runs, modelKey, direction }) {
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -3757,6 +3782,24 @@ function buildKML({ runs, modelKey, direction }) {
     "  <Document>",
     `    <name>Trajektorien ${xmlEsc(modelKey)}</name>`,
   ];
+  // Shared IconStyle per color (referenced by marker Placemarks).
+  const seenColors = new Set();
+  for (const run of runs) {
+    const id = kmlStyleId(run.color);
+    if (seenColors.has(id)) continue;
+    seenColors.add(id);
+    out.push(`    <Style id="${id}">`);
+    out.push("      <IconStyle>");
+    out.push(`        <color>${kmlColor(run.color)}</color>`);
+    out.push("        <scale>0.9</scale>");
+    out.push("        <Icon>");
+    out.push("          <href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>");
+    out.push("        </Icon>");
+    out.push("      </IconStyle>");
+    out.push("      <LabelStyle><scale>0.7</scale></LabelStyle>");
+    out.push("    </Style>");
+  }
+
   for (const run of runs) {
     const pts = run.r.points;
     const has3d = pts.some((p) => Number.isFinite(p.z));
@@ -3768,15 +3811,37 @@ function buildKML({ runs, modelKey, direction }) {
     const coords = pts
       .map((p, i) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)},${Number.isFinite(zFill[i]) ? Math.round(zFill[i]) : 0}`)
       .join(" ");
-    out.push("    <Placemark>");
-    out.push(`      <name>${xmlEsc(trackName(run, direction))}</name>`);
-    out.push(`      <Style><LineStyle><color>${kmlColor(run.color)}</color><width>3</width></LineStyle></Style>`);
-    out.push("      <LineString>");
-    out.push(`        <altitudeMode>${has3d ? "absolute" : "clampToGround"}</altitudeMode>`);
-    out.push("        <tessellate>1</tessellate>");
-    out.push(`        <coordinates>${coords}</coordinates>`);
-    out.push("      </LineString>");
-    out.push("    </Placemark>");
+    const name = trackName(run, direction);
+    const styleId = kmlStyleId(run.color);
+
+    out.push("    <Folder>");
+    out.push(`      <name>${xmlEsc(name)}</name>`);
+    out.push("      <Placemark>");
+    out.push(`        <name>${xmlEsc(name)}</name>`);
+    out.push(`        <Style><LineStyle><color>${kmlColor(run.color)}</color><width>3</width></LineStyle></Style>`);
+    out.push("        <LineString>");
+    out.push(`          <altitudeMode>${has3d ? "absolute" : "clampToGround"}</altitudeMode>`);
+    out.push("          <tessellate>1</tessellate>");
+    out.push(`          <coordinates>${coords}</coordinates>`);
+    out.push("        </LineString>");
+    out.push("      </Placemark>");
+
+    for (const m of run.r.markers || []) {
+      if (!Number.isFinite(m.lat) || !Number.isFinite(m.lon)) continue;
+      const zPart = Number.isFinite(m.z) ? `,${Math.round(m.z)}` : "";
+      const altMode = Number.isFinite(m.z) ? "absolute" : "clampToGround";
+      const hhmm = new Date(m.tMs).toISOString().slice(11, 16);
+      out.push("      <Placemark>");
+      out.push(`        <name>${xmlEsc(hhmm)}</name>`);
+      out.push(`        <description>${kmlMarkerDescription(m, run.label)}</description>`);
+      out.push(`        <styleUrl>#${styleId}</styleUrl>`);
+      out.push("        <Point>");
+      out.push(`          <altitudeMode>${altMode}</altitudeMode>`);
+      out.push(`          <coordinates>${m.lon.toFixed(6)},${m.lat.toFixed(6)}${zPart}</coordinates>`);
+      out.push("        </Point>");
+      out.push("      </Placemark>");
+    }
+    out.push("    </Folder>");
   }
   out.push("  </Document>", "</kml>");
   return out.join("\n");

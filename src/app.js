@@ -3792,7 +3792,8 @@ function buildKML({ runs, modelKey, direction }) {
     out.push(`    <Style id="${id}">`);
     out.push("      <IconStyle>");
     out.push(`        <color>${kmlColor(run.color)}</color>`);
-    out.push("        <scale>0.9</scale>");
+    // Larger hit target for Google Earth Web / mobile tap.
+    out.push("        <scale>1.6</scale>");
     out.push("        <Icon>");
     out.push("          <href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>");
     out.push("        </Icon>");

@@ -3748,24 +3748,25 @@ function buildGPX({ runs, modelKey, t0Ms, direction }) {
   return out.join("\n");
 }
 
-/** HTML balloon body for a trajectory marker (Google Earth clickable Point).
- *  Same fields/formatting as the map marker popup. */
-function kmlMarkerDescription(m, label) {
+/** ExtendedData rows for a marker. GE Web strips HTML <description> tables;
+ *  without <description>, Earth renders ExtendedData as a native attribute table. */
+function kmlMarkerExtendedData(m, label) {
   const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
-  const rows = [
-    `<strong>${xmlEsc(fmtTime(m.tMs))}</strong>`,
-    xmlEsc(label),
-    Number.isFinite(m.z) ? `Höhe: ${xmlEsc(fmtHeight(m.z))} NN` : null,
+  const item = (name, value) => (value == null || value === "" ? null
+    : `        <Data name="${xmlEsc(name)}"><value>${xmlEsc(value)}</value></Data>`);
+  return [
+    item("Zeit", fmtTime(m.tMs)),
+    item("Serie", label),
+    Number.isFinite(m.z) ? item("Höhe NN", fmtHeight(m.z)) : null,
     Number.isFinite(m.u) && Number.isFinite(m.v)
-      ? `Wind: ${xmlEsc(fmtWind(Math.hypot(m.u, m.v)))} aus ${Math.round(dir)}°`
+      ? item("Wind", `${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`)
       : null,
-    Number.isFinite(m.met?.t) ? `T: ${m.met.t.toFixed(1)} °C` : null,
-    Number.isFinite(m.met?.td) ? `Td: ${m.met.td.toFixed(1)} °C` : null,
-    Number.isFinite(m.met?.rh) ? `RH: ${Math.round(m.met.rh)} %` : null,
-    Number.isFinite(m.met?.p) ? `p: ${m.met.p.toFixed(0)} hPa` : null,
-    `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E`,
+    Number.isFinite(m.met?.t) ? item("T", `${m.met.t.toFixed(1)} °C`) : null,
+    Number.isFinite(m.met?.td) ? item("Td", `${m.met.td.toFixed(1)} °C`) : null,
+    Number.isFinite(m.met?.rh) ? item("RH", `${Math.round(m.met.rh)} %`) : null,
+    Number.isFinite(m.met?.p) ? item("p", `${m.met.p.toFixed(0)} hPa`) : null,
+    item("Position", `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E`),
   ].filter(Boolean);
-  return `<![CDATA[<div>${rows.join("<br/>")}</div>]]>`;
 }
 
 /** Stable Style id from track color (#rrggbb → hex without #). */
@@ -3774,7 +3775,7 @@ function kmlStyleId(hex) {
 }
 
 /** KML — Folder per track: LineString + clickable marker Point Placemarks
- *  (HTML description balloons). Höhen absolut (AMSL); tessellate für Boden. */
+ *  (ExtendedData attribute table). Höhen absolut (AMSL); tessellate für Boden. */
 function buildKML({ runs, modelKey, direction }) {
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -3831,10 +3832,16 @@ function buildKML({ runs, modelKey, direction }) {
       const zPart = Number.isFinite(m.z) ? `,${Math.round(m.z)}` : "";
       const altMode = Number.isFinite(m.z) ? "absolute" : "clampToGround";
       const hhmm = new Date(m.tMs).toISOString().slice(11, 16);
+      const markName = Number.isFinite(m.z) ? `${hhmm} / ${fmtHeight(m.z)}` : hhmm;
+      const ext = kmlMarkerExtendedData(m, run.label);
       out.push("      <Placemark>");
-      out.push(`        <name>${xmlEsc(hhmm)}</name>`);
-      out.push(`        <description>${kmlMarkerDescription(m, run.label)}</description>`);
+      out.push(`        <name>${xmlEsc(markName)}</name>`);
       out.push(`        <styleUrl>#${styleId}</styleUrl>`);
+      if (ext.length) {
+        out.push("        <ExtendedData>");
+        out.push(...ext);
+        out.push("        </ExtendedData>");
+      }
       out.push("        <Point>");
       out.push(`          <altitudeMode>${altMode}</altitudeMode>`);
       out.push(`          <coordinates>${m.lon.toFixed(6)},${m.lat.toFixed(6)}${zPart}</coordinates>`);

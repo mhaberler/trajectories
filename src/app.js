@@ -4344,8 +4344,31 @@ function kmlStyleId(hex) {
   return `m-${String(hex).replace("#", "").toLowerCase()}`;
 }
 
+/** Region/Lod so marker icons+labels appear only when zoomed in (~4 km box, 128 px). */
+function kmlMarkerRegion(lat, lon, { halfDeg = 0.04, minLod = 128 } = {}) {
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const north = clamp(lat + halfDeg, -90, 90).toFixed(6);
+  const south = clamp(lat - halfDeg, -90, 90).toFixed(6);
+  const east = clamp(lon + halfDeg, -180, 180).toFixed(6);
+  const west = clamp(lon - halfDeg, -180, 180).toFixed(6);
+  return [
+    "        <Region>",
+    "          <LatLonAltBox>",
+    `            <north>${north}</north>`,
+    `            <south>${south}</south>`,
+    `            <east>${east}</east>`,
+    `            <west>${west}</west>`,
+    "          </LatLonAltBox>",
+    "          <Lod>",
+    `            <minLodPixels>${minLod}</minLodPixels>`,
+    "            <maxLodPixels>-1</maxLodPixels>",
+    "          </Lod>",
+    "        </Region>",
+  ];
+}
+
 /** KML — Folder per track: LineString + clickable marker Point Placemarks
- *  (description + ExtendedData + BalloonStyle). Höhen absolut; tessellate. */
+ *  (description + ExtendedData + BalloonStyle; Region/Lod for zoom-in labels). */
 function buildKML({ runs, modelKey, direction }, ctx = {}) {
   const o = { markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3, clampToGround: false, ...ctx.opts };
   const out = [
@@ -4419,6 +4442,7 @@ function buildKML({ runs, modelKey, direction }, ctx = {}) {
         out.push(...ext);
         out.push("        </ExtendedData>");
       }
+      out.push(...kmlMarkerRegion(m.lat, m.lon));
       out.push("        <Point>");
       out.push(`          <altitudeMode>${altMode}</altitudeMode>`);
       out.push(`          <coordinates>${m.lon.toFixed(6)},${m.lat.toFixed(6)}${zPart}</coordinates>`);

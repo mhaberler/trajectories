@@ -4,11 +4,11 @@ import {
 } from "./config.js";
 import { WindField } from "./windfield.js";
 import { computeTrajectory } from "./integrator.js";
-import { renderCrossSection } from "./crosssection.js";
+import { renderCrossSection } from "./crosssection";
 import {
   setUnits, unitState, fmtHeight, fmtWind, heightUnit,
   heightToDisplay, heightFromDisplay, heightSliderCfg,
-} from "./units.js";
+} from "./units";
 import { initGeocode } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
@@ -78,6 +78,7 @@ function persist() {
     fpSideHeight: Math.round(el("fp-side").getBoundingClientRect().height) || 110,
     fpTableVisible: !el("fp-table-block")?.hidden,
     fpDemOverlay: !!el("fp-dem")?.checked,
+    xsecDem: !!el("xsec-dem")?.checked,
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     fpInheritMode: profileInheritMode(),
     view3dRight,
@@ -140,6 +141,7 @@ const state = {
   running: false,
   profileEdit: null, // { active, candidateKey, siblingRuns, t0Ms }
   profileRedrawGen: 0,
+  selectedRunKey: null, // ausgewählter Lauf für den Querschnitt (runKey)
 };
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
@@ -774,8 +776,32 @@ const demHiState = { key: "", series: [], loading: false, error: null, gen: 0 };
 /** @type {AbortController | null} */
 let demHiAbort = null;
 
+/**
+ * DEM-Cache des Querschnitts, je Lauf. Getrennt vom Flugprofil-Zustand
+ * (`demHiState`), weil dort immer nur der Kandidatenlauf zählt, hier aber
+ * mehrere Läufe gleichzeitig ein Profil behalten sollen — einmal geholt,
+ * bleibt es beim Wechsel zwischen Tracks stehen.
+ * @type {Map<string, { key: string, pendingKey: string, series: { tSec: number, z: number }[], loading: boolean, error: string|null, gen: number, abort: AbortController|null }>}
+ */
+const xsecDem = new Map();
+
+function xsecDemEntry(runKeyStr) {
+  let e = xsecDem.get(runKeyStr);
+  if (!e) {
+    e = { key: "", pendingKey: "", series: [], loading: false, error: null, gen: 0, abort: null };
+    xsecDem.set(runKeyStr, e);
+  }
+  return e;
+}
+
+/** DEM im Flugprofil (Seitenansicht). */
 function demOverlayEnabled() {
   return !!el("fp-dem")?.checked;
+}
+
+/** DEM im Querschnittsfenster — eigener Schalter, unabhängig vom Flugprofil. */
+function xsecDemEnabled() {
+  return !!el("xsec-dem")?.checked;
 }
 
 function demIntervalSec() {
@@ -799,7 +825,42 @@ function attachDemHiToXsec() {
   } else {
     delete state.xsec.terrainHi;
   }
-  if (!el("xsec").hidden) renderCrossSection(el("xsec-body"), state.xsec);
+  drawCrossSection();
+}
+
+/**
+ * Querschnitt zeichnen — ein Streifen je Lauf, oder nur der ausgewählte Lauf
+ * mit DEM, Modellgelände und Track übereinander. Einziger Renderpfad, damit
+ * Auswahl und DEM-Nachlieferung sich nicht gegenseitig überschreiben.
+ */
+function drawCrossSection() {
+  if (!state.xsec || el("xsec").hidden) return;
+  const data = xsecViewData();
+  if (!data) return;
+  sizeCrossSection(data);
+  renderCrossSection(el("xsec-body"), data);
+}
+
+/** Der aktuell ausgewählte Lauf im Querschnitt, oder null. */
+function selectedXsecRun() {
+  if (!state.selectedRunKey || !state.xsec) return null;
+  return state.xsec.runs.find((run) => runKey(run) === state.selectedRunKey) || null;
+}
+
+/**
+ * Sicht auf `state.xsec`: bei Auswahl nur dieser Lauf (mit DEM aus dem Cache),
+ * sonst alle Läufe wie bisher. Das DEM hängt je Lauf am Lauf selbst.
+ */
+function xsecViewData() {
+  if (!state.xsec) return null;
+  const sel = selectedXsecRun();
+  const withDem = (run) => {
+    if (!xsecDemEnabled()) return run;
+    const series = xsecDem.get(runKey(run))?.series;
+    return series && series.length >= 2 ? { ...run, terrainHi: series } : run;
+  };
+  if (!sel) return { ...state.xsec, runs: state.xsec.runs.map(withDem) };
+  return { ...state.xsec, runs: [withDem(sel)], overlay: false };
 }
 
 async function fetchElevationLine(pts, intervalSec, signal) {
@@ -832,6 +893,54 @@ async function fetchElevationLine(pts, intervalSec, signal) {
   }
   series.sort((a, b) => a.tSec - b.tSec);
   return series;
+}
+
+/**
+ * DEM für einen Lauf des Querschnitts holen (einmalig, gecacht). Der
+ * Cache-Schlüssel enthält den Pfad, damit ein neu gerechneter Lauf gleicher
+ * Höhe kein veraltetes Profil erbt.
+ */
+async function ensureXsecDem(run) {
+  const pts = run?.r?.points;
+  if (!pts || pts.length < 2) return;
+  const rk = runKey(run);
+  const entry = xsecDemEntry(rk);
+  const intervalSec = demIntervalSec();
+  const key = `${rk}|${trackSampleKey(pts, intervalSec)}`;
+  if (key === entry.key && entry.series.length >= 2) return;
+  if (entry.loading && key === entry.pendingKey) return;
+
+  entry.abort?.abort();
+  const ac = new AbortController();
+  entry.abort = ac;
+  const gen = ++entry.gen;
+  entry.loading = true;
+  entry.error = null;
+  entry.pendingKey = key;
+  // Neuer Pfad: altes DEM verwerfen, sonst zeigt der Streifen fremden Boden.
+  entry.series = [];
+  entry.key = "";
+  setXsecDemStatus("Gelände …");
+  drawCrossSection();
+  try {
+    const series = await fetchElevationLine(pts, intervalSec, ac.signal);
+    if (gen !== entry.gen) return;
+    entry.key = key;
+    entry.series = series;
+    entry.loading = false;
+    setXsecDemStatus(series.length >= 2 ? "" : "kein Gelände");
+  } catch (err) {
+    if (err?.name === "AbortError" || gen !== entry.gen) return;
+    entry.loading = false;
+    entry.error = err?.message || "Fehler";
+    setXsecDemStatus(entry.error);
+  }
+  drawCrossSection();
+}
+
+function setXsecDemStatus(msg) {
+  const s = el("xsec-dem-status");
+  if (s) s.textContent = msg || "";
 }
 
 async function refreshDemHiOverlay() {
@@ -2348,7 +2457,7 @@ function onUnitsChange() {
   renderBar();
   if (el("flightprofile").checked) refreshProfileUI({ scheduleApi: false });
   updateHeightContext();
-  if (!el("xsec").hidden && state.xsec) renderCrossSection(el("xsec-body"), state.xsec);
+  drawCrossSection();
   persist();
 }
 el("unitheight").addEventListener("change", onUnitsChange);
@@ -2408,6 +2517,7 @@ if (["climbcruise", "constant", "empty"].includes(saved.profilePreset)) {
 setFpTableVisible(saved.fpTableVisible !== false);
 if (saved.fpDemOverlay !== false) el("fp-dem").checked = true;
 else el("fp-dem").checked = false;
+el("xsec-dem").checked = !!saved.xsecDem;
 if (Number.isFinite(saved.fpDemIntervalMin)) {
   el("fp-dem-interval").value = String(clampDemIntervalMin(saved.fpDemIntervalMin));
 }
@@ -2744,6 +2854,7 @@ async function runTrajectoriesViaApi({
   if (!keepSiblings) {
     state.lastRuns = null;
     state.xsec = null;
+    resetRunSelection();
   }
   state.live = null;
   setStatus(keepSiblings ? "API: aktualisiere Flugprofil …" : "API: lade Trajektorien …");
@@ -2853,9 +2964,7 @@ async function runTrajectoriesViaApi({
       for (const run of runs) drawCasing(run.r, state.layers);
       for (const run of runs) {
         drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
-          onSelect: pickable && run.method === "height"
-            ? () => tryPickCandidate(run)
-            : null,
+          onSelect: trackSelectHandler(run, pickable),
         });
       }
       for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
@@ -3000,6 +3109,7 @@ async function runTrajectories() {
   el("xsec").hidden = true;
   state.lastRuns = null;
   state.xsec = null;
+  resetRunSelection();
   setStatus("Berechne …");
   const t0 = performance.now();
 
@@ -3104,7 +3214,7 @@ async function runTrajectories() {
       for (const run of pinRunList) drawCasing(run.r, state.pinLayers);
       for (const run of pinRunList) {
         drawTrajectory(run.r, run.color, run.label, run.dash, state.pinLayers, {
-          onSelect: pickable && run.method === "height" ? () => tryPickCandidate(run) : null,
+          onSelect: trackSelectHandler(run, pickable),
         });
       }
       state.pinKey = pinKey;
@@ -3114,7 +3224,7 @@ async function runTrajectories() {
     for (const run of activeRuns) drawCasing(run.r, state.layers);
     for (const run of activeRuns) {
       drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
-        onSelect: pickable && run.method === "height" ? () => tryPickCandidate(run) : null,
+        onSelect: trackSelectHandler(run, pickable),
       });
     }
 
@@ -3350,25 +3460,88 @@ function reportResult(r, heightM, color, label, run = null) {
   line.appendChild(noteEl);
   if (run) {
     line.dataset.runKey = runKey(run);
-    line.addEventListener("click", () => tryPickCandidate(run));
+    // Im Profil-Edit wählt der Klick den Kandidaten, sonst den Querschnitt.
+    line.addEventListener("click", () => {
+      if (state.profileEdit?.active) tryPickCandidate(run);
+      else selectRun(run);
+    });
+    if (runKey(run) === state.selectedRunKey) line.classList.add("selected");
   }
   el("results").appendChild(line);
 }
 
 // --- Querschnitt ------------------------------------------------------------
+/** Panelhöhe und Beschriftung zur jeweiligen Sicht (Auswahl oder alle Läufe). */
+function sizeCrossSection(data) {
+  const sel = !!state.selectedRunKey && data.runs.length === 1;
+  // Ein Streifen je Trajektorie; im Overlay (Methodenvergleich) einer.
+  // Bei Auswahl ein einzelner, dafür hoher Streifen: er muss von Grund bis
+  // Flughöhe reichen, sonst klebt das Gelände als Strich am unteren Rand.
+  const h = sel
+    ? Math.round(window.innerHeight * 0.42)
+    : Math.min(110 * (data.overlay ? 2 : data.runs.length) + 62, Math.round(window.innerHeight * 0.55));
+  el("xsec").style.height = `${Math.max(h, 190)}px`;
+  const dem = xsecDemEnabled() ? "DEM · " : "";
+  el("xsec-hint").textContent = sel
+    ? `Höhe über NN · ${dem}Modellgelände · Track ${data.runs[0].label}`
+    : (data.overlay
+      ? "Höhe über NN · Gelände entlang des Referenzpfads"
+      : "Höhe über NN · Gelände entlang des jeweiligen Pfades");
+}
+
 function showCrossSection(show) {
   el("xsec").hidden = !show;
   el("xsecbtn").textContent = show ? "Querschnitt ausblenden" : "Querschnitt anzeigen";
   if (show && state.xsec) {
-    // Ein Streifen je Trajektorie; im Overlay (Methodenvergleich) einer.
-    const n = state.xsec.overlay ? 2 : state.xsec.runs.length;
-    const h = Math.min(110 * n + 62, Math.round(window.innerHeight * 0.55));
-    el("xsec").style.height = `${Math.max(h, 190)}px`;
-    el("xsec-hint").textContent = state.xsec.overlay
-      ? "Höhe über NN · Gelände entlang des Referenzpfads"
-      : "Höhe über NN · Gelände entlang des jeweiligen Pfades";
     attachDemHiToXsec();
-    renderCrossSection(el("xsec-body"), state.xsec);
+    drawCrossSection();
+    if (xsecDemEnabled()) ensureXsecDemForView();
+  }
+}
+
+/** DEM für die gerade sichtbaren Läufe nachladen (Auswahl: nur diesen). */
+function ensureXsecDemForView() {
+  if (!state.xsec || el("xsec").hidden || !xsecDemEnabled()) return;
+  const sel = selectedXsecRun();
+  for (const run of sel ? [sel] : state.xsec.runs) ensureXsecDem(run);
+}
+
+/**
+ * Track auswählen: der Querschnitt zeigt dann nur diesen Lauf mit DEM,
+ * Modellgelände und Track. Erneutes Anklicken hebt die Auswahl auf.
+ */
+function selectRun(run) {
+  const rk = run ? runKey(run) : null;
+  state.selectedRunKey = state.selectedRunKey === rk ? null : rk;
+  highlightSelectedRun();
+  if (state.selectedRunKey && el("xsec").hidden) showCrossSection(true);
+  else drawCrossSection();
+  ensureXsecDemForView();
+}
+
+/**
+ * Auswahl und DEM-Cache verwerfen — bei jedem Neurechnen, sonst zeigte ein
+ * gleich benannter Lauf das Gelände des alten Pfades.
+ */
+function resetRunSelection() {
+  state.selectedRunKey = null;
+  for (const e of xsecDem.values()) e.abort?.abort();
+  xsecDem.clear();
+  setXsecDemStatus("");
+}
+
+function trackSelectHandler(run, pickable) {
+  // Nur im laufenden Flugprofil-Edit wählt der Klick den Kandidaten; sonst
+  // gehört er dem Querschnitt — wie in der Ergebnisliste.
+  return () => {
+    if (pickable && run.method === "height" && state.profileEdit?.active) tryPickCandidate(run);
+    else selectRun(run);
+  };
+}
+
+function highlightSelectedRun() {
+  for (const line of el("results").querySelectorAll(".result-line")) {
+    line.classList.toggle("selected", line.dataset.runKey === state.selectedRunKey);
   }
 }
 
@@ -3492,9 +3665,13 @@ function setPanelWidth(px, { save = false } = {}) {
 
 el("xsecbtn").addEventListener("click", () => showCrossSection(el("xsec").hidden));
 el("xsec-close").addEventListener("click", () => showCrossSection(false));
-window.addEventListener("resize", () => {
-  if (!el("xsec").hidden && state.xsec) renderCrossSection(el("xsec-body"), state.xsec);
+el("xsec-dem").addEventListener("change", () => {
+  persist();
+  if (!xsecDemEnabled()) setXsecDemStatus("");
+  drawCrossSection();
+  ensureXsecDemForView();
 });
+window.addEventListener("resize", () => drawCrossSection());
 
 // --- 3D-Ansicht (Cesium, lazy geladen) --------------------------------------
 (function initView3dResize() {

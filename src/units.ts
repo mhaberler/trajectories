@@ -3,26 +3,32 @@
 const FT_PER_M = 3.28084;
 const KT_PER_MS = 1.94384;
 
-export const unitState = { height: "m", wind: "kmh" };
+export type HeightUnit = "m" | "ft";
+export type WindUnit = "kmh" | "ms" | "kt";
 
-export function setUnits({ height, wind } = {}) {
-  if (["m", "ft"].includes(height)) unitState.height = height;
-  if (["kmh", "ms", "kt"].includes(wind)) unitState.wind = wind;
+const HEIGHT_UNITS: HeightUnit[] = ["m", "ft"];
+const WIND_UNITS: WindUnit[] = ["kmh", "ms", "kt"];
+
+export const unitState: { height: HeightUnit; wind: WindUnit } = { height: "m", wind: "kmh" };
+
+export function setUnits({ height, wind }: { height?: string; wind?: string } = {}) {
+  if (HEIGHT_UNITS.includes(height as HeightUnit)) unitState.height = height as HeightUnit;
+  if (WIND_UNITS.includes(wind as WindUnit)) unitState.wind = wind as WindUnit;
 }
 
-export function fmtHeight(m) {
+export function fmtHeight(m: number) {
   return unitState.height === "ft" ? `${Math.round(m * FT_PER_M)} ft` : `${Math.round(m)} m`;
 }
 
-export function heightUnit() {
+export function heightUnit(): HeightUnit {
   return unitState.height;
 }
 
-export function heightToDisplay(m) {
+export function heightToDisplay(m: number) {
   return unitState.height === "ft" ? m * FT_PER_M : m;
 }
 
-export function heightFromDisplay(v) {
+export function heightFromDisplay(v: number) {
   return unitState.height === "ft" ? v / FT_PER_M : v;
 }
 
@@ -32,7 +38,7 @@ export function heightSliderCfg() {
     : { min: 10, max: 6000, step: 10, inputMax: 10000 };
 }
 
-export function fmtWind(ms) {
+export function fmtWind(ms: number) {
   switch (unitState.wind) {
     case "ms": return `${ms.toFixed(1)} m/s`;
     case "kt": return `${Math.round(ms * KT_PER_MS)} kt`;

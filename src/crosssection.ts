@@ -7,7 +7,8 @@
  * gehört. Reines SVG, ohne Abhängigkeiten.
  */
 
-import { fmtHeight, heightToDisplay, heightFromDisplay, heightUnit } from "./units.js";
+import { fmtHeight, heightToDisplay, heightFromDisplay, heightUnit } from "./units";
+import type { TerrainSeries, XsecData } from "./types";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const INK = "#0b0b0b";
@@ -16,19 +17,40 @@ const GRID = "#e8e7e3";
 const TERRAIN_FILL = "#e3e1dc";
 const TERRAIN_EDGE = "#9c9b95";
 
-export function renderCrossSection(host, data) {
+/** Ein Punkt der gezeichneten Serie: h = Stunden seit Start, g = Modellboden. */
+interface SeriesPoint {
+  h: number;
+  z: number;
+  g: number | null;
+  tMs: number;
+}
+
+interface Series {
+  color: string;
+  label: string;
+  dash: string | null;
+  /** DEM entlang dieses Pfades (eigene Zeitachse, nicht index-parallel). */
+  terrainHi: TerrainSeries | null;
+  pts: SeriesPoint[];
+  marks: { h: number; z: number }[];
+  /** wird beim Zeichnen gesetzt — Höhenabbildung des Streifens, für Hover. */
+  y?: (z: number) => number;
+}
+
+export function renderCrossSection(host: HTMLElement, data: XsecData) {
   host.innerHTML = "";
   const { runs, t0Ms, direction, overlay } = data;
 
-  const series = runs.map(({ r, color, label, terrain, dash }) => ({
+  const series: Series[] = runs.map(({ r, color, label, terrain, dash, terrainHi }) => ({
     color,
     label,
     dash: dash || null,
+    terrainHi: Array.isArray(terrainHi) && terrainHi.length > 1 ? terrainHi : null,
     pts: r.points
       .map((p, i) => ({ h: Math.abs(p.tMs - t0Ms) / 3600e3, z: p.z, g: terrain[i], tMs: p.tMs }))
-      .filter((p) => Number.isFinite(p.z)),
+      .filter((p): p is SeriesPoint => Number.isFinite(p.z)),
     marks: r.markers
-      .filter((m) => Number.isFinite(m.z))
+      .filter((m): m is typeof m & { z: number } => Number.isFinite(m.z))
       .map((m) => ({ h: Math.abs(m.tMs - t0Ms) / 3600e3, z: m.z })),
   })).filter((s) => s.pts.length > 1);
   if (!series.length) {
@@ -47,8 +69,13 @@ export function renderCrossSection(host, data) {
   const pw = W - M.l - M.r;
   const stripH = (H - axisH) / strips.length;
 
-  const xMax = Math.max(...series.map((s) => s.pts.at(-1).h)) || 1;
-  const zAll = series.flatMap((s) => s.pts.flatMap((p) => Number.isFinite(p.g) ? [p.z, p.g] : [p.z]));
+  const xMax = Math.max(...series.map((s) => s.pts.at(-1)!.h)) || 1;
+  const zAll = series.flatMap((s) => s.pts.flatMap((p) => Number.isFinite(p.g) ? [p.z, p.g!] : [p.z]));
+  // DEM zählt für die gemeinsame Höhenskala mit — je Lauf, plus die Altlast
+  // am Elternobjekt (Flugprofil-Seitenansicht setzt nur diese).
+  for (const s of series) {
+    for (const p of s.terrainHi ?? []) if (Number.isFinite(p?.z)) zAll.push(p.z);
+  }
   if (Array.isArray(data.terrainHi)) {
     for (const p of data.terrainHi) {
       if (Number.isFinite(p?.z)) zAll.push(p.z);
@@ -60,7 +87,7 @@ export function renderCrossSection(host, data) {
   const yMin = Math.max(-450, Math.min(0, zLo) - 50);
   const yMax = zHi + pad;
 
-  const x = (h) => M.l + (h / xMax) * pw;
+  const x = (h: number) => M.l + (h / xMax) * pw;
   const svg = mk("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
 
   // Gemeinsame Zeitachse: Gitterlinien über alle Streifen, Labels unten.
@@ -82,7 +109,7 @@ export function renderCrossSection(host, data) {
     const top = i * stripH;
     const bottom = top + stripH;
     const innerTop = top + 14; // Platz für die Streifen-Beschriftung
-    const y = (z) => bottom - ((z - yMin) / (yMax - yMin)) * (bottom - innerTop);
+    const y = (z: number) => bottom - ((z - yMin) / (yMax - yMin)) * (bottom - innerTop);
 
     // Höhenlinien + Labels je Streifen (gemeinsame Skala).
     for (let zd = Math.ceil(dMin / yStep) * yStep; zd <= dMax; zd += yStep) {
@@ -93,8 +120,11 @@ export function renderCrossSection(host, data) {
       );
     }
 
-    // Terrain: grey fill = Mapterhorn (first strip); black line = model orography.
-    const hi = (i === 0 && Array.isArray(data.terrainHi)) ? data.terrainHi : null;
+    // Terrain: grey fill = Mapterhorn, black line = model orography.
+    // DEM je Lauf; Rückfall auf das Elternobjekt (erster Streifen) für die
+    // Flugprofil-Seitenansicht, die weiterhin nur data.terrainHi setzt.
+    const hi = group[0].terrainHi
+      ?? ((i === 0 && Array.isArray(data.terrainHi)) ? data.terrainHi : null);
     const hiPts = hi && hi.length > 1
       ? hi.map((p) => ({ h: p.tSec / 3600, z: p.z }))
         .filter((p) => Number.isFinite(p.h) && Number.isFinite(p.z))
@@ -102,13 +132,13 @@ export function renderCrossSection(host, data) {
     if (hiPts.length > 1) {
       const line = hiPts.map((p) => `${x(p.h).toFixed(1)},${y(p.z).toFixed(1)}`).join(" ");
       svg.append(mk("polygon", {
-        points: `${x(hiPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(hiPts.at(-1).h).toFixed(1)},${bottom.toFixed(1)}`,
+        points: `${x(hiPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(hiPts.at(-1)!.h).toFixed(1)},${bottom.toFixed(1)}`,
         fill: TERRAIN_FILL,
       }));
       svg.append(mk("polyline", { points: line, fill: "none", stroke: TERRAIN_EDGE, "stroke-width": 1 }));
     }
 
-    const gPts = group[0].pts.filter((p) => Number.isFinite(p.g));
+    const gPts = group[0].pts.filter((p): p is SeriesPoint & { g: number } => Number.isFinite(p.g));
     if (gPts.length > 1) {
       const line = gPts.map((p) => `${x(p.h).toFixed(1)},${y(p.g).toFixed(1)}`).join(" ");
       if (hiPts.length > 1) {
@@ -118,7 +148,7 @@ export function renderCrossSection(host, data) {
         }));
       } else {
         svg.append(mk("polygon", {
-          points: `${x(gPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(gPts.at(-1).h).toFixed(1)},${bottom.toFixed(1)}`,
+          points: `${x(gPts[0].h).toFixed(1)},${bottom.toFixed(1)} ${line} ${x(gPts.at(-1)!.h).toFixed(1)},${bottom.toFixed(1)}`,
           fill: TERRAIN_FILL,
         }));
         svg.append(mk("polyline", { points: line, fill: "none", stroke: TERRAIN_EDGE, "stroke-width": 1 }));
@@ -166,14 +196,14 @@ export function renderCrossSection(host, data) {
     const px = ev.clientX - rect.left;
     if (px < M.l || px > W - M.r) { cursor.setAttribute("visibility", "hidden"); tip.hidden = true; return; }
     const h = ((px - M.l) / pw) * xMax;
-    cursor.setAttribute("x1", px);
-    cursor.setAttribute("x2", px);
+    cursor.setAttribute("x1", String(px));
+    cursor.setAttribute("x2", String(px));
     cursor.setAttribute("visibility", "visible");
 
     const tMs = t0Ms + direction * h * 3600e3;
     const rows = series.map((s) => {
       const p = nearest(s.pts, h);
-      const g = Number.isFinite(p.g) ? ` · Boden ${fmtHeight(p.g)}` : "";
+      const g = Number.isFinite(p.g) ? ` · Boden ${fmtHeight(p.g!)}` : "";
       return `<div><span class="chip" style="background:${s.color}"></span>` +
         `${fmtHeight(p.z)} NN${g}</div>`;
     });
@@ -188,7 +218,7 @@ export function renderCrossSection(host, data) {
   });
 }
 
-function nearest(pts, h) {
+function nearest(pts: SeriesPoint[], h: number) {
   let best = pts[0], bd = Infinity;
   for (const p of pts) {
     const d = Math.abs(p.h - h);
@@ -197,18 +227,24 @@ function nearest(pts, h) {
   return best;
 }
 
-function niceStep(raw) {
+function niceStep(raw: number) {
   for (const s of [100, 200, 250, 500, 1000, 2000, 5000]) if (raw <= s) return s;
   return 10000;
 }
 
-function mk(tag, attrs) {
+function mk(tag: string, attrs: Record<string, string | number>) {
   const n = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
   return n;
 }
 
-function text(xPos, yPos, str, { anchor = "start", size = 11, fill = INK_MUTED } = {}) {
+function text(
+  xPos: number,
+  yPos: number,
+  str: string,
+  { anchor = "start", size = 11, fill = INK_MUTED }:
+    { anchor?: string; size?: number; fill?: string } = {},
+) {
   const t = mk("text", {
     x: xPos, y: yPos, "text-anchor": anchor, fill,
     "font-size": size, "font-family": "inherit",

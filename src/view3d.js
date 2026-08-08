@@ -1,5 +1,5 @@
 import * as Cesium from "cesium";
-import { fmtHeight, fmtWind } from "./units.js";
+import { fmtHeight, fmtWind } from "./units";
 
 // 3D-Ansicht (CesiumJS): zeichnet die zuletzt berechneten Trajektorien als
 // Höhenlinien mit halbtransparenter Wand zum Boden über gestreamtem Gelände.

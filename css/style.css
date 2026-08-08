@@ -540,6 +540,7 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 }
 .result-line:hover { background: #eef4fb; }
 .result-line.candidate { outline: 1px solid #1c5cab; background: #eef4fb; }
+.result-line.selected { outline: 1px solid #52514e; background: #f2f1ee; }
 .result-line .note { color: #52514e; font-size: 12px; }
 
 #settings { margin-top: 8px; }
@@ -585,6 +586,17 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   font-weight: 600;
 }
 .xsec-head .hint { font-weight: 400; }
+.xsec-dem-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 400;
+  font-size: 12px;
+  color: #52514e;
+  cursor: pointer;
+}
+.xsec-dem-toggle input { margin: 0; }
+#xsec-dem-status { font-size: 11px; }
 #xsec-close {
   margin-left: auto;
   border: none;

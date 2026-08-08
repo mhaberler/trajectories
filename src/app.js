@@ -3748,25 +3748,32 @@ function buildGPX({ runs, modelKey, t0Ms, direction }) {
   return out.join("\n");
 }
 
-/** ExtendedData rows for a marker. GE Web strips HTML <description> tables;
- *  without <description>, Earth renders ExtendedData as a native attribute table. */
-function kmlMarkerExtendedData(m, label) {
+/** Marker detail rows (label + value). ASCII ExtendedData keys for BalloonStyle $[…]. */
+function kmlMarkerFields(m, label) {
   const dir = (Math.atan2(-(m.u || 0), -(m.v || 0)) * 180 / Math.PI + 360) % 360;
-  const item = (name, value) => (value == null || value === "" ? null
-    : `        <Data name="${xmlEsc(name)}"><value>${xmlEsc(value)}</value></Data>`);
   return [
-    item("Zeit", fmtTime(m.tMs)),
-    item("Serie", label),
-    Number.isFinite(m.z) ? item("Höhe NN", fmtHeight(m.z)) : null,
+    { key: "Zeit", label: "Zeit", value: fmtTime(m.tMs) },
+    { key: "Serie", label: "Serie", value: label },
+    Number.isFinite(m.z) ? { key: "Hoehe_NN", label: "Höhe NN", value: fmtHeight(m.z) } : null,
     Number.isFinite(m.u) && Number.isFinite(m.v)
-      ? item("Wind", `${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°`)
+      ? { key: "Wind", label: "Wind", value: `${fmtWind(Math.hypot(m.u, m.v))} aus ${Math.round(dir)}°` }
       : null,
-    Number.isFinite(m.met?.t) ? item("T", `${m.met.t.toFixed(1)} °C`) : null,
-    Number.isFinite(m.met?.td) ? item("Td", `${m.met.td.toFixed(1)} °C`) : null,
-    Number.isFinite(m.met?.rh) ? item("RH", `${Math.round(m.met.rh)} %`) : null,
-    Number.isFinite(m.met?.p) ? item("p", `${m.met.p.toFixed(0)} hPa`) : null,
-    item("Position", `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E`),
-  ].filter(Boolean);
+    Number.isFinite(m.met?.t) ? { key: "T", label: "T", value: `${m.met.t.toFixed(1)} °C` } : null,
+    Number.isFinite(m.met?.td) ? { key: "Td", label: "Td", value: `${m.met.td.toFixed(1)} °C` } : null,
+    Number.isFinite(m.met?.rh) ? { key: "RH", label: "RH", value: `${Math.round(m.met.rh)} %` } : null,
+    Number.isFinite(m.met?.p) ? { key: "p", label: "p", value: `${m.met.p.toFixed(0)} hPa` } : null,
+    { key: "Position", label: "Position", value: `${m.lat.toFixed(4)}°N ${m.lon.toFixed(4)}°E` },
+  ].filter((r) => r && r.value != null && r.value !== "");
+}
+
+/** ExtendedData + plain description. Android shows <description>; Web uses BalloonStyle
+ *  ($[description] in <pre>) and/or ExtendedData — HTML tables/br are stripped on GE Web. */
+function kmlMarkerDetails(m, label) {
+  const fields = kmlMarkerFields(m, label);
+  const ext = fields.map((f) =>
+    `        <Data name="${xmlEsc(f.key)}"><value>${xmlEsc(f.value)}</value></Data>`);
+  const description = fields.map((f) => `${f.label}: ${f.value}`).join("\n");
+  return { ext, description };
 }
 
 /** Stable Style id from track color (#rrggbb → hex without #). */
@@ -3775,7 +3782,7 @@ function kmlStyleId(hex) {
 }
 
 /** KML — Folder per track: LineString + clickable marker Point Placemarks
- *  (ExtendedData attribute table). Höhen absolut (AMSL); tessellate für Boden. */
+ *  (description + ExtendedData + BalloonStyle). Höhen absolut; tessellate. */
 function buildKML({ runs, modelKey, direction }) {
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -3799,6 +3806,10 @@ function buildKML({ runs, modelKey, direction }) {
     out.push("        </Icon>");
     out.push("      </IconStyle>");
     out.push("      <LabelStyle><scale>0.7</scale></LabelStyle>");
+    // <pre> keeps newlines; GE Web collapses plain description whitespace otherwise.
+    out.push("      <BalloonStyle>");
+    out.push("        <text><![CDATA[<b>$[name]</b><pre>$[description]</pre>]]></text>");
+    out.push("      </BalloonStyle>");
     out.push("    </Style>");
   }
 
@@ -3834,9 +3845,10 @@ function buildKML({ runs, modelKey, direction }) {
       const altMode = Number.isFinite(m.z) ? "absolute" : "clampToGround";
       const hhmm = new Date(m.tMs).toISOString().slice(11, 16);
       const markName = Number.isFinite(m.z) ? `${hhmm} / ${fmtHeight(m.z)}` : hhmm;
-      const ext = kmlMarkerExtendedData(m, run.label);
+      const { ext, description } = kmlMarkerDetails(m, run.label);
       out.push("      <Placemark>");
       out.push(`        <name>${xmlEsc(markName)}</name>`);
+      out.push(`        <description><![CDATA[${description}]]></description>`);
       out.push(`        <styleUrl>#${styleId}</styleUrl>`);
       if (ext.length) {
         out.push("        <ExtendedData>");

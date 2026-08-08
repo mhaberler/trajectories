@@ -125,12 +125,21 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 .chip { width: 18px; height: 5px; border-radius: 2px; box-shadow: 0 0 0 1px #fff; flex: none; }
 
 /* Höhenbalken: vertikale Skala 0…10 km, Höhenpunkte per Klick/Ziehen. */
-#heightbar-wrap { display: flex; gap: 14px; align-items: stretch; margin: 8px 0 4px; }
+/* Der Balken füllt die zweite Spalte senkrecht aus (siehe #panelcol-side);
+   224px ist nur noch die Untergrenze für sehr flache Fenster. */
+#heightbar-wrap {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  margin: 8px 0 4px;
+  flex: 1;
+  min-height: 224px;
+}
 #heightbar {
   position: relative;
   flex: none;
   width: 62px;
-  height: 224px;
+  height: auto;
   background: linear-gradient(#e9f1fa, #f7fafc);
   border: 1px solid #c9c8c2;
   border-radius: 6px;
@@ -171,7 +180,7 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 
 /* Beschriftung außerhalb des Lineals, gleiche Höhe für die Ausrichtung. Der
    aktive Punkt trägt hier ein Editierfeld für den genauen Höhenwert. */
-#heightbar-labels { position: relative; flex: none; width: 130px; height: 224px; }
+#heightbar-labels { position: relative; flex: none; width: 130px; height: auto; }
 .bar-labelrow {
   position: absolute; left: 0; right: 0; transform: translateY(50%);
   display: flex; align-items: center; gap: 5px; cursor: pointer;
@@ -283,10 +292,22 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 #panelcol-main { min-width: 0; }
-#panelcol-side { min-width: 0; }
+/* Der Höhenbalken soll die ganze Spaltenhöhe nutzen: Spalte, Block und
+   Balken-Wrapper strecken sich, der Wrapper nimmt den Rest (flex: 1). */
+#panelcol-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+#panelcol-side #heights-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 
 #heights-block.off { display: none; }
 #methodrow.off { opacity: 0.45; pointer-events: none; }

@@ -2032,7 +2032,75 @@ function removeHeight(m) {
     activeHeight = keys.length ? keys[0] : null;
   }
   renderBar();
+  dropRunsForHeight(m);
   persist();
+}
+
+/**
+ * Ergebnisse einer entfernten Starthöhe wegräumen: Karte, Ergebnisliste,
+ * Querschnitt und 3D-Ansicht. Ohne das blieben Linie und Streifen bis zur
+ * nächsten Berechnung stehen, obwohl die Höhe nicht mehr am Balken hängt.
+ */
+function dropRunsForHeight(m) {
+  if (!state.lastRuns) return;
+  state.pinRuns.delete(m);
+  const keep = state.lastRuns.runs.filter((run) => run.heightM !== m);
+  if (keep.length === state.lastRuns.runs.length) return;
+  // DEM-Cache ist nach runKey geschlüsselt, nicht nach Höhe.
+  for (const run of state.lastRuns.runs) {
+    if (run.heightM === m) {
+      const rk = runKey(run);
+      xsecDem.get(rk)?.abort?.abort();
+      xsecDem.delete(rk);
+    }
+  }
+
+  if (!keep.length) {
+    // Letzte Höhe entfernt — es gibt nichts mehr zu zeigen.
+    state.layers.clearLayers();
+    state.pinLayers.clearLayers();
+    state.lastRuns = null;
+    state.xsec = null;
+    resetRunSelection();
+    el("results").innerHTML = "";
+    el("download").disabled = true;
+    el("xsecbtn").disabled = true;
+    el("view3dbtn").disabled = true;
+    showCrossSection(false);
+    if (view3dMod && !el("view3d").hidden) hide3D();
+    return;
+  }
+
+  state.lastRuns = { ...state.lastRuns, runs: keep };
+  if (state.xsec) {
+    state.xsec = { ...state.xsec, runs: state.xsec.runs.filter((run) => run.heightM !== m) };
+  }
+  // Auswahl könnte auf den entfernten Lauf gezeigt haben.
+  if (state.selectedRunKey && !keep.some((run) => runKey(run) === state.selectedRunKey)) {
+    state.selectedRunKey = null;
+  }
+  repaintRuns();
+  drawCrossSection();
+  if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
+}
+
+/** Karte und Ergebnisliste aus `state.lastRuns` neu aufbauen. */
+function repaintRuns() {
+  const { runs, mode } = state.lastRuns;
+  state.layers.clearLayers();
+  state.pinLayers.clearLayers();
+  restoreStartMarkerVisibility();
+  const pickable = mode === "agl";
+  for (const run of runs) drawCasing(run.r, state.layers);
+  for (const run of runs) {
+    drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
+      onSelect: trackSelectHandler(run, pickable),
+    });
+  }
+  el("results").innerHTML = "";
+  for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
+  highlightSelectedRun();
+  void direction;
 }
 
 // --- Höhenbalken: Skala, Umrechnung Pixel<->Höhe, Rendern -------------------

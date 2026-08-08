@@ -308,6 +308,13 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   flex: 1;
   min-height: 0;
 }
+/* Balken samt Beschriftung mittig in der Spalte statt am linken Rand
+   klebend — links bleibt so Luft zur Steuerspalte. */
+#panelcol-side { padding-left: 4px; }
+#panelcol-side #heightbar-wrap { justify-content: center; }
+#panelcol-side #heightslabel,
+#panelcol-side #activehint,
+#panelcol-side #heighthint { text-align: center; }
 
 #heights-block.off { display: none; }
 #methodrow.off { opacity: 0.45; pointer-events: none; }
@@ -550,7 +557,10 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 #run:disabled { background: #9c9b95; cursor: default; }
 
 #downloadrow { display: flex; gap: 8px; margin-top: 8px; }
-#downloadrow select { flex: none; min-width: 0; }
+/* Das Format-Auswahlfeld ist so breit wie sein längster Eintrag
+   („HTML-Karte (eigenständig)"). Ohne Schrumpfen läuft die Zeile aus der
+   Spalte und der Knopf stößt an den Höhenbalken. */
+#downloadrow select { flex: 1 1 auto; min-width: 0; }
 #exportcfg { flex: none; padding: 6px 9px; line-height: 1; }
 .ex-sec[hidden] { display: none; }
 #ex-modal .fp-modal-card { max-height: calc(100vh - 48px); overflow: auto; }
@@ -562,10 +572,15 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   box-sizing: border-box;
 }
 #ex-reset { width: 100%; margin-top: 10px; }
+/* Icon-Knopf: der Text „Herunterladen" sprengte sonst die Spalte. Beschriftung
+   steckt in title/aria-label. */
 #download {
-  flex: 1;
-  padding: 6px;
+  flex: none;
+  width: 34px;
+  padding: 6px 0;
   font: inherit;
+  font-size: 17px;
+  line-height: 1;
   color: #1c5cab;
   background: #fff;
   border: 1px solid #1c5cab;

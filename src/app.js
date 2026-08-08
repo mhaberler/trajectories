@@ -79,6 +79,8 @@ function persist() {
     fpTableVisible: !el("fp-table-block")?.hidden,
     fpDemOverlay: !!el("fp-dem")?.checked,
     xsecDem: !!el("xsec-dem")?.checked,
+    xsecHeight,
+    xsecRight,
     downloadFmt: el("downloadfmt").value,
     exportOpts,
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
@@ -175,6 +177,17 @@ function mergeExportOpts(stored) {
   }
   return out;
 }
+
+// Querschnitt: Maße des Panels. Hier oben, weil persist() sie liest.
+const XSEC_EDGE = 10;
+// renderCrossSection zeichnet nie kleiner als 320×120; das Panel muss den
+// Kopf (~33 px) zusätzlich unterbringen, sonst ragt das SVG darüber hinaus.
+const XSEC_MIN_H = 155;
+const XSEC_MIN_W = 320;
+
+/** Vom Nutzer gezogene Maße; null = automatisch aus der Streifenzahl. */
+let xsecHeight = Number.isFinite(saved.xsecHeight) ? saved.xsecHeight : null;
+let xsecRight = Number.isFinite(saved.xsecRight) ? saved.xsecRight : null;
 
 // Bewusst als JS-Objekt geführt statt bei jedem persist() aus dem DOM gelesen
 // wie der Rest: `legendHtml` steckt in einem Textfeld, das nie geöffnet
@@ -3527,16 +3540,50 @@ function reportResult(r, heightM, color, label, run = null) {
 }
 
 // --- Querschnitt ------------------------------------------------------------
-/** Panelhöhe und Beschriftung zur jeweiligen Sicht (Auswahl oder alle Läufe). */
-function sizeCrossSection(data) {
+function xsecMobile() {
+  return window.matchMedia("(max-width: 700px), (max-height: 500px)").matches;
+}
+
+/** Automatische Höhe: ein Streifen je Lauf, bei Auswahl ein hoher. */
+function xsecAutoHeight(data) {
   const sel = !!state.selectedRunKey && data.runs.length === 1;
-  // Ein Streifen je Trajektorie; im Overlay (Methodenvergleich) einer.
   // Bei Auswahl ein einzelner, dafür hoher Streifen: er muss von Grund bis
   // Flughöhe reichen, sonst klebt das Gelände als Strich am unteren Rand.
   const h = sel
     ? Math.round(window.innerHeight * 0.42)
     : Math.min(110 * (data.overlay ? 2 : data.runs.length) + 62, Math.round(window.innerHeight * 0.55));
-  el("xsec").style.height = `${Math.max(h, 190)}px`;
+  return Math.max(h, 190);
+}
+
+/**
+ * Größe und Lage des Panels festlegen. Gezogene Maße gewinnen, werden aber
+ * immer auf das aktuelle Fenster geklemmt — damit bleibt das Panel auch nach
+ * dem Verkleinern des Fensters erreichbar (Responsivität).
+ */
+function layoutCrossSection(data) {
+  const box = el("xsec");
+  if (!box || box.hidden) return;
+  if (xsecMobile()) {
+    // Mobil regelt das Stylesheet (volle Breite, feste Anteilshöhe).
+    box.style.height = "";
+    box.style.right = "";
+    return;
+  }
+  const maxH = Math.max(XSEC_MIN_H, window.innerHeight - 2 * XSEC_EDGE);
+  const wanted = xsecHeight ?? (data ? xsecAutoHeight(data) : XSEC_MIN_H);
+  box.style.height = `${Math.min(maxH, Math.max(XSEC_MIN_H, wanted))}px`;
+
+  const maxRight = Math.max(XSEC_EDGE, window.innerWidth - XSEC_EDGE - XSEC_MIN_W);
+  const right = Math.min(maxRight, Math.max(XSEC_EDGE, xsecRight ?? XSEC_EDGE));
+  box.style.right = `${right}px`;
+  el("xsec-resize-n")?.setAttribute("aria-valuenow", String(Math.round(box.getBoundingClientRect().height)));
+  el("xsec-resize-w")?.setAttribute("aria-valuenow", String(right));
+}
+
+/** Beschriftung zur jeweiligen Sicht (Auswahl oder alle Läufe). */
+function sizeCrossSection(data) {
+  const sel = !!state.selectedRunKey && data.runs.length === 1;
+  layoutCrossSection(data);
   const dem = xsecDemEnabled() ? "DEM · " : "";
   el("xsec-hint").textContent = sel
     ? `Höhe über NN · ${dem}Modellgelände · Track ${data.runs[0].label}`
@@ -3727,7 +3774,92 @@ el("xsec-dem").addEventListener("change", () => {
   drawCrossSection();
   ensureXsecDemForView();
 });
+// Fenstergröße: Maße neu klemmen und den Streifen neu zeichnen.
 window.addEventListener("resize", () => drawCrossSection());
+
+/** Ziehgriffe des Querschnitts (oben Höhe, links Breite). */
+(function initXsecResize() {
+  const north = el("xsec-resize-n");
+  const west = el("xsec-resize-w");
+  if (!north || !west) return;
+  north.setAttribute("aria-valuemin", String(XSEC_MIN_H));
+  west.setAttribute("aria-valuemin", String(XSEC_EDGE));
+
+  let drag = null;
+  const box = () => el("xsec").getBoundingClientRect();
+
+  north.addEventListener("pointerdown", (e) => {
+    if (xsecMobile() || el("xsec").hidden) return;
+    e.preventDefault();
+    north.setPointerCapture(e.pointerId);
+    document.body.classList.add("xsec-resizing-n");
+    drag = { axis: "n", pointerId: e.pointerId, startY: e.clientY, start: box().height };
+  });
+  west.addEventListener("pointerdown", (e) => {
+    if (xsecMobile() || el("xsec").hidden) return;
+    e.preventDefault();
+    west.setPointerCapture(e.pointerId);
+    document.body.classList.add("xsec-resizing-w");
+    drag = { axis: "w", pointerId: e.pointerId, startX: e.clientX, start: xsecRight ?? XSEC_EDGE };
+  });
+
+  const onMove = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (drag.axis === "n") {
+      // Nach oben ziehen → höheres Panel (es hängt am unteren Rand).
+      xsecHeight = drag.start + (drag.startY - e.clientY);
+    } else {
+      // Nach rechts ziehen → größerer rechter Abstand → schmaleres Panel.
+      xsecRight = drag.start + (e.clientX - drag.startX);
+    }
+    drawCrossSection();
+  };
+  const onEnd = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    document.body.classList.remove("xsec-resizing-n", "xsec-resizing-w");
+    try {
+      (drag.axis === "n" ? north : west).releasePointerCapture(e.pointerId);
+    } catch { /* Griff schon freigegeben */ }
+    drag = null;
+    persist();
+  };
+  for (const h of [north, west]) {
+    h.addEventListener("pointermove", onMove);
+    h.addEventListener("pointerup", onEnd);
+    h.addEventListener("pointercancel", onEnd);
+  }
+
+  north.addEventListener("keydown", (e) => {
+    if (el("xsec").hidden || xsecMobile()) return;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const step = e.shiftKey ? 40 : 16;
+    xsecHeight = box().height + (e.key === "ArrowUp" ? step : -step);
+    drawCrossSection();
+    persist();
+  });
+  west.addEventListener("keydown", (e) => {
+    if (el("xsec").hidden || xsecMobile()) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const step = e.shiftKey ? 40 : 16;
+    xsecRight = (xsecRight ?? XSEC_EDGE) + (e.key === "ArrowRight" ? step : -step);
+    drawCrossSection();
+    persist();
+  });
+
+  // Doppelklick auf einen Griff: zurück zur automatischen Größe.
+  north.addEventListener("dblclick", () => {
+    xsecHeight = null;
+    drawCrossSection();
+    persist();
+  });
+  west.addEventListener("dblclick", () => {
+    xsecRight = null;
+    drawCrossSection();
+    persist();
+  });
+})();
 
 // --- 3D-Ansicht (Cesium, lazy geladen) --------------------------------------
 (function initView3dResize() {

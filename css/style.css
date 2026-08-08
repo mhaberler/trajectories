@@ -589,6 +589,67 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 }
 #xsec[hidden] { display: none; }
 
+/* Griffe: oben Höhe, links Breite — wie bei der 3D-Ansicht. */
+#xsec-resize-n {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 10px;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 20;
+}
+#xsec-resize-n::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: #c9c8c2;
+}
+#xsec-resize-w {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 20;
+}
+#xsec-resize-w::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 36px;
+  border-radius: 2px;
+  background: #c9c8c2;
+}
+#xsec-resize-n:hover::after,
+#xsec-resize-n:focus-visible::after,
+#xsec-resize-w:hover::after,
+#xsec-resize-w:focus-visible::after,
+body.xsec-resizing-n #xsec-resize-n::after,
+body.xsec-resizing-w #xsec-resize-w::after {
+  background: #1c5cab;
+}
+#xsec-resize-n:focus-visible,
+#xsec-resize-w:focus-visible { outline: none; }
+body.xsec-resizing-n { cursor: ns-resize; user-select: none; }
+body.xsec-resizing-w { cursor: ew-resize; user-select: none; }
+body.xsec-resizing-n #map,
+body.xsec-resizing-w #map { pointer-events: none; }
+
+/* Kopfzeile darf nicht unter den oberen Griff rutschen. */
+#xsec .xsec-head { padding-top: 10px; }
+
 .xsec-head {
   display: flex;
   align-items: baseline;
@@ -619,7 +680,9 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 }
 #xsec-close:hover { color: #0b0b0b; }
 
-#xsec-body { position: relative; flex: 1; min-height: 0; }
+/* overflow:hidden — renderCrossSection hat eine eigene Mindestgröße; bei sehr
+   kleinem Panel ragte das SVG sonst über die abgerundete Kante hinaus. */
+#xsec-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 #xsec-body svg { display: block; }
 
 .xsec-tip {
@@ -833,6 +896,20 @@ body.v3d-resizing-s #map { pointer-events: none; }
   }
   #view3d-resize-e,
   #view3d-resize-s { display: none; }
+
+  /* Querschnitt: volle Breite, Höhe per Anteil — Ziehgriffe sind auf Touch
+     unbrauchbar, daher aus. Manuelle Größe wird ignoriert (!important). */
+  #xsec {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    border-radius: 12px 12px 0 0;
+    height: 45vh !important;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #xsec-resize-n,
+  #xsec-resize-w { display: none; }
+  #xsec .xsec-head { padding-top: 8px; gap: 6px; flex-wrap: wrap; }
   .v3d-head { gap: 8px; padding: 8px 10px; }
   #v3d-mousehint { display: none; }
   #v3d-cam button { width: 40px; height: 40px; font-size: 18px; }

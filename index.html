@@ -20,6 +20,9 @@
       <button id="paneltoggle" title="Bedienfeld ein-/ausklappen" aria-expanded="true">▾</button>
     </div>
 
+    <div id="panelcols">
+    <div id="panelcol-main">
+
     <label class="row">Modell
       <select id="model">
         <option value="icon_eu" selected>ICON-EU (~6,5 km, Europa)</option>
@@ -260,16 +263,6 @@
       </div>
     </div>
 
-    <div id="heights-block">
-      <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
-      <div id="heightbar-wrap">
-        <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>
-        <div id="heightbar-labels"></div>
-      </div>
-      <div id="activehint" class="hint mono"></div>
-      <div id="heighthint" class="hint mono"></div>
-    </div>
-
     <button id="run" disabled>Trajektorien berechnen</button>
     <div id="status"></div>
     <div id="results"></div>
@@ -322,6 +315,22 @@
       Petterssen-Schema, bilinear/linear interpoliert
       <span id="runinfo"></span>
     </div>
+
+    </div><!-- /#panelcol-main -->
+
+    <div id="panelcol-side">
+      <div id="heights-block">
+        <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
+        <div id="heightbar-wrap">
+          <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>
+          <div id="heightbar-labels"></div>
+        </div>
+        <div id="activehint" class="hint mono"></div>
+        <div id="heighthint" class="hint mono"></div>
+      </div>
+    </div><!-- /#panelcol-side -->
+
+    </div><!-- /#panelcols -->
   </div>
 
   <div id="view3d" hidden>

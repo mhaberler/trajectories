@@ -15,7 +15,7 @@ html, body {
   top: 10px;
   right: 10px;
   z-index: 1000;
-  width: 400px;
+  width: 620px;
   max-height: calc(100% - 20px);
   overflow-y: auto;
   background: rgba(252, 252, 251, 0.96);
@@ -276,6 +276,18 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 #fp-hint { min-height: 1.2em; margin: 2px 0 0; }
 #fp-hint.error { color: #b3261e; font-weight: 600; }
 #fp-candhint { min-height: 1.2em; margin: 2px 0 4px; color: #1c5cab; }
+/* Zweispaltiges Bedienfeld: links die Steuerung, rechts der Höhenbalken.
+   Die Spalte mit dem Balken beginnt oben, damit der hohe Balken die ganze
+   Panelhöhe nutzen kann. Modale liegen fix über allem und zählen nicht mit. */
+#panelcols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+#panelcol-main { min-width: 0; }
+#panelcol-side { min-width: 0; }
+
 #heights-block.off { display: none; }
 #methodrow.off { opacity: 0.45; pointer-events: none; }
 
@@ -844,6 +856,9 @@ body.v3d-resizing-s #map { pointer-events: none; }
   }
   #panel-resize { display: none; }
   #paneltoggle { display: block; }
+  /* Bottom-Sheet ist zu schmal für zwei Spalten — Höhenbalken wandert
+     wieder unter die Steuerung. */
+  #panelcols { grid-template-columns: minmax(0, 1fr); gap: 0; }
   #panelhead {
     position: sticky;
     top: 0;

@@ -3726,9 +3726,11 @@ el("paneltoggle").addEventListener("click", () =>
   setPanelCollapsed(!el("panel").classList.contains("collapsed")));
 
 // --- Panelbreite (Desktop, linker Griff) ------------------------------------
-const PANEL_W_MIN = 280;
-const PANEL_W_MAX = 720;
-const PANEL_W_DEFAULT = 400;
+// Zweispaltig: die rechte Spalte (Höhenbalken samt Beschriftungen) braucht
+// rund 210 px, darum liegt das Minimum deutlich höher als bei einer Spalte.
+const PANEL_W_MIN = 560;
+const PANEL_W_MAX = 900;
+const PANEL_W_DEFAULT = 620;
 
 // 3D layout consts/helpers must come before initPanelResize: setPanelWidth
 // calls layoutView3d() on startup (TDZ if these are still uninitialized).

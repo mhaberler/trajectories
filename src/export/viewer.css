@@ -1,0 +1,125 @@
+/* Stil der exportierten Karte. Bewusst eigenständig — die Datei soll ohne
+   css/style.css funktionieren. Die .xsec-* Regeln sind Kopien von dort, weil
+   renderCrossSection genau diese Klassen erzeugt. */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font: 14px/1.45 "Helvetica Neue", Arial, sans-serif;
+  color: #0b0b0b;
+  background: #fcfcfb;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#map {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#profile {
+  position: relative;
+  flex: none;
+  border-top: 1px solid #c9c8c2;
+  background: #fcfcfb;
+}
+
+#profile svg { display: block; }
+/* Kein `#profile:empty { display:none }` — der Host wäre dann 0 px breit,
+   der Querschnitt würde nie gezeichnet und bliebe deshalb leer. Ist kein
+   Profil gewünscht, bekommt der Host gar keine Höhe (siehe buildProfile). */
+
+/* Querschnitt-Tooltip (Kopie aus css/style.css) */
+.xsec-tip {
+  position: absolute;
+  background: rgba(252, 252, 251, 0.97);
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+.xsec-tip .chip { display: inline-block; vertical-align: middle; margin-right: 5px; }
+.chip {
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* Schwebende Kästen: Tracklist und Legende */
+.gv-panel {
+  background: rgba(252, 252, 251, 0.96);
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+  font-size: 12px;
+  max-width: 240px;
+}
+
+.gv-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-weight: 600;
+  cursor: move;
+  border-bottom: 1px solid #e8e7e3;
+  user-select: none;
+}
+
+.gv-panel.collapsed .gv-panel-body { display: none; }
+.gv-panel.collapsed .gv-panel-head { border-bottom: none; }
+
+.gv-panel-body {
+  padding: 4px 8px 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.gv-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.gv-row input { margin: 0; flex: none; }
+.gv-row .gv-name { flex: 1 1 auto; cursor: pointer; }
+.gv-row .gv-zoom {
+  flex: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #1c5cab;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.gv-legend-body { padding: 6px 8px; }
+
+/* Deckkraft-Regler als Leaflet-Control */
+.gv-opacity {
+  background: rgba(252, 252, 251, 0.96);
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gv-opacity input { width: 90px; }
+
+.gv-foot {
+  font-size: 11px;
+  color: #52514e;
+  padding: 3px 8px;
+  border-top: 1px solid #e8e7e3;
+}

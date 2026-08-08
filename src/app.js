@@ -79,6 +79,8 @@ function persist() {
     fpTableVisible: !el("fp-table-block")?.hidden,
     fpDemOverlay: !!el("fp-dem")?.checked,
     xsecDem: !!el("xsec-dem")?.checked,
+    downloadFmt: el("downloadfmt").value,
+    exportOpts,
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     fpInheritMode: profileInheritMode(),
     view3dRight,
@@ -125,6 +127,60 @@ map.on("baselayerchange", (e) => {
   activeBaseLayer = e.name;
   persist();
 });
+
+// --- Export-Einstellungen ---------------------------------------------------
+const EXPORT_DEFAULTS = {
+  html: {
+    markers: true,
+    markerRadius: 5,
+    lineWidth: 3,
+    lineOpacity: 0.85,
+    profile: true,
+    profileHeight: 200,
+    baseOpacity: 1,
+    defaultBase: "OpenStreetMap",
+    tracklist: true,
+    legendHtml: "",
+  },
+  kml: { markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3, clampToGround: false },
+  gpx: { markersAsWaypoints: false },
+  geojson: { precision: 5 },
+};
+
+/** id, Format, Schlüssel, Art — eine Zeile je Bedienelement im Dialog. */
+const EXPORT_FIELDS = [
+  ["ex-html-markers", "html", "markers", "bool"],
+  ["ex-html-markerradius", "html", "markerRadius", "num"],
+  ["ex-html-linewidth", "html", "lineWidth", "num"],
+  ["ex-html-lineopacity", "html", "lineOpacity", "num"],
+  ["ex-html-profile", "html", "profile", "bool"],
+  ["ex-html-profileheight", "html", "profileHeight", "num"],
+  ["ex-html-baseopacity", "html", "baseOpacity", "num"],
+  ["ex-html-defaultbase", "html", "defaultBase", "text"],
+  ["ex-html-tracklist", "html", "tracklist", "bool"],
+  ["ex-html-legend", "html", "legendHtml", "text"],
+  ["ex-kml-markers", "kml", "markers", "bool"],
+  ["ex-kml-iconscale", "kml", "iconScale", "num"],
+  ["ex-kml-labelscale", "kml", "labelScale", "num"],
+  ["ex-kml-linewidth", "kml", "lineWidth", "num"],
+  ["ex-kml-clamp", "kml", "clampToGround", "bool"],
+  ["ex-gpx-wpt", "gpx", "markersAsWaypoints", "bool"],
+  ["ex-geojson-precision", "geojson", "precision", "num"],
+];
+
+function mergeExportOpts(stored) {
+  const out = {};
+  for (const [fmt, def] of Object.entries(EXPORT_DEFAULTS)) {
+    out[fmt] = { ...def, ...(stored?.[fmt] || {}) };
+  }
+  return out;
+}
+
+// Bewusst als JS-Objekt geführt statt bei jedem persist() aus dem DOM gelesen
+// wie der Rest: `legendHtml` steckt in einem Textfeld, das nie geöffnet
+// worden sein muss — über das DOM ginge der Wert vorher verloren.
+const exportOpts = mergeExportOpts(saved.exportOpts);
+
 
 const state = {
   start: null,
@@ -3799,17 +3855,130 @@ el("view3dbtn").addEventListener("click", async () => {
 });
 el("v3d-close").addEventListener("click", hide3D);
 
-// --- Export (GeoJSON / GPX / KML) -------------------------------------------
+// --- Export-Einstellungen: Dialog ------------------------------------------
+function applyExportOptsUI() {
+  for (const [id, fmt, key, kind] of EXPORT_FIELDS) {
+    const node = el(id);
+    if (!node) continue;
+    const v = exportOpts[fmt][key];
+    if (kind === "bool") node.checked = !!v;
+    else node.value = String(v);
+  }
+}
+
+function readExportOptsUI() {
+  for (const [id, fmt, key, kind] of EXPORT_FIELDS) {
+    const node = el(id);
+    if (!node) continue;
+    if (kind === "bool") exportOpts[fmt][key] = !!node.checked;
+    else if (kind === "num") {
+      const n = Number(node.value);
+      if (Number.isFinite(n)) exportOpts[fmt][key] = n;
+    } else exportOpts[fmt][key] = node.value;
+  }
+}
+
+/** Nur den Abschnitt des gewählten Formats zeigen. */
+function showExportSection(fmt) {
+  for (const sec of document.querySelectorAll("#ex-modal .ex-sec")) {
+    sec.hidden = sec.dataset.fmt !== fmt;
+  }
+}
+
+function openExportModal() {
+  showExportSection(el("downloadfmt").value);
+  el("ex-modal").hidden = false;
+}
+
+function closeExportModal() {
+  el("ex-modal").hidden = true;
+}
+
+el("exportcfg").addEventListener("click", openExportModal);
+el("ex-modal-close").addEventListener("click", closeExportModal);
+el("ex-modal").addEventListener("click", (e) => {
+  if (e.target === el("ex-modal")) closeExportModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !el("ex-modal").hidden) closeExportModal();
+});
+el("ex-modal").addEventListener("input", () => {
+  readExportOptsUI();
+  persist();
+});
+el("ex-modal").addEventListener("change", () => {
+  readExportOptsUI();
+  persist();
+});
+el("ex-reset").addEventListener("click", () => {
+  const fmt = el("downloadfmt").value;
+  exportOpts[fmt] = { ...EXPORT_DEFAULTS[fmt] };
+  applyExportOptsUI();
+  persist();
+});
+el("downloadfmt").addEventListener("change", () => {
+  showExportSection(el("downloadfmt").value);
+  persist();
+});
+
+
+// --- Export (GeoJSON / GPX / KML / HTML) ------------------------------------
 const DOWNLOAD_FORMATS = {
-  geojson: { ext: "geojson", type: "application/geo+json", build: (d) => JSON.stringify(buildGeoJSON(d)) },
+  geojson: {
+    ext: "geojson", type: "application/geo+json",
+    build: (d, ctx) => JSON.stringify(buildGeoJSON(d, ctx)),
+  },
   gpx: { ext: "gpx", type: "application/gpx+xml", build: buildGPX },
   kml: { ext: "kml", type: "application/vnd.google-earth.kml+xml", build: buildKML },
+  // Eigenständige Leaflet-Karte; Modul wird erst beim Export geladen, damit
+  // der eingebettete Leaflet-Text nicht im Hauptbündel liegt.
+  html: { ext: "html", type: "text/html;charset=utf-8", build: null, lazy: true },
 };
 
-el("download").addEventListener("click", () => {
+// Wiederherstellung erst hier: sie liest DOWNLOAD_FORMATS, das oben in der
+// zeitlichen Totzone läge. `persist()` ist zu diesem Zeitpunkt bereits scharf,
+// setzt aber dieselben Werte — daher unschädlich.
+if (DOWNLOAD_FORMATS[saved.downloadFmt]) el("downloadfmt").value = saved.downloadFmt;
+applyExportOptsUI();
+showExportSection(el("downloadfmt").value);
+
+/** @type {typeof import("./export/html.ts") | null} */
+let htmlExportMod = null;
+
+/** Alles, was die Bauer über `state.lastRuns` hinaus brauchen. */
+function exportCtx(key) {
+  return {
+    xsec: state.xsec,
+    opts: exportOpts[key] || {},
+    unitState: { ...unitState },
+    markerFields: kmlMarkerFields,
+    trackName,
+  };
+}
+
+el("download").addEventListener("click", async () => {
   if (!state.lastRuns) return;
-  const fmt = DOWNLOAD_FORMATS[el("downloadfmt").value] ?? DOWNLOAD_FORMATS.geojson;
-  const blob = new Blob([fmt.build(state.lastRuns)], { type: fmt.type });
+  const key = DOWNLOAD_FORMATS[el("downloadfmt").value] ? el("downloadfmt").value : "geojson";
+  const fmt = DOWNLOAD_FORMATS[key];
+  const ctx = exportCtx(key);
+  let text;
+  if (fmt.lazy) {
+    el("download").disabled = true;
+    setStatus("Baue HTML-Karte …");
+    try {
+      htmlExportMod ??= await import("./export/html.ts");
+      text = htmlExportMod.buildHTML(state.lastRuns, ctx);
+      setStatus("");
+    } catch (err) {
+      setStatus(`HTML-Export: ${err?.message || err}`, true);
+      return;
+    } finally {
+      el("download").disabled = false;
+    }
+  } else {
+    text = fmt.build(state.lastRuns, ctx);
+  }
+  const blob = new Blob([text], { type: fmt.type });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   const stamp = new Date(state.lastRuns.t0Ms).toISOString().slice(0, 16)
@@ -3835,8 +4004,10 @@ function xmlEsc(s) {
     ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
 }
 
-function buildGeoJSON({ runs, modelKey, mode, t0Ms, duration, direction }) {
-  const rd = (x) => Math.round(x * 1e5) / 1e5;
+function buildGeoJSON({ runs, modelKey, mode, t0Ms, duration, direction }, ctx = {}) {
+  const prec = Number.isFinite(ctx.opts?.precision) ? ctx.opts.precision : 5;
+  const f = 10 ** prec;
+  const rd = (x) => Math.round(x * f) / f;
   const round1 = (x) => Number.isFinite(x) ? Math.round(x * 10) / 10 : null;
   const iso = (ms) => new Date(ms).toISOString();
   const coord = (p) => Number.isFinite(p.z)
@@ -3895,7 +4066,7 @@ function buildGeoJSON({ runs, modelKey, mode, t0Ms, duration, direction }) {
 
 /** GPX 1.1 — jede Trajektorie als eigener <trk> mit Farbe (gpx_style-Extension,
  *  Hex; zusätzlich Garmins gpxx:DisplayColor als nächster Standardname). */
-function buildGPX({ runs, modelKey, t0Ms, direction }) {
+function buildGPX({ runs, modelKey, t0Ms, direction }, ctx = {}) {
   const iso = (ms) => new Date(ms).toISOString();
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -3905,6 +4076,19 @@ function buildGPX({ runs, modelKey, t0Ms, direction }) {
       ' xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3">',
     `  <metadata><name>Trajektorien ${xmlEsc(modelKey)}</name><time>${iso(t0Ms)}</time></metadata>`,
   ];
+  // Das GPX-Schema verlangt <wpt> vor <trk> — daher zuerst.
+  if (ctx.opts?.markersAsWaypoints) {
+    for (const run of runs) {
+      for (const m of run.r.markers || []) {
+        if (!Number.isFinite(m.lat) || !Number.isFinite(m.lon)) continue;
+        const ele = Number.isFinite(m.z) ? `<ele>${Math.round(m.z)}</ele>` : "";
+        const hhmm = new Date(m.tMs).toISOString().slice(11, 16);
+        out.push(`  <wpt lat="${m.lat.toFixed(6)}" lon="${m.lon.toFixed(6)}">${ele}` +
+          `<time>${iso(m.tMs)}</time>` +
+          `<name>${xmlEsc(`${run.label} ${hhmm}`)}</name></wpt>`);
+      }
+    }
+  }
   for (const run of runs) {
     const hex = run.color.replace("#", "").toLowerCase();
     out.push("  <trk>");
@@ -3960,7 +4144,8 @@ function kmlStyleId(hex) {
 
 /** KML — Folder per track: LineString + clickable marker Point Placemarks
  *  (description + ExtendedData + BalloonStyle). Höhen absolut; tessellate. */
-function buildKML({ runs, modelKey, direction }) {
+function buildKML({ runs, modelKey, direction }, ctx = {}) {
+  const o = { markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3, clampToGround: false, ...ctx.opts };
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<kml xmlns="http://www.opengis.net/kml/2.2">',
@@ -3977,12 +4162,12 @@ function buildKML({ runs, modelKey, direction }) {
     out.push("      <IconStyle>");
     out.push(`        <color>${kmlColor(run.color)}</color>`);
     // Larger hit target for Google Earth Web / mobile tap.
-    out.push("        <scale>1.6</scale>");
+    out.push(`        <scale>${o.iconScale}</scale>`);
     out.push("        <Icon>");
     out.push("          <href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>");
     out.push("        </Icon>");
     out.push("      </IconStyle>");
-    out.push("      <LabelStyle><scale>0.7</scale></LabelStyle>");
+    out.push(`      <LabelStyle><scale>${o.labelScale}</scale></LabelStyle>`);
     // <pre> keeps newlines; GE Web collapses plain description whitespace otherwise.
     out.push("      <BalloonStyle>");
     out.push("        <text><![CDATA[<b>$[name]</b><pre>$[description]</pre>]]></text>");
@@ -4008,18 +4193,18 @@ function buildKML({ runs, modelKey, direction }) {
     out.push(`      <name>${xmlEsc(name)}</name>`);
     out.push("      <Placemark>");
     out.push(`        <name>${xmlEsc(name)}</name>`);
-    out.push(`        <Style><LineStyle><color>${kmlColor(run.color)}</color><width>3</width></LineStyle></Style>`);
+    out.push(`        <Style><LineStyle><color>${kmlColor(run.color)}</color><width>${o.lineWidth}</width></LineStyle></Style>`);
     out.push("        <LineString>");
-    out.push(`          <altitudeMode>${has3d ? "absolute" : "clampToGround"}</altitudeMode>`);
+    out.push(`          <altitudeMode>${has3d && !o.clampToGround ? "absolute" : "clampToGround"}</altitudeMode>`);
     out.push("          <tessellate>1</tessellate>");
     out.push(`          <coordinates>${coords}</coordinates>`);
     out.push("        </LineString>");
     out.push("      </Placemark>");
 
-    for (const m of run.r.markers || []) {
+    for (const m of o.markers ? (run.r.markers || []) : []) {
       if (!Number.isFinite(m.lat) || !Number.isFinite(m.lon)) continue;
       const zPart = Number.isFinite(m.z) ? `,${Math.round(m.z)}` : "";
-      const altMode = Number.isFinite(m.z) ? "absolute" : "clampToGround";
+      const altMode = Number.isFinite(m.z) && !o.clampToGround ? "absolute" : "clampToGround";
       const hhmm = new Date(m.tMs).toISOString().slice(11, 16);
       const markName = Number.isFinite(m.z) ? `${hhmm} / ${fmtHeight(m.z)}` : hhmm;
       const { ext, description } = kmlMarkerDetails(m, run.label);

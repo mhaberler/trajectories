@@ -517,7 +517,18 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 #run:disabled { background: #9c9b95; cursor: default; }
 
 #downloadrow { display: flex; gap: 8px; margin-top: 8px; }
-#downloadrow select { flex: none; }
+#downloadrow select { flex: none; min-width: 0; }
+#exportcfg { flex: none; padding: 6px 9px; line-height: 1; }
+.ex-sec[hidden] { display: none; }
+#ex-modal .fp-modal-card { max-height: calc(100vh - 48px); overflow: auto; }
+#ex-modal textarea {
+  width: 100%;
+  min-height: 60px;
+  font: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+#ex-reset { width: 100%; margin-top: 10px; }
 #download {
   flex: 1;
   padding: 6px;

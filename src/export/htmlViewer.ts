@@ -1,0 +1,271 @@
+/**
+ * Viewer der exportierten HTML-Karte.
+ *
+ * Wird als eigener Vite-Einstieg im IIFE-Format gebaut und danach per `?raw`
+ * in das Exportdokument eingebettet. Dadurch laufen `crosssection` und `units`
+ * über den echten Modulgraphen — kein Textumbau am Quelltext nötig.
+ *
+ * Leaflet liegt zur Laufzeit als globales `L` vor (davor eingebettet).
+ */
+
+import { renderCrossSection } from "../crosssection";
+import { setUnits } from "../units";
+import type { Payload, PayloadRun, PopupRow } from "./htmlPayload";
+
+declare const L: any;
+
+interface Track {
+  run: PayloadRun;
+  layer: any;
+  bounds: any;
+}
+
+function esc(s: string) {
+  return String(s).replace(/[<>&"']/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+
+/**
+ * Basiskarten. Die `attribution` ist Lizenzpflicht, keine Zierde — sie muss
+ * an jeder Kachelquelle hängen bleiben.
+ */
+function buildBaseLayers() {
+  return {
+    "OpenStreetMap": L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      subdomains: ["a", "b", "c"],
+    }),
+    "OpenTopoMap": L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+      maxZoom: 17,
+      subdomains: ["a", "b", "c"],
+      attribution: "© OpenStreetMap contributors, SRTM | © <a href=\"https://opentopomap.org\">OpenTopoMap</a> (CC-BY-SA)",
+    }),
+    "Esri Satellit (hybrid)": L.layerGroup([
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+        maxZoom: 19,
+      }),
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
+        maxZoom: 19,
+        pane: "overlayPane",
+        zIndex: 2,
+      }),
+    ], {
+      attribution: "© Esri, USDA, USGS © OpenStreetMap contributors, and the GIS user community",
+    }),
+  } as Record<string, any>;
+}
+
+/** Deckkraft auf die aktive Basiskarte anwenden (Esri ist eine Gruppe). */
+function applyOpacity(layer: any, v: number) {
+  if (!layer) return;
+  if (typeof layer.setOpacity === "function") layer.setOpacity(v);
+  else if (typeof layer.eachLayer === "function") layer.eachLayer((l: any) => l.setOpacity?.(v));
+}
+
+function buildOpacityControl(map: any, getActive: () => any, initial: number) {
+  const Ctl = L.Control.extend({
+    onAdd() {
+      const d = L.DomUtil.create("div", "gv-opacity");
+      d.innerHTML = '<span>Karte</span><input type="range" min="0.2" max="1" step="0.05" />';
+      const inp = d.querySelector("input") as HTMLInputElement;
+      inp.value = String(initial);
+      L.DomEvent.disableClickPropagation(d);
+      L.DomEvent.disableScrollPropagation(d);
+      inp.addEventListener("input", () => applyOpacity(getActive(), +inp.value));
+      return d;
+    },
+  });
+  map.addControl(new Ctl({ position: "bottomleft" }));
+}
+
+/** Popup-Inhalt aus den vorberechneten Zeilen (bereits in Anzeige-Einheit). */
+function popupHtml(name: string, rows: PopupRow[]) {
+  const body = rows
+    .map((r) => `<tr><td style="padding-right:6px;color:#52514e">${esc(r.label)}</td><td>${esc(r.value)}</td></tr>`)
+    .join("");
+  return `<strong>${esc(name)}</strong><table style="border-collapse:collapse;margin-top:3px">${body}</table>`;
+}
+
+function buildTracks(map: any, data: Payload): Track[] {
+  const { opts } = data;
+  return data.runs.map((run) => {
+    const latlngs = run.pts.map((p) => [p[0], p[1]]);
+    const group = L.layerGroup();
+    L.polyline(latlngs, {
+      color: run.color,
+      weight: opts.lineWidth,
+      opacity: opts.lineOpacity,
+      dashArray: run.dash || undefined,
+    }).bindTooltip(run.name, { sticky: true }).addTo(group);
+
+    for (const m of run.markers) {
+      L.circleMarker([m.lat, m.lon], {
+        radius: opts.markerRadius,
+        color: run.color,
+        weight: 1.5,
+        fillColor: "#ffffff",
+        fillOpacity: 1,
+      }).bindPopup(popupHtml(run.name, m.rows)).addTo(group);
+    }
+    group.addTo(map);
+    return { run, layer: group, bounds: L.latLngBounds(latlngs) };
+  });
+}
+
+/** Schwebender Kasten mit Kopfzeile: verschiebbar, per Doppelklick einklappbar. */
+function floatingPanel(map: any, position: string, title: string, body: HTMLElement) {
+  const Ctl = L.Control.extend({
+    onAdd() {
+      const d = L.DomUtil.create("div", "gv-panel") as HTMLElement;
+      const head = L.DomUtil.create("div", "gv-panel-head", d) as HTMLElement;
+      head.textContent = title;
+      const wrap = L.DomUtil.create("div", "gv-panel-body", d) as HTMLElement;
+      wrap.appendChild(body);
+      L.DomEvent.disableClickPropagation(d);
+      L.DomEvent.disableScrollPropagation(d);
+      head.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        d.classList.toggle("collapsed");
+      });
+      // Ziehen per Pointer; Leaflet-Panning bleibt dabei aus.
+      let drag: { dx: number; dy: number } | null = null;
+      head.addEventListener("pointerdown", (e) => {
+        const r = d.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        head.setPointerCapture(e.pointerId);
+        d.style.position = "fixed";
+        d.style.margin = "0";
+      });
+      head.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        d.style.left = `${e.clientX - drag.dx}px`;
+        d.style.top = `${e.clientY - drag.dy}px`;
+        d.style.right = "auto";
+        d.style.bottom = "auto";
+      });
+      head.addEventListener("pointerup", (e) => {
+        drag = null;
+        head.releasePointerCapture(e.pointerId);
+      });
+      return d;
+    },
+  });
+  return map.addControl(new Ctl({ position }));
+}
+
+function buildTracklist(map: any, tracks: Track[]) {
+  const body = document.createElement("div");
+  for (const t of tracks) {
+    const row = document.createElement("div");
+    row.className = "gv-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", () => {
+      if (cb.checked) t.layer.addTo(map);
+      else map.removeLayer(t.layer);
+    });
+
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = t.run.color;
+
+    const name = document.createElement("span");
+    name.className = "gv-name";
+    name.textContent = t.run.label;
+    name.title = t.run.name;
+
+    const zoom = document.createElement("button");
+    zoom.className = "gv-zoom";
+    zoom.textContent = "⤢";
+    zoom.title = "Auf diesen Track zoomen";
+    zoom.addEventListener("click", () => map.fitBounds(t.bounds, { padding: [20, 20] }));
+
+    row.append(cb, chip, name, zoom);
+    body.appendChild(row);
+  }
+  floatingPanel(map, "topright", "Tracks", body);
+}
+
+function buildLegend(map: any, html: string, generated: string) {
+  const body = document.createElement("div");
+  body.className = "gv-legend-body";
+  // Absicht: Der Text ist HTML. Verfasser ist, wer exportiert — hier wird
+  // nicht saniert, ein halber Filter wäre schlechter als gar keiner.
+  body.innerHTML = html;
+  const foot = document.createElement("div");
+  foot.className = "gv-foot";
+  foot.textContent = `Erzeugt ${generated.slice(0, 16).replace("T", " ")}Z · Windtrajektorien`;
+  body.appendChild(foot);
+  floatingPanel(map, "topleft", "Legende", body);
+}
+
+/**
+ * Querschnitt unter der Karte. `renderCrossSection` liest `clientWidth` beim
+ * Aufruf und fällt sonst auf 320 px zurück — deshalb erst zeichnen, wenn der
+ * Host wirklich Breite hat, und bei jeder Größenänderung neu.
+ */
+function buildProfile(data: Payload) {
+  const host = document.getElementById("profile") as HTMLElement;
+  if (!data.opts.profile || !data.xsec?.runs?.length) {
+    host.style.display = "none";
+    return;
+  }
+  host.style.height = `${data.opts.profileHeight}px`;
+  const draw = () => {
+    if (host.clientWidth > 0) renderCrossSection(host, data.xsec);
+  };
+  let last = -1;
+  const redraw = () => {
+    // Nur bei echter Breitenänderung, sonst Endlosschleife: das Zeichnen
+    // ändert den Inhalt und damit wieder die beobachtete Größe.
+    const w = Math.round(host.clientWidth);
+    if (w > 0 && w !== last) {
+      last = w;
+      draw();
+    }
+  };
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(redraw).observe(host);
+  // Erster Anlauf trotzdem aktiv anstoßen: liefert der Observer beim Start
+  // nur eine Nullbreite, käme er ohne Größenänderung nie wieder.
+  requestAnimationFrame(redraw);
+  window.addEventListener("load", redraw);
+  let t: ReturnType<typeof setTimeout>;
+  window.addEventListener("resize", () => {
+    clearTimeout(t);
+    t = setTimeout(redraw, 120);
+  });
+}
+
+function initViewer(data: Payload) {
+  setUnits(data.units);
+  document.title = data.meta.title;
+
+  const bases = buildBaseLayers();
+  const startName = bases[data.opts.defaultBase] ? data.opts.defaultBase : "OpenStreetMap";
+  let active = bases[startName];
+
+  const map = L.map("map", { layers: [active] });
+  L.control.layers(bases, null, { position: "topleft" }).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+  map.on("baselayerchange", (e: any) => {
+    active = e.layer;
+    applyOpacity(active, data.opts.baseOpacity);
+  });
+  applyOpacity(active, data.opts.baseOpacity);
+  buildOpacityControl(map, () => active, data.opts.baseOpacity);
+
+  const tracks = buildTracks(map, data);
+  const all = tracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
+  if (all) map.fitBounds(all, { padding: [30, 30] });
+  else map.setView([50.5, 10.5], 6);
+
+  if (data.opts.tracklist && tracks.length) buildTracklist(map, tracks);
+  if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
+  buildProfile(data);
+}
+
+// Der Exportbau ruft dies aus einem zweiten <script>-Block auf.
+(window as any).initViewer = initViewer;

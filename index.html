@@ -172,6 +172,94 @@
       </div>
     </div>
 
+    <div id="ex-modal" class="fp-modal" hidden>
+      <div class="fp-modal-card" role="dialog" aria-labelledby="ex-modal-title" aria-modal="true">
+        <div class="fp-modal-head">
+          <strong id="ex-modal-title">Export-Einstellungen</strong>
+          <button type="button" id="ex-modal-close" title="Schließen">×</button>
+        </div>
+
+        <div class="ex-sec" data-fmt="html" hidden>
+          <label class="row">
+            <span class="label">Zeitmarken <span class="hint">(anklickbar, mit Wind/Wetter)</span></span>
+            <input type="checkbox" id="ex-html-markers" />
+          </label>
+          <label class="row">
+            <span class="label">Tracklist <span class="hint">(Kästchen zum Ein-/Ausblenden)</span></span>
+            <input type="checkbox" id="ex-html-tracklist" />
+          </label>
+          <label class="row">
+            <span class="label">Höhenprofil <span class="hint">(Streifen unter der Karte)</span></span>
+            <input type="checkbox" id="ex-html-profile" />
+          </label>
+          <div class="grid2">
+            <label>Linienbreite
+              <input type="number" id="ex-html-linewidth" min="1" max="10" step="1" />
+            </label>
+            <label>Liniendeckkraft
+              <input type="number" id="ex-html-lineopacity" min="0.1" max="1" step="0.05" />
+            </label>
+            <label>Markenradius
+              <input type="number" id="ex-html-markerradius" min="2" max="12" step="1" />
+            </label>
+            <label>Profilhöhe (px)
+              <input type="number" id="ex-html-profileheight" min="80" max="600" step="10" />
+            </label>
+            <label>Kartendeckkraft
+              <input type="number" id="ex-html-baseopacity" min="0.2" max="1" step="0.05" />
+            </label>
+            <label>Basiskarte
+              <select id="ex-html-defaultbase">
+                <option value="OpenStreetMap">OpenStreetMap</option>
+                <option value="OpenTopoMap">OpenTopoMap</option>
+                <option value="Esri Satellit (hybrid)">Esri Satellit</option>
+              </select>
+            </label>
+          </div>
+          <label class="label" for="ex-html-legend">Legende <span class="hint">(HTML erlaubt, leer = aus)</span></label>
+          <textarea id="ex-html-legend" rows="3" placeholder="z. B. Windtrajektorien&lt;br&gt;Lauf 12Z"></textarea>
+        </div>
+
+        <div class="ex-sec" data-fmt="kml" hidden>
+          <label class="row">
+            <span class="label">Zeitmarken als Placemarks</span>
+            <input type="checkbox" id="ex-kml-markers" />
+          </label>
+          <label class="row">
+            <span class="label">Auf Grund legen <span class="hint">(statt absoluter Höhe)</span></span>
+            <input type="checkbox" id="ex-kml-clamp" />
+          </label>
+          <div class="grid2">
+            <label>Symbolgröße
+              <input type="number" id="ex-kml-iconscale" min="0.5" max="4" step="0.1" />
+            </label>
+            <label>Beschriftungsgröße
+              <input type="number" id="ex-kml-labelscale" min="0.3" max="2" step="0.1" />
+            </label>
+            <label>Linienbreite
+              <input type="number" id="ex-kml-linewidth" min="1" max="10" step="1" />
+            </label>
+          </div>
+        </div>
+
+        <div class="ex-sec" data-fmt="gpx" hidden>
+          <label class="row">
+            <span class="label">Zeitmarken als Wegpunkte <span class="hint">(&lt;wpt&gt;)</span></span>
+            <input type="checkbox" id="ex-gpx-wpt" />
+          </label>
+        </div>
+
+        <div class="ex-sec" data-fmt="geojson" hidden>
+          <label class="row">
+            <span class="label">Nachkommastellen <span class="hint">(5 ≈ 1 m)</span></span>
+            <input type="number" id="ex-geojson-precision" min="3" max="7" step="1" />
+          </label>
+        </div>
+
+        <button type="button" id="ex-reset" class="secondary">Auf Standard zurücksetzen</button>
+      </div>
+    </div>
+
     <div id="heights-block">
       <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
       <div id="heightbar-wrap">
@@ -190,7 +278,9 @@
         <option value="geojson" selected>GeoJSON</option>
         <option value="gpx">GPX</option>
         <option value="kml">KML</option>
+        <option value="html">HTML-Karte (eigenständig)</option>
       </select>
+      <button id="exportcfg" class="secondary" title="Export-Einstellungen" aria-haspopup="dialog">⚙</button>
       <button id="download" class="secondary" disabled>Herunterladen</button>
     </div>
     <button id="xsecbtn" class="secondary" disabled>Querschnitt anzeigen</button>

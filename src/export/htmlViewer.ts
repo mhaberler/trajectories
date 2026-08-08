@@ -154,7 +154,16 @@ function floatingPanel(map: any, position: string, title: string, body: HTMLElem
   return map.addControl(new Ctl({ position }));
 }
 
-function buildTracklist(map: any, tracks: Track[]) {
+/**
+ * @param onProfile Schalter für den Querschnitt; fehlt er (keine Höhendaten),
+ *                  entfällt die Zeile am Ende der Liste.
+ */
+function buildTracklist(
+  map: any,
+  tracks: Track[],
+  onProfile: ((on: boolean) => void) | null,
+  profileOn: boolean,
+) {
   const body = document.createElement("div");
   for (const t of tracks) {
     const row = document.createElement("div");
@@ -186,6 +195,27 @@ function buildTracklist(map: any, tracks: Track[]) {
     row.append(cb, chip, name, zoom);
     body.appendChild(row);
   }
+
+  // Querschnitt-Schalter am Ende der Liste, abgesetzt von den Tracks.
+  if (onProfile) {
+    const row = document.createElement("div");
+    row.className = "gv-row gv-row-opt";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.id = "gv-profile-toggle";
+    cb.checked = profileOn;
+    cb.addEventListener("change", () => onProfile(cb.checked));
+
+    const label = document.createElement("label");
+    label.className = "gv-name";
+    label.htmlFor = cb.id;
+    label.textContent = "Höhenprofil";
+    label.title = "Querschnitt unter der Karte ein-/ausblenden";
+
+    row.append(cb, label);
+    body.appendChild(row);
+  }
   floatingPanel(map, "topright", "Tracks", body);
 }
 
@@ -207,13 +237,18 @@ function buildLegend(map: any, html: string, generated: string) {
  * Aufruf und fällt sonst auf 320 px zurück — deshalb erst zeichnen, wenn der
  * Host wirklich Breite hat, und bei jeder Größenänderung neu.
  */
-function buildProfile(data: Payload) {
+/**
+ * Querschnitt unter der Karte. Gibt einen Schalter zurück, damit die
+ * Tracklist ihn ein- und ausblenden kann; `data.opts.profile` bestimmt nur
+ * noch den Anfangszustand.
+ * @returns null, wenn es gar keine Höhendaten gibt (dann kein Schalter).
+ */
+function buildProfile(map: any, data: Payload): ((on: boolean) => void) | null {
   const host = document.getElementById("profile") as HTMLElement;
-  if (!data.opts.profile || !data.xsec?.runs?.length) {
+  if (!data.xsec?.runs?.length) {
     host.style.display = "none";
-    return;
+    return null;
   }
-  host.style.height = `${data.opts.profileHeight}px`;
   const draw = () => {
     if (host.clientWidth > 0) renderCrossSection(host, data.xsec);
   };
@@ -237,6 +272,20 @@ function buildProfile(data: Payload) {
     clearTimeout(t);
     t = setTimeout(redraw, 120);
   });
+
+  const setVisible = (on: boolean) => {
+    host.style.display = on ? "" : "none";
+    host.style.height = on ? `${data.opts.profileHeight}px` : "";
+    // Karte neu vermessen — sie teilt sich die Höhe mit dem Streifen.
+    setTimeout(() => {
+      map.invalidateSize();
+      // Breite ändert sich nicht, darum die Sperre lösen und neu zeichnen.
+      last = -1;
+      redraw();
+    }, 0);
+  };
+  setVisible(!!data.opts.profile);
+  return setVisible;
 }
 
 function initViewer(data: Payload) {
@@ -262,9 +311,12 @@ function initViewer(data: Payload) {
   if (all) map.fitBounds(all, { padding: [30, 30] });
   else map.setView([50.5, 10.5], 6);
 
-  if (data.opts.tracklist && tracks.length) buildTracklist(map, tracks);
+  // Erst den Querschnitt aufbauen — die Tracklist braucht seinen Schalter.
+  const toggleProfile = buildProfile(map, data);
+  if (data.opts.tracklist && tracks.length) {
+    buildTracklist(map, tracks, toggleProfile, !!data.opts.profile);
+  }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
-  buildProfile(data);
 }
 
 // Der Exportbau ruft dies aus einem zweiten <script>-Block auf.

@@ -92,6 +92,13 @@ body {
 
 .gv-row input { margin: 0; flex: none; }
 .gv-row .gv-name { flex: 1 1 auto; cursor: pointer; }
+
+/* Optionen am Listenende, abgesetzt von den Tracks. */
+.gv-row-opt {
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid #e8e7e3;
+}
 .gv-row .gv-zoom {
   flex: none;
   border: none;

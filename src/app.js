@@ -2906,7 +2906,7 @@ async function runTrajectoriesViaApi({
   el("download").disabled = true;
   el("xsecbtn").disabled = true;
   el("view3dbtn").disabled = true;
-  if (!keepSiblings) el("xsec").hidden = true;
+  if (!keepSiblings) showCrossSection(false);
   if (!keepSiblings) {
     state.lastRuns = null;
     state.xsec = null;
@@ -3162,7 +3162,7 @@ async function runTrajectories() {
   el("xsecbtn").disabled = true;
   el("view3dbtn").disabled = true;
   const xsecWasOpen = !el("xsec").hidden;
-  el("xsec").hidden = true;
+  showCrossSection(false);
   state.lastRuns = null;
   state.xsec = null;
   resetRunSelection();

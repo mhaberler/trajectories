@@ -1,5 +1,38 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { defineConfig, build as viteBuild } from "vite";
 import cesium from "vite-plugin-cesium";
+
+/**
+ * Leaflets Bilder als data:-URIs für den eigenständigen HTML-Export.
+ *
+ * Nicht über `?inline`: das liefert im Dev-Server einen Serverpfad
+ * (`/node_modules/…?inline`) statt einer data:-URI. In der exportierten Datei
+ * zeigte der Verweis dann ins Leere und das Ebenen-Symbol blieb ein weißer
+ * Kasten — im Build sah alles korrekt aus, beim Entwickeln nicht.
+ */
+function leafletImages() {
+  const virtualId = "virtual:leaflet-images";
+  const resolvedId = `\0${virtualId}`;
+  return {
+    name: "trajektorien-leaflet-images",
+    enforce: "pre",
+    resolveId(id) {
+      return id === virtualId ? resolvedId : null;
+    },
+    load(id) {
+      if (id !== resolvedId) return null;
+      const require = createRequire(import.meta.url);
+      const dir = join(dirname(require.resolve("leaflet/package.json")), "dist/images");
+      const uri = (name) =>
+        `data:image/png;base64,${readFileSync(join(dir, name)).toString("base64")}`;
+      return `export const layers = ${JSON.stringify(uri("layers.png"))};
+export const layers2x = ${JSON.stringify(uri("layers-2x.png"))};
+export const markerIcon = ${JSON.stringify(uri("marker-icon.png"))};`;
+    },
+  };
+}
 
 /**
  * Der HTML-Export bettet den Viewer als fertiges IIFE-Bündel ein. Das Bündel
@@ -56,5 +89,5 @@ function viewerBundle() {
  *  (deploy-vps.sh flattens vite-plugin-cesium’s nested dist/<base>/cesium). */
 export default defineConfig({
   base: "/",
-  plugins: [viewerBundle(), cesium()],
+  plugins: [leafletImages(), viewerBundle(), cesium()],
 });

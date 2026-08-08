@@ -12,9 +12,10 @@ import viewerCss from "./viewer.css?raw";
 import viewerBundle from "virtual:viewer-bundle";
 // Leaflets CSS verweist relativ auf images/*.png — in einer alleinstehenden
 // Datei gäbe es die nicht (das Ebenen-Symbol bliebe leer). Daher eingebettet.
-import layersPng from "leaflet/dist/images/layers.png?inline";
-import layers2xPng from "leaflet/dist/images/layers-2x.png?inline";
-import markerPng from "leaflet/dist/images/marker-icon.png?inline";
+// Eigenes virtuelles Modul statt `?inline`, weil letzteres im Dev-Server einen
+// Serverpfad liefert und nur im Build eine data:-URI (siehe vite.config.js).
+import { layers as layersPng, layers2x as layers2xPng, markerIcon as markerPng }
+  from "virtual:leaflet-images";
 import { buildPayload, jsonForScript, renderDocument } from "./htmlPayload";
 import type { ExportCtx } from "./htmlPayload";
 import type { LastRuns } from "../types";

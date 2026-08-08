@@ -16,3 +16,10 @@ declare module "virtual:viewer-bundle" {
   const code: string;
   export default code;
 }
+
+/** Leaflets Symbole als data:-URIs (siehe vite.config.js). */
+declare module "virtual:leaflet-images" {
+  export const layers: string;
+  export const layers2x: string;
+  export const markerIcon: string;
+}

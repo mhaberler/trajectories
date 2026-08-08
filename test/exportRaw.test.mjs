@@ -42,8 +42,10 @@ const imgRefs = leafletCss.match(/url\(\s*['"]?images\/[^)]*\)/g) || [];
 check("Leaflet-CSS hat relative Bildverweise", imgRefs.length === 3, imgRefs.join(", "));
 
 const htmlTs = readFileSync(join(root, "src/export/html.ts"), "utf8");
+// Die Verweise, die ersetzt werden müssen — je einer je Bild aus Leaflets CSS.
 for (const name of ["layers-2x", "layers", "marker-icon"]) {
-  check(`html.ts ersetzt ${name}.png`, htmlTs.includes(`${name}.png`));
+  check(`html.ts ersetzt ${name}.png`,
+    new RegExp(`images\\\\?/${name}\\\\?\\.png`).test(htmlTs), name);
 }
 // Die Ersetzung muss zur Exportzeit laufen. Als Modulkonstante faltet der
 // Bundler den Ausdruck zusammen und die Originalverweise blieben stehen.
@@ -51,6 +53,21 @@ check("Ersetzung passiert in einer Funktion, nicht als Konstante",
   /function inlineLeafletImages/.test(htmlTs));
 check("buildHTML nutzt die Funktion",
   /leafletCss:\s*inlineLeafletImages\(\)/.test(htmlTs));
+
+// `?inline` liefert im Dev-Server einen Serverpfad statt einer data:-URI —
+// die exportierte Datei zeigte dann auf file:///node_modules/… ins Leere.
+// Darum das eigene virtuelle Modul, das in beiden Modi base64 liefert.
+check("html.ts importiert die Bilder nicht per ?inline",
+  !/^\s*import[^\n]*\?inline/m.test(htmlTs));
+check("html.ts nutzt virtual:leaflet-images",
+  htmlTs.includes("virtual:leaflet-images"));
+
+const viteCfg = readFileSync(join(root, "vite.config.js"), "utf8");
+check("vite.config.js liefert virtual:leaflet-images",
+  viteCfg.includes("virtual:leaflet-images"));
+check("virtual:leaflet-images kodiert base64",
+  /toString\(["']base64["']\)/.test(viteCfg));
+check("Plugin ist registriert", /plugins:\s*\[\s*leafletImages\(\)/.test(viteCfg));
 
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle Export-Wächter bestanden.");
 process.exit(failures ? 1 : 0);

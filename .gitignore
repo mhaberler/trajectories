@@ -16,3 +16,4 @@ python/tests/artifacts/
 .vscode
 myvisualizer
 
+.claude/settings.json

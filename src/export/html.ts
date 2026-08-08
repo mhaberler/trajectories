@@ -19,16 +19,34 @@ import { buildPayload, jsonForScript, renderDocument } from "./htmlPayload";
 import type { ExportCtx } from "./htmlPayload";
 import type { LastRuns } from "../types";
 
-const leafletCss = leafletCssRaw
-  .replace(/url\(images\/layers-2x\.png\)/g, `url(${layers2xPng})`)
-  .replace(/url\(images\/layers\.png\)/g, `url(${layersPng})`)
-  .replace(/url\(images\/marker-icon\.png\)/g, `url(${markerPng})`);
+/**
+ * Leaflets relative Bildverweise durch eingebettete data:-URIs ersetzen.
+ *
+ * Bewusst beim Export ausgeführt und nicht als Modulkonstante: als Konstante
+ * faltet der Bundler den Ausdruck zusammen und im Ergebnis blieben die
+ * ursprünglichen `url(images/…)` stehen — das Ebenen-Symbol war dann ein
+ * leerer weißer Kasten.
+ */
+function inlineLeafletImages(): string {
+  const map: [RegExp, string][] = [
+    [/url\(\s*(['"]?)images\/layers-2x\.png\1\s*\)/g, layers2xPng],
+    [/url\(\s*(['"]?)images\/layers\.png\1\s*\)/g, layersPng],
+    [/url\(\s*(['"]?)images\/marker-icon\.png\1\s*\)/g, markerPng],
+  ];
+  let css = leafletCssRaw;
+  for (const [re, uri] of map) {
+    // Ersetzungsfunktion statt Zeichenkette: `$` in data:-URIs bliebe sonst
+    // als Sondersequenz stehen.
+    css = css.replace(re, () => `url("${uri}")`);
+  }
+  return css;
+}
 
 export function buildHTML(data: LastRuns, ctx: ExportCtx): string {
   const payload = buildPayload(data, ctx);
   return renderDocument({
     title: payload.meta.title,
-    leafletCss,
+    leafletCss: inlineLeafletImages(),
     viewerCss,
     leafletJs,
     // Bündel definiert window.initViewer; danach mit den Daten starten.

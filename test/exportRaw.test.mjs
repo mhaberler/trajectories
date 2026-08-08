@@ -34,5 +34,23 @@ const viewer = readFileSync(join(root, "src/export/htmlViewer.ts"), "utf8");
 check("Viewer ruft initViewer auf", /function initViewer/.test(viewer));
 check("Viewer hängt sich an window", /window[^)]*\)?\s*\.initViewer\s*=/.test(viewer));
 
+// Leaflets CSS verweist relativ auf images/*.png. html.ts ersetzt diese
+// Verweise beim Export durch data:-URIs; passt das Muster nicht mehr, bliebe
+// das Ebenen-Symbol in der exportierten Datei ein leerer weißer Kasten.
+const leafletCss = readFileSync(join(root, "node_modules/leaflet/dist/leaflet.css"), "utf8");
+const imgRefs = leafletCss.match(/url\(\s*['"]?images\/[^)]*\)/g) || [];
+check("Leaflet-CSS hat relative Bildverweise", imgRefs.length === 3, imgRefs.join(", "));
+
+const htmlTs = readFileSync(join(root, "src/export/html.ts"), "utf8");
+for (const name of ["layers-2x", "layers", "marker-icon"]) {
+  check(`html.ts ersetzt ${name}.png`, htmlTs.includes(`${name}.png`));
+}
+// Die Ersetzung muss zur Exportzeit laufen. Als Modulkonstante faltet der
+// Bundler den Ausdruck zusammen und die Originalverweise blieben stehen.
+check("Ersetzung passiert in einer Funktion, nicht als Konstante",
+  /function inlineLeafletImages/.test(htmlTs));
+check("buildHTML nutzt die Funktion",
+  /leafletCss:\s*inlineLeafletImages\(\)/.test(htmlTs));
+
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle Export-Wächter bestanden.");
 process.exit(failures ? 1 : 0);

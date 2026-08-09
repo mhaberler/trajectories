@@ -1,5 +1,5 @@
 import {
-  API_BASE, TRAJECTORY_API, MODELS, SERIES_COLORS, DEFAULT_HEIGHTS,
+  TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, SERIES_COLORS, DEFAULT_HEIGHTS,
   HEIGHT_MIN, HEIGHT_MAX, MARKER_INTERVALS, METHODS,
 } from "./config.js";
 import { WindField } from "./windfield.js";
@@ -2717,7 +2717,7 @@ async function fetchStartElevation() {
       models: model.apiModel,
       forecast_days: "1",
     });
-    const d = await (await fetch(`${API_BASE}/v1/forecast?${params}`)).json();
+    const d = await (await fetch(`${modelForecastUrl(model)}?${params}`)).json();
     if (Number.isFinite(d.elevation) && state.start === s) {
       state.startElevation = d.elevation;
       updateHeightContext();
@@ -2757,7 +2757,9 @@ async function loadMeta() {
   el("status").textContent = "Lade Modelllauf-Info …";
   el("status").className = "";
   try {
-    const meta = await (await fetch(`${API_BASE}/data/${model.dataset}/static/meta.json`)).json();
+    const meta = await (await fetch(
+      `${modelApiBase(model)}/data/${model.dataset}/static/meta.json`,
+    )).json();
     // Der Server hält mehrere Tage Archiv (geprüft ≥5 d) — für Rückwärts-
     // trajektorien großzügiger Vorlauf; die echte Kante meldet der Integrator.
     const t0 = meta.last_run_initialisation_time - PAST_HOURS * 3600;

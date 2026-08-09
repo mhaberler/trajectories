@@ -17,7 +17,7 @@ from . import config
 from .compute import compute_point_wind, compute_trajectories, parse_flight_profile
 from .response_cache import cache_key, get_response_cache, wind_cache_key
 
-MODELS = Literal["icon_d2", "icon_eu"]
+MODELS = Literal["icon_d2", "icon_eu", "icon_global"]
 VERTICAL = Literal["height", "pressure", "theta", "z3d"]
 DIRECTION = Literal["forward", "backward"]
 BACKEND = Literal["auto", "om", "http"]
@@ -417,8 +417,8 @@ def wind(
     longitude: float = Query(..., description="WGS84 longitude (°)", ge=-180, le=180),
     models: str = Query(
         "icon_eu",
-        description="Comma-separated Open-Meteo model ids (icon_d2, icon_eu)",
-        examples=["icon_eu", "icon_eu,icon_d2"],
+        description="Comma-separated Open-Meteo model ids (icon_d2, icon_eu, icon_global)",
+        examples=["icon_eu", "icon_eu,icon_d2", "icon_global"],
     ),
     time: str = Query(
         ...,

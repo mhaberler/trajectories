@@ -93,13 +93,16 @@ class WindField:
         model = config.MODELS[model_key]
         owns = client is None
         http = client or httpx.Client(timeout=60.0, trust_env=False)
+        # wind_w sits on half levels (nHalfLevels = nLevels+1); probe near surface.
+        half_n = int(model.get("nHalfLevels") or (model["nLevels"] + 1))
         try:
             for prefix in ("wind_w", "vertical_velocity", "w", "wind_w_component"):
                 try:
-                    var_name = f"{prefix}_level{model['nLevels'] - 5}"
+                    var_name = f"{prefix}_level{half_n - 5}"
                     url = (
-                        f"{config.API_BASE}/v1/forecast?latitude=50&longitude=10"
+                        f"{config.model_forecast_url(model)}?latitude=50&longitude=10"
                         f"&hourly={var_name}&models={model['apiModel']}&forecast_days=1"
+                        f"&windspeed_unit=ms"
                     )
                     resp = http.get(url)
                     if not resp.is_success:
@@ -387,7 +390,13 @@ class WindField:
             "end_date": self.end_date,
             "cell_selection": "nearest",
         }
-        url = f"{config.API_BASE}/v1/forecast"
+        # Older servers apply the default wind unit to wind_w (see wind_w_profile.py).
+        if any(
+            v.startswith(("wind_w_level", "vertical_velocity_level", "w_level"))
+            for v in vars_
+        ):
+            params["windspeed_unit"] = "ms"
+        url = config.model_forecast_url(self.model)
         resp = self._http().get(url, params=params)
         body = resp.text
         try:

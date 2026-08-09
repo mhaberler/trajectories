@@ -1,4 +1,4 @@
-import { API_BASE, MODELS } from "./config.js";
+import { MODELS, modelForecastUrl } from "./config.js";
 
 const KMH_TO_MS = 1 / 3.6;
 const MAX_POINTS_PER_REQUEST = 10;
@@ -38,11 +38,14 @@ export class WindField {
    *  ausschließlich null liefert, gilt als nicht verfügbar. */
   static async detectWVariable(modelKey = "icon_eu", fetchImpl = fetch.bind(globalThis)) {
     const model = MODELS[modelKey];
+    // wind_w sits on half levels (nHalfLevels = nLevels+1); probe near the surface.
+    const halfN = model.nHalfLevels ?? (model.nLevels + 1);
     for (const prefix of ["wind_w", "vertical_velocity", "w"]) {
       try {
-        const varName = `${prefix}_level${model.nLevels - 5}`;
-        const url = `${API_BASE}/v1/forecast?latitude=50&longitude=10` +
-          `&hourly=${varName}&models=${model.apiModel}&forecast_days=1`;
+        const varName = `${prefix}_level${halfN - 5}`;
+        const url = `${modelForecastUrl(model)}?latitude=50&longitude=10` +
+          `&hourly=${varName}&models=${model.apiModel}&forecast_days=1` +
+          `&windspeed_unit=ms`;
         const resp = await fetchImpl(url);
         if (!resp.ok) continue;
         const d = await resp.json();
@@ -229,7 +232,11 @@ export class WindField {
       end_date: this.endDate,
       cell_selection: "nearest",
     });
-    const url = `${API_BASE}/v1/forecast?${params}`;
+    // Older servers apply the default wind unit to wind_w as well (see wind_w_profile.py).
+    if (vars.some((v) => /^(wind_w|vertical_velocity|w)_level/.test(v))) {
+      params.set("windspeed_unit", "ms");
+    }
+    const url = `${modelForecastUrl(this.model)}?${params}`;
     const resp = await this.fetch(url);
     const body = await resp.text();
     let data;

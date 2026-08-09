@@ -35,6 +35,7 @@ def test_health():
     body = r.json()
     assert body["status"] == "ok"
     assert "icon_d2" in body["models"]
+    assert "icon_global" in body["models"]
 
 
 def test_trajectory_validation_bad_model():
@@ -43,7 +44,7 @@ def test_trajectory_validation_bad_model():
         params={
             "latitude": 47.23,
             "longitude": 15.82,
-            "models": "icon_global",
+            "models": "icon_foo",
             "time": "2026-08-02T11:00:00Z",
         },
     )
@@ -208,7 +209,7 @@ def test_wind_bad_model():
         params={
             "latitude": 47.23,
             "longitude": 15.82,
-            "models": "icon_global",
+            "models": "icon_foo",
             "time": "2026-08-02T11:00:00Z",
             "height_agl": 550,
         },

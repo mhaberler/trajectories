@@ -3,6 +3,22 @@ export const API_BASE = "https://open-meteo.mah.priv.at";
 /** FastAPI trajectories service (GeoJSON). Used when „API abrufen“ is checked. */
 export const TRAJECTORY_API = "https://trajectory.mah.priv.at";
 
+/** Open-Meteo base URL for a model (optional per-model ``apiBase``). */
+export function modelApiBase(model) {
+  return String(model?.apiBase || API_BASE).replace(/\/$/, "");
+}
+
+/** Forecast API path (ICON global uses ``/v1/dwd-icon``; default ``/v1/forecast``). */
+export function modelApiPath(model) {
+  const p = model?.apiPath || "/v1/forecast";
+  return p.startsWith("/") ? p : `/${p}`;
+}
+
+/** Full forecast URL prefix: ``{apiBase}{apiPath}``. */
+export function modelForecastUrl(model) {
+  return `${modelApiBase(model)}${modelApiPath(model)}`;
+}
+
 // Levelzählung der API: N=1 oberstes, N=nLevels unterstes Modelllevel (~10 m AGL).
 export const MODELS = {
   icon_d2: {
@@ -22,6 +38,20 @@ export const MODELS = {
     gridMeters: 6500,
     nLevels: 74,
     bbox: { latMin: 29.5, latMax: 70.5, lonMin: -23.5, lonMax: 62.5 },
+  },
+  // HTTP on open-meteo-temp — see open-meteo/examples/wind_w_profile.py
+  // (endpoint /v1/dwd-icon; W on half levels 1..nHalfLevels).
+  icon_global: {
+    apiModel: "icon_global",
+    dataset: "dwd_icon",
+    apiBase: "https://open-meteo-temp.mah.priv.at",
+    apiPath: "/v1/dwd-icon",
+    label: "ICON Global (~28 km)",
+    grid: 0.25,
+    gridMeters: 28000,
+    nLevels: 120,
+    nHalfLevels: 121,
+    bbox: { latMin: -90, latMax: 90, lonMin: -180, lonMax: 179.75 },
   },
 };
 

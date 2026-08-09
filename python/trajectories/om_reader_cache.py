@@ -1,4 +1,14 @@
-"""Process-wide keep-open OmFileReader cache with per-path locks + inotify."""
+"""Process-wide keep-open OmFileReader cache with per-path locks + inotify.
+
+Lock ordering (must not invert):
+  1. ``self._lock`` (cache map / tickets) — never hold ``entry.lock`` when taking this
+  2. ``entry.lock`` — held only around open-reader use and close
+
+Ingest (inotify) may invalidate while trajectories read. Closing a reader without
+``entry.lock`` while another thread is inside ``reader[indexer]`` can wedge the
+native mmap and block ``systemctl restart``. Always pop under ``_lock``, then
+close under ``entry.lock`` after releasing ``_lock``.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +17,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 # Optional watchdog for inotify; mtime/inode fallback always works.
 try:
@@ -124,6 +134,7 @@ class OmReaderCache:
         return int(st.st_mtime_ns), int(st.st_ino)
 
     def _watch_parent(self, path: str) -> None:
+        """Schedule parent dir watch. Caller must hold ``_lock``."""
         if self._observer is None or self._handler is None:
             return
         parent = str(Path(path).resolve().parent)
@@ -138,7 +149,10 @@ class OmReaderCache:
     def _unwatch_parent(self, path: str) -> None:
         if self._observer is None:
             return
-        parent = str(Path(path).resolve().parent)
+        try:
+            parent = str(Path(path).resolve().parent)
+        except Exception:
+            return
         n = self._dir_refs.get(parent, 0) - 1
         if n <= 0:
             self._dir_refs.pop(parent, None)
@@ -147,39 +161,65 @@ class OmReaderCache:
             self._dir_refs[parent] = n
 
     def _close_entry(self, path: str, entry: _Entry) -> None:
+        """Close reader under ``entry.lock``. Must NOT hold ``_lock`` while
+        waiting on ``entry.lock`` (ingest invalidate uses the same order)."""
+        with entry.lock:
+            try:
+                entry.reader.close()
+            except Exception:
+                pass
+        with self._lock:
+            self._unwatch_parent(path)
+
+    def _path_candidates(self, path: str) -> set[str]:
         try:
-            entry.reader.close()
+            key = str(Path(path).resolve())
         except Exception:
-            pass
-        self._unwatch_parent(path)
+            key = str(path)
+        return {key, str(path), os.path.abspath(path)}
 
     def invalidate(self, path: str) -> None:
+        """Drop cached reader(s) for path; mark in-flight slab tickets stale.
+
+        Safe during ingest: close happens after releasing the cache lock and
+        only while holding ``entry.lock``, so active ``read_array`` callers
+        finish (or block the close) instead of seeing a yanked mmap.
+        """
         try:
             from .om_backend import clear_om_slab_cache
 
             clear_om_slab_cache()
         except Exception:
             pass
-        try:
-            key = str(Path(path).resolve())
-        except Exception:
-            key = str(path)
-        candidates = {key, str(path), os.path.abspath(path)}
+        candidates = self._path_candidates(path)
+        to_close: list[tuple[str, _Entry]] = []
         with self._lock:
             for p in list(self._entries):
                 if p in candidates or os.path.abspath(p) in candidates:
-                    entry = self._entries.pop(p)
-                    self._close_entry(p, entry)
+                    to_close.append((p, self._entries.pop(p)))
             for tid, paths in self._active_tickets.items():
                 if paths & candidates or any(
                     os.path.abspath(x) in candidates for x in paths
                 ):
                     self._ticket_stale[tid] = True
+        for p, entry in to_close:
+            self._close_entry(p, entry)
+
+    def _close_orphan_reader(self, entry: _Entry) -> None:
+        """Close a reader that was never published (no dir watch to drop)."""
+        with entry.lock:
+            try:
+                entry.reader.close()
+            except Exception:
+                pass
 
     def get(self, path: str, *, ticket: int | None = None) -> _Entry:
         """Return cache entry; caller must hold ``entry.lock`` while reading."""
         key = str(Path(path).resolve())
         OmFileReader = self._ensure_reader_cls()
+        stale_close: list[tuple[str, _Entry]] = []
+        hit: _Entry | None = None
+
         with self._lock:
             if ticket is not None and ticket in self._active_tickets:
                 self._active_tickets[ticket].add(key)
@@ -192,26 +232,66 @@ class OmReaderCache:
                     mtime_ns, inode = self._stat(key)
                 except OSError:
                     self._entries.pop(key, None)
-                    self._close_entry(key, entry)
-                    entry = None
+                    stale_close.append((key, entry))
                 else:
                     if mtime_ns != entry.mtime_ns or inode != entry.inode:
                         self._entries.pop(key)
-                        self._close_entry(key, entry)
-                        entry = None
+                        stale_close.append((key, entry))
                     else:
                         self._entries.move_to_end(key)
-                        return entry
+                        hit = entry
 
-            mtime_ns, inode = self._stat(key)
-            reader = OmFileReader(key)
-            entry = _Entry(reader=reader, mtime_ns=mtime_ns, inode=inode)
-            self._entries[key] = entry
-            self._watch_parent(key)
-            while len(self._entries) > self._max:
-                old_p, old_e = self._entries.popitem(last=False)
-                self._close_entry(old_p, old_e)
-            return entry
+        for p, e in stale_close:
+            self._close_entry(p, e)
+        if hit is not None:
+            return hit
+
+        # Open outside the global lock so ingest invalidates are not blocked
+        # on OmFileReader construction.
+        mtime_ns, inode = self._stat(key)
+        reader = OmFileReader(key)
+        new_entry = _Entry(reader=reader, mtime_ns=mtime_ns, inode=inode)
+
+        close_published: list[tuple[str, _Entry]] = []
+        discard_orphan = False
+        result: _Entry | None = None
+
+        with self._lock:
+            if ticket is not None and ticket in self._active_tickets:
+                if self._ticket_stale.get(ticket):
+                    discard_orphan = True
+                else:
+                    self._active_tickets[ticket].add(key)
+
+            if not discard_orphan:
+                existing = self._entries.get(key)
+                if (
+                    existing is not None
+                    and existing.mtime_ns == mtime_ns
+                    and existing.inode == inode
+                ):
+                    self._entries.move_to_end(key)
+                    result = existing
+                    discard_orphan = True
+                else:
+                    if existing is not None:
+                        self._entries.pop(key, None)
+                        close_published.append((key, existing))
+                    self._entries[key] = new_entry
+                    self._watch_parent(key)
+                    result = new_entry
+                    while len(self._entries) > self._max:
+                        old_p, old_e = self._entries.popitem(last=False)
+                        close_published.append((old_p, old_e))
+
+        if discard_orphan:
+            self._close_orphan_reader(new_entry)
+        for p, e in close_published:
+            self._close_entry(p, e)
+
+        if result is None:
+            raise SlabStaleError("OM file changed during slab load")
+        return result
 
     def read_array(self, path: str, indexer, *, ticket: int | None = None):
         """Thread-safe slice read from a cached reader."""
@@ -219,21 +299,22 @@ class OmReaderCache:
         with entry.lock:
             if ticket is not None:
                 self.check_ticket(ticket)
-            # Re-check identity under lock
             try:
                 mtime_ns, inode = self._stat(str(Path(path).resolve()))
             except OSError as exc:
                 raise SlabStaleError(str(exc)) from exc
-            if mtime_ns != entry.mtime_ns or inode != entry.inode:
-                self.invalidate(path)
-                raise SlabStaleError(f"stale reader: {path}")
-            return entry.reader[indexer]
+            if mtime_ns == entry.mtime_ns and inode == entry.inode:
+                return entry.reader[indexer]
+        # Never invalidate while holding entry.lock (lock-order inversion).
+        self.invalidate(path)
+        raise SlabStaleError(f"stale reader: {path}")
 
     def clear(self) -> None:
         with self._lock:
-            for p, e in list(self._entries.items()):
-                self._close_entry(p, e)
+            items = list(self._entries.items())
             self._entries.clear()
+        for p, e in items:
+            self._close_entry(p, e)
 
     def close(self) -> None:
         self.clear()

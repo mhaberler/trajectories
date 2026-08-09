@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -73,4 +75,58 @@ def test_lru_eviction(tmp_path):
     cache.get(str(paths[0]))
     assert len(readers) == n_before + 1
     assert readers[1].close.called
+    cache.close()
+
+
+def test_invalidate_waits_for_active_read(tmp_path):
+    """Ingest must not close a reader while read_array holds entry.lock."""
+    clear_om_reader_cache()
+    path = tmp_path / "chunk.om"
+    path.write_bytes(b"x")
+
+    cache = OmReaderCache(max_readers=8)
+    if cache._observer is not None:
+        cache._observer.stop()
+        cache._observer.join(timeout=2)
+        cache._observer = None
+        cache._handler = None
+
+    release_read = threading.Event()
+    in_read = threading.Event()
+    close_during_read = []
+
+    class FakeReader:
+        def __getitem__(self, _indexer):
+            in_read.set()
+            assert release_read.wait(timeout=2)
+            return 1.0
+
+        def close(self):
+            # True if close ran while the reader thread was still inside [].
+            close_during_read.append(in_read.is_set() and not release_read.is_set())
+
+    cache._OmFileReader = lambda _p: FakeReader()
+    errors: list[BaseException] = []
+
+    def reader_thread():
+        try:
+            cache.read_array(str(path), (0,))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=reader_thread)
+    t.start()
+    assert in_read.wait(timeout=2)
+    # Simulate ingest rewrite while the read is in progress.
+    inv = threading.Thread(target=lambda: cache.invalidate(str(path)))
+    inv.start()
+    time.sleep(0.05)  # give invalidate time to reach entry.lock
+    assert inv.is_alive(), "invalidate should block until read releases entry.lock"
+    release_read.set()
+    t.join(timeout=2)
+    inv.join(timeout=2)
+    assert not t.is_alive() and not inv.is_alive()
+    assert not errors
+    assert close_during_read == [False]
+    assert cache.size == 0
     cache.close()

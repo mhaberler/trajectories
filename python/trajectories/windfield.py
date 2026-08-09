@@ -41,7 +41,10 @@ class WindField:
         self.start_date: str | None = None
         self.end_date: str | None = None
         self._pending: dict[str, Any] = {}
+        # Condition so parallel tracks wait for in-flight corner fetches instead
+        # of returning early while keys are only in `_pending`.
         self._points_lock = threading.Lock()
+        self._points_cond = threading.Condition(self._points_lock)
         self.backend_kind = backend or config.resolve_backend(model_key)
         self._om = None
         self._slab = None
@@ -228,50 +231,80 @@ class WindField:
         return math.floor(lat / g + 1e-9), math.floor(lon / g + 1e-9)
 
     def ensure_corners(self, lat: float, lon: float) -> None:
-        with self._points_lock:
-            i_lat, i_lon = self.corner_indices(lat, lon)
-            wanted = [
-                (i_lat, i_lon),
-                (i_lat + 1, i_lon),
-                (i_lat, i_lon + 1),
-                (i_lat + 1, i_lon + 1),
-            ]
-            any_missing = any(
-                self.key(a, b) not in self.points and self.key(a, b) not in self._pending
-                for a, b in wanted
-            )
-            if not any_missing:
-                return
-            g = self.model["grid"]
-            b0 = self.model["bbox"]
-            block: list[tuple[int, int]] = []
-            for a in range(i_lat - 1, i_lat + 3):
-                for b in range(i_lon - 1, i_lon + 3):
-                    in_core = (a, b) in wanted
-                    in_box = (
-                        b0["latMin"] <= a * g <= b0["latMax"]
-                        and b0["lonMin"] <= b * g <= b0["lonMax"]
-                    )
-                    k = self.key(a, b)
-                    if (in_core or in_box) and k not in self.points and k not in self._pending:
-                        block.append((a, b))
-            coords = [[a * g, b * g] for a, b in block]
-            for a, b in block:
-                self._pending[self.key(a, b)] = True
-            try:
-                self.fetch_points(coords, block)
-            finally:
-                for a, b in block:
-                    self._pending.pop(self.key(a, b), None)
+        """Load grid corners for (lat,lon). Fetch runs outside the point lock
+        so parallel tracks are not serialized on HTTP/OM I/O (important during
+        long requests and model ingest)."""
+        while True:
+            with self._points_cond:
+                i_lat, i_lon = self.corner_indices(lat, lon)
+                wanted = [
+                    (i_lat, i_lon),
+                    (i_lat + 1, i_lon),
+                    (i_lat, i_lon + 1),
+                    (i_lat + 1, i_lon + 1),
+                ]
+                if all(self.key(a, b) in self.points for a, b in wanted):
+                    return
+                # Another thread is already fetching a needed corner — wait.
+                if any(
+                    self.key(a, b) not in self.points and self.key(a, b) in self._pending
+                    for a, b in wanted
+                ):
+                    self._points_cond.wait(timeout=120.0)
+                    continue
 
-    def fetch_points(self, coords: list[list[float]], indices: list[tuple[int, int]]) -> None:
+                g = self.model["grid"]
+                b0 = self.model["bbox"]
+                block: list[tuple[int, int]] = []
+                for a in range(i_lat - 1, i_lat + 3):
+                    for b in range(i_lon - 1, i_lon + 3):
+                        in_core = (a, b) in wanted
+                        in_box = (
+                            b0["latMin"] <= a * g <= b0["latMax"]
+                            and b0["lonMin"] <= b * g <= b0["lonMax"]
+                        )
+                        k = self.key(a, b)
+                        if (in_core or in_box) and k not in self.points and k not in self._pending:
+                            block.append((a, b))
+                if not block:
+                    # Wanted still missing but nothing to claim (should not happen).
+                    self._points_cond.wait(timeout=1.0)
+                    continue
+                coords = [[a * g, b * g] for a, b in block]
+                for a, b in block:
+                    self._pending[self.key(a, b)] = True
+
+            try:
+                payloads = self.fetch_points(coords, block)
+            except Exception:
+                with self._points_cond:
+                    for a, b in block:
+                        self._pending.pop(self.key(a, b), None)
+                    self._points_cond.notify_all()
+                raise
+
+            with self._points_cond:
+                try:
+                    for (a, b), r in payloads:
+                        self.store_point(a, b, r)
+                finally:
+                    for a, b in block:
+                        self._pending.pop(self.key(a, b), None)
+                    self._points_cond.notify_all()
+
+    def fetch_points(
+        self, coords: list[list[float]], indices: list[tuple[int, int]]
+    ) -> list[tuple[tuple[int, int], dict]]:
+        """HTTP/OM fetch only — caller stores under ``_points_cond``."""
         vars_ = self.level_vars()
+        out: list[tuple[tuple[int, int], dict]] = []
         for i in range(0, len(coords), MAX_POINTS_PER_REQUEST):
             chunk = coords[i : i + MAX_POINTS_PER_REQUEST]
             idx = indices[i : i + MAX_POINTS_PER_REQUEST]
             results = self.request(chunk, vars_, with_meta=True)
             for j, r in enumerate(results):
-                self.store_point(idx[j][0], idx[j][1], r)
+                out.append((idx[j], r))
+        return out
 
     def store_point(self, i_lat: int, i_lon: int, r: dict) -> None:
         assert self.levels is not None

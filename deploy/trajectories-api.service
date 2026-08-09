@@ -29,6 +29,10 @@ ExecStart=/home/mah/src/trajectories/python/.venv/bin/uvicorn \
   --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=2
+# Stuck OmFileReader / threadpool work can ignore graceful SIGTERM; don't wait
+# forever on restart during model ingest.
+TimeoutStopSec=30
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

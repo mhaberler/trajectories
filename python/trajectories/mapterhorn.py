@@ -39,6 +39,9 @@ DECODE_LRU_MAX = 32
 MIN_INTERVAL_SEC = 15
 MAX_LINE_POINTS = 5000
 MAX_SAMPLES = 2000
+# Cap concurrent PMTiles Range GETs so elevation/line cannot stampede httpx.
+FETCH_CONCURRENCY = 4
+HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 _DEFAULT_CACHE = Path("/var/cache/trajectories/mapterhorn")
 _DEFAULT_CACHE_MAX = 5 * 1024 * 1024 * 1024  # 5 GiB
@@ -114,82 +117,102 @@ def elevation_from_rgba(img: Image.Image, px: int, py: int) -> float:
 
 
 class DiskTileCache:
-    """On-disk LRU of raw tile bytes, capped by total size."""
+    """On-disk LRU of raw tile bytes, capped by total size.
+
+    Size accounting is in-memory (``_lru`` path→size). Eviction never
+    ``rglob``s the tree on the request path — a full scan only runs once at
+    construction to seed the index for a pre-existing cache directory.
+    """
 
     def __init__(self, root: Path, max_bytes: int):
         self.root = root
         self.max_bytes = max(0, int(max_bytes))
         self._lock = threading.Lock()
+        self._lru: OrderedDict[str, int] = OrderedDict()  # path -> size
+        self._total = 0
         self.root.mkdir(parents=True, exist_ok=True)
+        self._reindex()
 
     def _path(self, archive: str, z: int, x: int, y: int) -> Path:
         safe = archive.replace("..", "_").replace("/", "_")
         return self.root / safe / str(z) / str(x) / f"{y}.tile"
 
-    def get(self, archive: str, z: int, x: int, y: int) -> bytes | None:
-        path = self._path(archive, z, x, y)
-        with self._lock:
-            if not path.is_file():
-                return None
-            try:
-                data = path.read_bytes()
-                os.utime(path, None)
-                return data
-            except OSError:
-                return None
-
-    def put(self, archive: str, z: int, x: int, y: int, data: bytes) -> None:
-        if self.max_bytes <= 0 or not data:
-            return
-        path = self._path(archive, z, x, y)
-        with self._lock:
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = path.with_suffix(".tmp")
-                tmp.write_bytes(data)
-                tmp.replace(path)
-            except OSError:
-                return
-            self._evict_locked()
-
-    def total_bytes(self) -> int:
+    def _reindex(self) -> None:
+        """One-time scan at startup (not on the hot put/get path)."""
         total = 0
-        try:
-            for p in self.root.rglob("*.tile"):
-                try:
-                    total += p.stat().st_size
-                except OSError:
-                    continue
-        except OSError:
-            return 0
-        return total
-
-    def _evict_locked(self) -> None:
-        if self.max_bytes <= 0:
-            return
-        files: list[tuple[float, int, Path]] = []
-        total = 0
+        lru: OrderedDict[str, int] = OrderedDict()
+        files: list[tuple[float, str, int]] = []
         try:
             for p in self.root.rglob("*.tile"):
                 try:
                     st = p.stat()
                 except OSError:
                     continue
-                files.append((st.st_atime, st.st_size, p))
-                total += st.st_size
+                files.append((st.st_atime, str(p), int(st.st_size)))
+        except OSError:
+            files = []
+        files.sort(key=lambda t: t[0])  # oldest first → LRU order
+        for _atime, key, size in files:
+            lru[key] = size
+            total += size
+        self._lru = lru
+        self._total = total
+
+    def get(self, archive: str, z: int, x: int, y: int) -> bytes | None:
+        path = self._path(archive, z, x, y)
+        key = str(path)
+        with self._lock:
+            if key not in self._lru:
+                return None
+            self._lru.move_to_end(key)
+        try:
+            data = path.read_bytes()
+            try:
+                os.utime(path, None)
+            except OSError:
+                pass
+            return data
+        except OSError:
+            with self._lock:
+                size = self._lru.pop(key, 0)
+                self._total = max(0, self._total - size)
+            return None
+
+    def put(self, archive: str, z: int, x: int, y: int, data: bytes) -> None:
+        if self.max_bytes <= 0 or not data:
+            return
+        path = self._path(archive, z, x, y)
+        key = str(path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(path)
         except OSError:
             return
-        if total <= self.max_bytes:
-            return
-        files.sort(key=lambda t: t[0])  # oldest atime first
-        for _atime, size, path in files:
-            if total <= self.max_bytes:
-                break
+        size = len(data)
+        to_unlink: list[str] = []
+        with self._lock:
+            old = self._lru.pop(key, None)
+            if old is not None:
+                self._total = max(0, self._total - old)
+            self._lru[key] = size
+            self._total += size
+            self._lru.move_to_end(key)
+            while self._total > self.max_bytes and self._lru:
+                old_k, old_sz = self._lru.popitem(last=False)
+                self._total = max(0, self._total - old_sz)
+                if old_k != key:
+                    to_unlink.append(old_k)
+        for old_k in to_unlink:
             try:
-                path.unlink(missing_ok=True)
-                total -= size
+                Path(old_k).unlink(missing_ok=True)
             except OSError:
                 continue
+
+    def total_bytes(self) -> int:
+        with self._lock:
+            return self._total
 
 
 class _HttpRangeSource:
@@ -228,7 +251,7 @@ class MapterhornDEM:
         )
         self._owns_client = client is None
         self._client = client or httpx.Client(
-            timeout=httpx.Timeout(60.0, connect=15.0),
+            timeout=HTTP_TIMEOUT,
             trust_env=False,
             headers={"User-Agent": "trajectories-mapterhorn/0.1"},
         )
@@ -240,7 +263,10 @@ class MapterhornDEM:
         self._planet_max_zoom = PLANET_MAX_ZOOM
         self._tile_size = DEFAULT_TILE_SIZE
         self._init_done = False
+        self._init_probing = False
         self._init_lock = threading.Lock()
+        self._init_event = threading.Event()
+        self._fetch_sem = threading.Semaphore(FETCH_CONCURRENCY)
         self._fetch_tile_fn = fetch_tile_fn  # test hook: (archive,z,x,y)->bytes|None
 
     def close(self) -> None:
@@ -255,23 +281,40 @@ class MapterhornDEM:
                 return
             if self._fetch_tile_fn is not None:
                 self._init_done = True
+                self._init_event.set()
                 return
-            try:
-                reader = self._reader("planet")
-                header = reader.header()
-                self._planet_max_zoom = int(header.get("max_zoom") or PLANET_MAX_ZOOM)
-                # Probe a mid-tile for size when available.
-                z = min(self._planet_max_zoom, max(int(header.get("min_zoom") or 0), 8))
-                n = 2**z
+            # One thread probes over the network; others wait on the event.
+            i_am_prober = not self._init_probing
+            if i_am_prober:
+                self._init_probing = True
+
+        if not i_am_prober:
+            self._init_event.wait(timeout=60.0)
+            return
+
+        planet_max = PLANET_MAX_ZOOM
+        tile_size = DEFAULT_TILE_SIZE
+        try:
+            reader = self._reader("planet")
+            header = reader.header()
+            planet_max = int(header.get("max_zoom") or PLANET_MAX_ZOOM)
+            z = min(planet_max, max(int(header.get("min_zoom") or 0), 8))
+            n = 2**z
+            with self._fetch_sem:
                 data = reader.get(z, n // 2, n // 2)
-                if data:
-                    data = self._maybe_decompress(header, data)
-                    img = decode_terrarium_tile(data)
-                    self._tile_size = img.width or DEFAULT_TILE_SIZE
-            except Exception:
-                self._planet_max_zoom = PLANET_MAX_ZOOM
-                self._tile_size = DEFAULT_TILE_SIZE
+            if data:
+                data = self._maybe_decompress(header, data)
+                img = decode_terrarium_tile(data)
+                tile_size = img.width or DEFAULT_TILE_SIZE
+        except Exception:
+            planet_max = PLANET_MAX_ZOOM
+            tile_size = DEFAULT_TILE_SIZE
+        with self._init_lock:
+            self._planet_max_zoom = planet_max
+            self._tile_size = tile_size
             self._init_done = True
+            self._init_probing = False
+            self._init_event.set()
 
     def _reader(self, archive: str) -> Reader:
         with self._readers_lock:
@@ -300,7 +343,8 @@ class MapterhornDEM:
         try:
             reader = self._reader(archive)
             header = reader.header()
-            data = reader.get(z, x, y)
+            with self._fetch_sem:
+                data = reader.get(z, x, y)
             if not data:
                 return None
             data = self._maybe_decompress(header, data)

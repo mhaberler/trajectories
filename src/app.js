@@ -144,7 +144,10 @@ const EXPORT_DEFAULTS = {
     tracklist: true,
     legendHtml: "",
   },
-  kml: { markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3, clampToGround: false },
+  kml: {
+    markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3,
+    clampToGround: false, hideLabels: true,
+  },
   gpx: { markersAsWaypoints: false },
   geojson: { precision: 5 },
 };
@@ -162,6 +165,7 @@ const EXPORT_FIELDS = [
   ["ex-html-tracklist", "html", "tracklist", "bool"],
   ["ex-html-legend", "html", "legendHtml", "text"],
   ["ex-kml-markers", "kml", "markers", "bool"],
+  ["ex-kml-hidelabels", "kml", "hideLabels", "bool"],
   ["ex-kml-iconscale", "kml", "iconScale", "num"],
   ["ex-kml-labelscale", "kml", "labelScale", "num"],
   ["ex-kml-linewidth", "kml", "lineWidth", "num"],
@@ -4344,33 +4348,14 @@ function kmlStyleId(hex) {
   return `m-${String(hex).replace("#", "").toLowerCase()}`;
 }
 
-/** Region/Lod so marker icons+labels appear only when zoomed in (~4 km box, 128 px). */
-function kmlMarkerRegion(lat, lon, { halfDeg = 0.04, minLod = 128 } = {}) {
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-  const north = clamp(lat + halfDeg, -90, 90).toFixed(6);
-  const south = clamp(lat - halfDeg, -90, 90).toFixed(6);
-  const east = clamp(lon + halfDeg, -180, 180).toFixed(6);
-  const west = clamp(lon - halfDeg, -180, 180).toFixed(6);
-  return [
-    "        <Region>",
-    "          <LatLonAltBox>",
-    `            <north>${north}</north>`,
-    `            <south>${south}</south>`,
-    `            <east>${east}</east>`,
-    `            <west>${west}</west>`,
-    "          </LatLonAltBox>",
-    "          <Lod>",
-    `            <minLodPixels>${minLod}</minLodPixels>`,
-    "            <maxLodPixels>-1</maxLodPixels>",
-    "          </Lod>",
-    "        </Region>",
-  ];
-}
-
 /** KML — Folder per track: LineString + clickable marker Point Placemarks
- *  (description + ExtendedData + BalloonStyle; Region/Lod for zoom-in labels). */
+ *  (description + ExtendedData + BalloonStyle). Earth Web rejects Region/Lod. */
 function buildKML({ runs, modelKey, direction }, ctx = {}) {
-  const o = { markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3, clampToGround: false, ...ctx.opts };
+  const o = {
+    markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3,
+    clampToGround: false, hideLabels: true, ...ctx.opts,
+  };
+  const labelScale = o.hideLabels ? 0 : o.labelScale;
   const out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<kml xmlns="http://www.opengis.net/kml/2.2">',
@@ -4392,7 +4377,7 @@ function buildKML({ runs, modelKey, direction }, ctx = {}) {
     out.push("          <href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href>");
     out.push("        </Icon>");
     out.push("      </IconStyle>");
-    out.push(`      <LabelStyle><scale>${o.labelScale}</scale></LabelStyle>`);
+    out.push(`      <LabelStyle><scale>${labelScale}</scale></LabelStyle>`);
     // <pre> keeps newlines; GE Web collapses plain description whitespace otherwise.
     out.push("      <BalloonStyle>");
     out.push("        <text><![CDATA[<b>$[name]</b><pre>$[description]</pre>]]></text>");
@@ -4442,7 +4427,6 @@ function buildKML({ runs, modelKey, direction }, ctx = {}) {
         out.push(...ext);
         out.push("        </ExtendedData>");
       }
-      out.push(...kmlMarkerRegion(m.lat, m.lon));
       out.push("        <Point>");
       out.push(`          <altitudeMode>${altMode}</altitudeMode>`);
       out.push(`          <coordinates>${m.lon.toFixed(6)},${m.lat.toFixed(6)}${zPart}</coordinates>`);

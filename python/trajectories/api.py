@@ -35,13 +35,13 @@ app = FastAPI(
         "Point wind samples are available at GET /v1/wind (flat JSON). "
         "Optional kinematic AGL flight profiles via profile_time + profile_height. "
         "DEM elevation: POST /v1/elevation/point and /v1/elevation/line (GeoJSON); "
-        "TRAJECTORIES_DEM_BACKEND=joerd|mapterhorn (default joerd)."
+        "TRAJECTORIES_DEM_BACKEND=glo30|joerd|mapterhorn (default glo30)."
     ),
     version="0.1.0",
     openapi_tags=[
         {"name": "trajectory", "description": "Compute wind trajectories"},
         {"name": "wind", "description": "Sample wind at a single point"},
-        {"name": "elevation", "description": "DEM elevation samples (Joerd / Mapterhorn)"},
+        {"name": "elevation", "description": "DEM elevation samples (GLO-30 / Joerd / Mapterhorn)"},
         {"name": "meta", "description": "Health and service metadata"},
     ],
 )

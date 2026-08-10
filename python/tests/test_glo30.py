@@ -148,3 +148,42 @@ def test_disk_cog_cache_lru(tmp_path: Path):
     assert cache.get_path("tile_a") is not None
     assert cache.get_path("tile_b") is None
     assert cache.get_path("tile_c") is not None
+
+
+def test_concurrent_sample_line_no_crash(tmp_path: Path):
+    """UI fires profile + xsec DEM in parallel; rasterio must not SIGSEGV."""
+    import threading
+
+    reset_dem_for_tests()
+    stem = tile_stem(47.25, 11.25)
+    payload = _write_deg_geotiff(tmp_path / "src.tif", lat0=47, lon0=11, value=200.0)
+
+    dem = Glo30DEM(
+        cache_dir=tmp_path / "cog",
+        cache_max_bytes=10_000_000,
+        fetch_bytes_fn=lambda s: payload if s == stem else None,
+    )
+    pts = [
+        {"lat": 47.25, "lon": 11.25, "t_sec": 0},
+        {"lat": 47.75, "lon": 11.75, "t_sec": 600},
+    ]
+    errors: list[BaseException] = []
+    results: list[int] = []
+
+    def worker() -> None:
+        try:
+            samples = dem.sample_line(pts, interval_sec=15)
+            results.append(len(samples))
+        except BaseException as exc:  # noqa: BLE001 — capture for main thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    dem.close()
+    reset_dem_for_tests()
+    assert not errors, errors
+    assert len(results) == 8
+    assert all(n >= 10 for n in results)

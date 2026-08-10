@@ -12,7 +12,7 @@ WorkingDirectory=/home/mah/src/trajectories/python
 EnvironmentFile=-/etc/default/trajectories-api.env
 Environment=TRAJECTORIES_OM_ROOT=/open-meteo
 Environment=TRAJECTORIES_BACKEND=auto
-Environment=TRAJECTORIES_DEM_BACKEND=joerd
+Environment=TRAJECTORIES_DEM_BACKEND=glo30
 Environment=TRAJECTORIES_JOERD_CACHE=/var/cache/trajectories/joerd
 Environment=TRAJECTORIES_JOERD_CACHE_MAX_BYTES=5368709120
 Environment=TRAJECTORIES_MAPTERHORN_CACHE=/var/cache/trajectories/mapterhorn

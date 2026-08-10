@@ -1,4 +1,4 @@
-"""DEM facade: select Joerd (default), Mapterhorn, or GLO-30 via env."""
+"""DEM facade: select GLO-30 (default), Joerd, or Mapterhorn via env."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Any
 
 from .dem_common import env_flag
 
-BACKEND = os.environ.get("TRAJECTORIES_DEM_BACKEND", "joerd").strip().lower() or "joerd"
+BACKEND = os.environ.get("TRAJECTORIES_DEM_BACKEND", "glo30").strip().lower() or "glo30"
 if BACKEND not in ("joerd", "mapterhorn", "glo30"):
-    BACKEND = "joerd"
+    BACKEND = "glo30"
 
 # Shared contract (identical in joerd / mapterhorn / glo30).
 MIN_INTERVAL_SEC = 15

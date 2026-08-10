@@ -51,7 +51,6 @@ MAX_SAMPLES = 2000
 FETCH_CONCURRENCY = 4
 HTTP_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 DEBUG = env_flag("TRAJECTORIES_GLO30_DEBUG") or env_flag("TRAJECTORIES_DEM_DEBUG")
-OPEN_LRU_MAX = 8
 
 _log = logging.getLogger(__name__)
 _DEFAULT_CACHE = Path("/var/cache/trajectories/glo30")
@@ -235,19 +234,12 @@ class Glo30DEM:
         self.last_sample_stats: dict[str, int | float] | None = None
         self._fetch_sem = threading.Semaphore(FETCH_CONCURRENCY)
         self._fetch_bytes_fn = fetch_bytes_fn
-        self._open_lru: OrderedDict[str, rasterio.DatasetReader] = OrderedDict()
-        self._open_lock = threading.Lock()
+        # GDAL/rasterio is not safe across threads; serialize all open/read/close.
+        self._rio_lock = threading.RLock()
         self._ensure_locks: dict[str, threading.Lock] = {}
         self._ensure_locks_guard = threading.Lock()
 
     def close(self) -> None:
-        with self._open_lock:
-            for ds in self._open_lru.values():
-                try:
-                    ds.close()
-                except Exception:
-                    pass
-            self._open_lru.clear()
         if self._owns_client:
             self._client.close()
 
@@ -261,7 +253,6 @@ class Glo30DEM:
 
     def _vsicurl_path(self, stem: str) -> str:
         url = tile_url(self.base_url, stem)
-        # GDAL /vsicurl/ expects the remote URL without an extra scheme prefix quirk
         return f"/vsicurl/{url}"
 
     def _download_stem(self, stem: str) -> Path | None:
@@ -323,52 +314,14 @@ class Glo30DEM:
         with self._stem_lock(stem):
             return self._download_stem(stem)
 
-    def _open_dataset(self, stem: str) -> rasterio.DatasetReader | None:
-        """Open cached COG, or /vsicurl/ if cache write failed; None if missing."""
-        with self._open_lock:
-            existing = self._open_lru.get(stem)
-            if existing is not None:
-                self._open_lru.move_to_end(stem)
-                self.stats.add(decode_hits=1)
-                return existing
-
+    def _open_path(self, stem: str) -> str | None:
+        """Local path or /vsicurl/ URI; None if missing/ocean."""
         path = self.ensure_tile(stem)
-        if path is None and self.disk.is_missing(stem):
+        if path is not None:
+            return str(path)
+        if self.disk.is_missing(stem):
             return None
-        self.stats.add(decode_misses=1)
-        try:
-            if path is not None:
-                ds = rasterio.open(path)
-            else:
-                # Cache full of / write failed: still window via vsicurl
-                ds = rasterio.open(self._vsicurl_path(stem))
-        except rasterio.errors.RasterioIOError as exc:
-            msg = str(exc).lower()
-            if "404" in msg or "not found" in msg or "does not exist" in msg:
-                self.disk.mark_missing(stem)
-                return None
-            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
-        except Exception as exc:
-            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
-
-        with self._open_lock:
-            existing = self._open_lru.get(stem)
-            if existing is not None:
-                try:
-                    ds.close()
-                except Exception:
-                    pass
-                self._open_lru.move_to_end(stem)
-                return existing
-            self._open_lru[stem] = ds
-            self._open_lru.move_to_end(stem)
-            while len(self._open_lru) > OPEN_LRU_MAX:
-                _old_k, old_ds = self._open_lru.popitem(last=False)
-                try:
-                    old_ds.close()
-                except Exception:
-                    pass
-        return ds
+        return self._vsicurl_path(stem)
 
     def _sample_xy(
         self, ds: rasterio.DatasetReader, lon: float, lat: float
@@ -391,31 +344,103 @@ class Glo30DEM:
             return None
         val = float(data[0, 0])
         nodata = ds.nodata
-        if nodata is not None and (val == nodata or (
-            isinstance(nodata, float) and math.isnan(nodata) and math.isnan(val)
-        )):
+        if nodata is not None and (
+            val == nodata
+            or (
+                isinstance(nodata, float)
+                and math.isnan(nodata)
+                and math.isnan(val)
+            )
+        ):
             return 0.0
         if not math.isfinite(val):
             return 0.0
         return val
+
+    def _sample_stem(
+        self, stem: str, items: list[tuple[int, dict[str, float]]]
+    ) -> dict[int, dict[str, float]]:
+        """Open one COG and sample all points (caller must hold `_rio_lock`)."""
+        out: dict[int, dict[str, float]] = {}
+        src = self._open_path(stem)
+        if src is None:
+            self.stats.add(zoom_misses=len(items))
+            for idx, sample in items:
+                out[idx] = {
+                    "t_sec": sample["t_sec"],
+                    "lat": sample["lat"],
+                    "lon": sample["lon"],
+                    "z": 0.0,
+                }
+            return out
+        self.stats.add(decode_misses=1)
+        try:
+            ds = rasterio.open(src)
+        except rasterio.errors.RasterioIOError as exc:
+            msg = str(exc).lower()
+            if "404" in msg or "not found" in msg or "does not exist" in msg:
+                self.disk.mark_missing(stem)
+                self.stats.add(zoom_misses=len(items))
+                for idx, sample in items:
+                    out[idx] = {
+                        "t_sec": sample["t_sec"],
+                        "lat": sample["lat"],
+                        "lon": sample["lon"],
+                        "z": 0.0,
+                    }
+                return out
+            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+        except Exception as exc:
+            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+        try:
+            for idx, sample in items:
+                elev = self._sample_xy(ds, sample["lon"], sample["lat"])
+                if elev is None:
+                    elev = 0.0
+                out[idx] = {
+                    "t_sec": sample["t_sec"],
+                    "lat": sample["lat"],
+                    "lon": sample["lon"],
+                    "z": float(elev),
+                }
+        finally:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        return out
 
     def elevation_at(self, lat: float, lon: float) -> float | None:
         if not math.isfinite(lat) or not math.isfinite(lon):
             return None
         if abs(lat) > 90 or abs(lon) > 180:
             return None
-        # Normalize lon into (-180, 180]
         if lon == -180:
             lon = -180.0
         elif lon > 180 or lon < -180:
             lon = ((lon + 180) % 360) - 180
         stem = tile_stem(lat, lon)
         self.stats.add(zoom_tries=1)
-        ds = self._open_dataset(stem)
-        if ds is None:
-            self.stats.add(zoom_misses=1)
-            return 0.0
-        elev = self._sample_xy(ds, lon, lat)
+        with self._rio_lock:
+            src = self._open_path(stem)
+            if src is None:
+                self.stats.add(zoom_misses=1)
+                return 0.0
+            self.stats.add(decode_misses=1)
+            try:
+                with rasterio.open(src) as ds:
+                    elev = self._sample_xy(ds, lon, lat)
+            except rasterio.errors.RasterioIOError as exc:
+                msg = str(exc).lower()
+                if "404" in msg or "not found" in msg or "does not exist" in msg:
+                    self.disk.mark_missing(stem)
+                    self.stats.add(zoom_misses=1)
+                    return 0.0
+                raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+            except Glo30DEMError:
+                raise
+            except Exception as exc:
+                raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
         if elev is None:
             return 0.0
         return elev
@@ -476,31 +501,13 @@ class Glo30DEM:
             groups[stem].append((idx, sample))
 
         stems = list(groups.keys())
+        # HTTP downloads may run concurrently; rasterio sampling is serialized.
         self._prefetch_stems(stems)
 
         out: dict[int, dict[str, float]] = {}
-        for stem, items in groups.items():
-            ds = self._open_dataset(stem)
-            if ds is None:
-                self.stats.add(zoom_misses=len(items))
-                for idx, sample in items:
-                    out[idx] = {
-                        "t_sec": sample["t_sec"],
-                        "lat": sample["lat"],
-                        "lon": sample["lon"],
-                        "z": 0.0,
-                    }
-                continue
-            for idx, sample in items:
-                elev = self._sample_xy(ds, sample["lon"], sample["lat"])
-                if elev is None:
-                    elev = 0.0
-                out[idx] = {
-                    "t_sec": sample["t_sec"],
-                    "lat": sample["lat"],
-                    "lon": sample["lon"],
-                    "z": float(elev),
-                }
+        with self._rio_lock:
+            for stem, items in groups.items():
+                out.update(self._sample_stem(stem, items))
 
         samples = [out[i] for i in sorted(out)]
         self.stats.add(samples=len(samples), unique_tiles=len(stems))

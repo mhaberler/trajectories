@@ -3,23 +3,31 @@
 Mirrors browser routing in ``src/dem/mapterhorn.js``:
   z ≤ 12 → planet.pmtiles
   z > 12 → 6-{rx}-{ry}.pmtiles  (rx = x>>(z-6), ry = y>>(z-6))
-  try z=15 … fall back to planet maxZoom (12).
+  try sticky/max zoom … fall back to planet maxZoom (12).
 """
 
 from __future__ import annotations
 
 import gzip
 import io
+import logging
 import math
 import os
 import threading
-from collections import OrderedDict
+import time
+from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
-from pmtiles.reader import Reader
-from pmtiles.tile import Compression
+from pmtiles.tile import (
+    Compression,
+    deserialize_directory,
+    deserialize_header,
+    find_tile,
+    zxy_to_tileid,
+)
 
 try:
     from PIL import Image
@@ -35,13 +43,16 @@ BASE_URL = os.environ.get(
 PLANET_MAX_ZOOM = 12
 MAX_ZOOM_TRY = 15
 DEFAULT_TILE_SIZE = 512
-DECODE_LRU_MAX = 32
+DECODE_LRU_MAX = 128
 MIN_INTERVAL_SEC = 15
 MAX_LINE_POINTS = 5000
 MAX_SAMPLES = 2000
 # Cap concurrent PMTiles Range GETs so elevation/line cannot stampede httpx.
 FETCH_CONCURRENCY = 4
 HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+DEBUG = os.environ.get("TRAJECTORIES_MAPTERHORN_DEBUG", "").strip() not in ("", "0", "false")
+
+_log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE = Path("/var/cache/trajectories/mapterhorn")
 _DEFAULT_CACHE_MAX = 5 * 1024 * 1024 * 1024  # 5 GiB
@@ -114,6 +125,64 @@ def elevation_from_rgba(img: Image.Image, px: int, py: int) -> float:
     cy = max(0, min(py, h - 1))
     r, g, b, _a = img.getpixel((cx, cy))
     return terrarium_elevation(int(r), int(g), int(b))
+
+
+class DemStats:
+    """Thread-safe counters for one DEM instance (reset around sample_line)."""
+
+    __slots__ = (
+        "_lock",
+        "samples",
+        "unique_tiles",
+        "disk_hits",
+        "disk_misses",
+        "decode_hits",
+        "decode_misses",
+        "http_ranges",
+        "http_bytes",
+        "http_ms",
+        "zoom_tries",
+        "zoom_misses",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self.samples = 0
+            self.unique_tiles = 0
+            self.disk_hits = 0
+            self.disk_misses = 0
+            self.decode_hits = 0
+            self.decode_misses = 0
+            self.http_ranges = 0
+            self.http_bytes = 0
+            self.http_ms = 0.0
+            self.zoom_tries = 0
+            self.zoom_misses = 0
+
+    def add(self, **kwargs: int | float) -> None:
+        with self._lock:
+            for key, val in kwargs.items():
+                setattr(self, key, getattr(self, key) + val)
+
+    def as_dict(self) -> dict[str, int | float]:
+        with self._lock:
+            return {
+                "samples": self.samples,
+                "unique_tiles": self.unique_tiles,
+                "disk_hits": self.disk_hits,
+                "disk_misses": self.disk_misses,
+                "decode_hits": self.decode_hits,
+                "decode_misses": self.decode_misses,
+                "http_ranges": self.http_ranges,
+                "http_bytes": self.http_bytes,
+                "http_ms": round(self.http_ms, 2),
+                "zoom_tries": self.zoom_tries,
+                "zoom_misses": self.zoom_misses,
+            }
 
 
 class DiskTileCache:
@@ -218,18 +287,78 @@ class DiskTileCache:
 class _HttpRangeSource:
     """PMTiles get_bytes via HTTP Range requests (connection reuse)."""
 
-    def __init__(self, url: str, client: httpx.Client):
+    def __init__(self, url: str, client: httpx.Client, stats: DemStats | None = None):
         self.url = url
         self.client = client
+        self.stats = stats
 
     def __call__(self, offset: int, length: int) -> bytes:
         end = offset + length - 1
+        t0 = time.perf_counter()
         r = self.client.get(
             self.url,
             headers={"Range": f"bytes={offset}-{end}"},
         )
         r.raise_for_status()
-        return r.content
+        data = r.content
+        if self.stats is not None:
+            self.stats.add(
+                http_ranges=1,
+                http_bytes=len(data),
+                http_ms=(time.perf_counter() - t0) * 1000.0,
+            )
+        return data
+
+
+class CachedPmtilesReader:
+    """PMTiles reader that caches header and directory entries per archive.
+
+    Unlike stock ``pmtiles.reader.Reader``, ``header()`` and each directory
+    blob are fetched at most once per reader lifetime.
+    """
+
+    def __init__(self, get_bytes: Callable[[int, int], bytes]):
+        self.get_bytes = get_bytes
+        self._header: dict[str, Any] | None = None
+        self._header_lock = threading.Lock()
+        self._dir_cache: dict[tuple[int, int], list] = {}
+        self._dir_lock = threading.Lock()
+
+    def header(self) -> dict[str, Any]:
+        with self._header_lock:
+            if self._header is None:
+                self._header = deserialize_header(self.get_bytes(0, 127))
+            return self._header
+
+    def _directory(self, offset: int, length: int) -> list:
+        key = (offset, length)
+        with self._dir_lock:
+            hit = self._dir_cache.get(key)
+            if hit is not None:
+                return hit
+        directory = deserialize_directory(self.get_bytes(offset, length))
+        with self._dir_lock:
+            self._dir_cache[key] = directory
+            return directory
+
+    def get(self, z: int, x: int, y: int) -> bytes | None:
+        tile_id = zxy_to_tileid(z, x, y)
+        header = self.header()
+        dir_offset = header["root_offset"]
+        dir_length = header["root_length"]
+        for _depth in range(0, 4):
+            directory = self._directory(dir_offset, dir_length)
+            result = find_tile(directory, tile_id)
+            if not result:
+                return None
+            if result.run_length == 0:
+                dir_offset = header["leaf_directory_offset"] + result.offset
+                dir_length = result.length
+                continue
+            return self.get_bytes(
+                header["tile_data_offset"] + result.offset, result.length
+            )
+        return None
 
 
 class MapterhornDEM:
@@ -255,11 +384,15 @@ class MapterhornDEM:
             trust_env=False,
             headers={"User-Agent": "trajectories-mapterhorn/0.1"},
         )
-        self._readers: dict[str, Reader] = {}
+        self.stats = DemStats()
+        self.last_sample_stats: dict[str, int | float] | None = None
+        self._readers: dict[str, CachedPmtilesReader] = {}
         self._readers_lock = threading.Lock()
         self._decode_lru: OrderedDict[str, Image.Image] = OrderedDict()
         self._decode_lock = threading.Lock()
         self._regional_max_zoom: dict[str, int] = {}
+        self._sticky_zoom: int | None = None
+        self._sticky_lock = threading.Lock()
         self._planet_max_zoom = PLANET_MAX_ZOOM
         self._tile_size = DEFAULT_TILE_SIZE
         self._init_done = False
@@ -316,14 +449,14 @@ class MapterhornDEM:
             self._init_probing = False
             self._init_event.set()
 
-    def _reader(self, archive: str) -> Reader:
+    def _reader(self, archive: str) -> CachedPmtilesReader:
         with self._readers_lock:
             hit = self._readers.get(archive)
             if hit is not None:
                 return hit
             url = f"{self.base_url}/{archive}.pmtiles"
-            src = _HttpRangeSource(url, self._client)
-            reader = Reader(src)
+            src = _HttpRangeSource(url, self._client, self.stats)
+            reader = CachedPmtilesReader(src)
             self._readers[archive] = reader
             return reader
 
@@ -335,11 +468,16 @@ class MapterhornDEM:
         return data
 
     def fetch_tile(self, archive: str, z: int, x: int, y: int) -> bytes | None:
-        if self._fetch_tile_fn is not None:
-            return self._fetch_tile_fn(archive, z, x, y)
         cached = self.disk.get(archive, z, x, y)
         if cached is not None:
+            self.stats.add(disk_hits=1)
             return cached
+        self.stats.add(disk_misses=1)
+        if self._fetch_tile_fn is not None:
+            data = self._fetch_tile_fn(archive, z, x, y)
+            if data:
+                self.disk.put(archive, z, x, y, data)
+            return data
         try:
             reader = self._reader(archive)
             header = reader.header()
@@ -358,7 +496,9 @@ class MapterhornDEM:
         with self._decode_lock:
             if key in self._decode_lru:
                 self._decode_lru.move_to_end(key)
+                self.stats.add(decode_hits=1)
                 return self._decode_lru[key]
+        self.stats.add(decode_misses=1)
         data = self.fetch_tile(archive, z, x, y)
         if not data:
             return None
@@ -367,11 +507,41 @@ class MapterhornDEM:
         except Exception:
             return None
         with self._decode_lock:
+            existing = self._decode_lru.get(key)
+            if existing is not None:
+                self._decode_lru.move_to_end(key)
+                return existing
             self._decode_lru[key] = img
             self._decode_lru.move_to_end(key)
             while len(self._decode_lru) > DECODE_LRU_MAX:
                 self._decode_lru.popitem(last=False)
         return img
+
+    def _start_zoom(self) -> int:
+        with self._sticky_lock:
+            sticky = self._sticky_zoom
+        if sticky is not None:
+            return max(self._planet_max_zoom, min(MAX_ZOOM_TRY, sticky))
+        return MAX_ZOOM_TRY
+
+    def _note_zoom_hit(self, z: int) -> None:
+        with self._sticky_lock:
+            self._sticky_zoom = z
+
+    def _note_regional_miss(self, archive: str, z: int, planet_z: int) -> None:
+        if z <= planet_z:
+            return
+        prev = self._regional_max_zoom.get(archive)
+        if prev is None or z - 1 < prev:
+            self._regional_max_zoom[archive] = z - 1
+
+    def _zoom_allowed(self, archive: str, z: int, planet_z: int) -> bool:
+        if z <= planet_z:
+            return True
+        known = self._regional_max_zoom.get(archive)
+        if known is not None and z > known:
+            return False
+        return True
 
     def elevation_at(self, lat: float, lon: float) -> float | None:
         if not math.isfinite(lat) or not math.isfinite(lon):
@@ -380,29 +550,77 @@ class MapterhornDEM:
             return None
         self._ensure_init()
         planet_z = self._planet_max_zoom
-        for z in range(MAX_ZOOM_TRY, planet_z - 1, -1):
+        start_z = self._start_zoom()
+        for z in range(start_z, planet_z - 1, -1):
+            self.stats.add(zoom_tries=1)
             x, y = tile_xy(lat, lon, z)
             archive = archive_for(z, x, y, planet_z)
-            if z > planet_z:
-                known = self._regional_max_zoom.get(archive)
-                if known is not None and z > known:
-                    continue
+            if not self._zoom_allowed(archive, z, planet_z):
+                self.stats.add(zoom_misses=1)
+                continue
             img = self._decoded(archive, z, x, y)
             if img is None:
-                if z > planet_z:
-                    prev = self._regional_max_zoom.get(archive)
-                    if prev is None or z - 1 < prev:
-                        self._regional_max_zoom[archive] = z - 1
+                self.stats.add(zoom_misses=1)
+                self._note_regional_miss(archive, z, planet_z)
                 continue
             size = img.width or self._tile_size
             px, py = pixel_in_tile(lat, lon, z, size)
             try:
                 elev = elevation_from_rgba(img, px, py)
             except Exception:
+                self.stats.add(zoom_misses=1)
                 continue
             if math.isfinite(elev):
+                self._note_zoom_hit(z)
                 return float(elev)
+        # Sticky zoom may be below a higher tile that exists; try above once.
+        if start_z < MAX_ZOOM_TRY:
+            for z in range(MAX_ZOOM_TRY, start_z, -1):
+                self.stats.add(zoom_tries=1)
+                x, y = tile_xy(lat, lon, z)
+                archive = archive_for(z, x, y, planet_z)
+                if not self._zoom_allowed(archive, z, planet_z):
+                    self.stats.add(zoom_misses=1)
+                    continue
+                img = self._decoded(archive, z, x, y)
+                if img is None:
+                    self.stats.add(zoom_misses=1)
+                    self._note_regional_miss(archive, z, planet_z)
+                    continue
+                size = img.width or self._tile_size
+                px, py = pixel_in_tile(lat, lon, z, size)
+                try:
+                    elev = elevation_from_rgba(img, px, py)
+                except Exception:
+                    self.stats.add(zoom_misses=1)
+                    continue
+                if math.isfinite(elev):
+                    self._note_zoom_hit(z)
+                    return float(elev)
         return None
+
+    def _prefetch_tiles(self, keys: list[tuple[str, int, int, int]]) -> None:
+        """Warm disk cache for unique tiles (concurrent HTTP), then decode."""
+        if not keys:
+            return
+
+        def _fetch(key: tuple[str, int, int, int]) -> None:
+            archive, z, x, y = key
+            self.fetch_tile(archive, z, x, y)
+
+        if len(keys) == 1 or self._fetch_tile_fn is not None:
+            for key in keys:
+                _fetch(key)
+        else:
+            with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
+                futs = [pool.submit(_fetch, k) for k in keys]
+                for fut in as_completed(futs):
+                    try:
+                        fut.result()
+                    except Exception:
+                        continue
+        for archive, z, x, y in keys:
+            self._decoded(archive, z, x, y)
 
     def sample_line(
         self,
@@ -413,6 +631,7 @@ class MapterhornDEM:
         if not points or len(points) < 2:
             return []
         self._ensure_init()
+        self.stats.reset()
         interval = max(MIN_INTERVAL_SEC, float(interval_sec or 60))
         pts = []
         for p in points[:MAX_LINE_POINTS]:
@@ -441,23 +660,86 @@ class MapterhornDEM:
             times.append(t_end)
         times = times[:MAX_SAMPLES]
 
-        # Resolve positions first, then elevate (tile grouping via decode LRU).
-        samples: list[dict[str, float]] = []
+        pending: list[dict[str, float]] = []
         for t_sec in times:
             pos = _point_at_track_time(pts, t_sec, t0)
             if pos is None:
                 continue
-            z = self.elevation_at(pos["lat"], pos["lon"])
-            if z is None or not math.isfinite(z):
-                continue
-            samples.append(
+            pending.append(
                 {
                     "t_sec": float(t_sec),
                     "lat": float(pos["lat"]),
                     "lon": float(pos["lon"]),
-                    "z": float(z),
                 }
             )
+
+        planet_z = self._planet_max_zoom
+        start_z = self._start_zoom()
+        zoom_order = list(range(start_z, planet_z - 1, -1))
+        if start_z < MAX_ZOOM_TRY:
+            zoom_order.extend(range(MAX_ZOOM_TRY, start_z, -1))
+
+        out: dict[int, dict[str, float]] = {}
+        remaining = list(enumerate(pending))
+        seen_tiles: set[tuple[str, int, int, int]] = set()
+
+        for z in zoom_order:
+            if not remaining:
+                break
+            groups: dict[tuple[str, int, int, int], list[tuple[int, dict[str, float]]]] = (
+                defaultdict(list)
+            )
+            next_remaining: list[tuple[int, dict[str, float]]] = []
+            for idx, sample in remaining:
+                self.stats.add(zoom_tries=1)
+                x, y = tile_xy(sample["lat"], sample["lon"], z)
+                archive = archive_for(z, x, y, planet_z)
+                if not self._zoom_allowed(archive, z, planet_z):
+                    self.stats.add(zoom_misses=1)
+                    next_remaining.append((idx, sample))
+                    continue
+                groups[(archive, z, x, y)].append((idx, sample))
+
+            keys = list(groups.keys())
+            for k in keys:
+                seen_tiles.add(k)
+            self._prefetch_tiles(keys)
+
+            for key, items in groups.items():
+                archive, zz, x, y = key
+                img = self._decoded(archive, zz, x, y)
+                if img is None:
+                    self.stats.add(zoom_misses=len(items))
+                    self._note_regional_miss(archive, zz, planet_z)
+                    next_remaining.extend(items)
+                    continue
+                size = img.width or self._tile_size
+                self._note_zoom_hit(zz)
+                for idx, sample in items:
+                    px, py = pixel_in_tile(sample["lat"], sample["lon"], zz, size)
+                    try:
+                        elev = elevation_from_rgba(img, px, py)
+                    except Exception:
+                        self.stats.add(zoom_misses=1)
+                        next_remaining.append((idx, sample))
+                        continue
+                    if not math.isfinite(elev):
+                        self.stats.add(zoom_misses=1)
+                        next_remaining.append((idx, sample))
+                        continue
+                    out[idx] = {
+                        "t_sec": sample["t_sec"],
+                        "lat": sample["lat"],
+                        "lon": sample["lon"],
+                        "z": float(elev),
+                    }
+            remaining = next_remaining
+
+        samples = [out[i] for i in sorted(out)]
+        self.stats.add(samples=len(samples), unique_tiles=len(seen_tiles))
+        self.last_sample_stats = self.stats.as_dict()
+        if DEBUG:
+            _log.info("mapterhorn sample_line %s", self.last_sample_stats)
         return samples
 
 

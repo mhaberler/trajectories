@@ -583,15 +583,20 @@ def elevation_line(body: ElevationLineBody) -> JSONResponse:
         }
         for s in samples
     ]
+    props: dict = {
+        "interval_sec": max(
+            mapterhorn_dem.MIN_INTERVAL_SEC, float(body.interval_sec)
+        ),
+        "count": len(features),
+    }
+    if mapterhorn_dem.DEBUG:
+        dem_stats = getattr(mapterhorn_dem.get_dem(), "last_sample_stats", None)
+        if dem_stats:
+            props["dem_stats"] = dem_stats
     return JSONResponse(
         {
             "type": "FeatureCollection",
             "features": features,
-            "properties": {
-                "interval_sec": max(
-                    mapterhorn_dem.MIN_INTERVAL_SEC, float(body.interval_sec)
-                ),
-                "count": len(features),
-            },
+            "properties": props,
         }
     )

@@ -15,7 +15,6 @@ import os
 import threading
 import time
 from collections import OrderedDict, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -234,8 +233,9 @@ class Glo30DEM:
         self.last_sample_stats: dict[str, int | float] | None = None
         self._fetch_sem = threading.Semaphore(FETCH_CONCURRENCY)
         self._fetch_bytes_fn = fetch_bytes_fn
-        # GDAL/rasterio is not safe across threads; serialize all open/read/close.
-        self._rio_lock = threading.RLock()
+        # GDAL/rasterio is not safe across threads. Serialize whole DEM ops
+        # (UI fires profile + cross-section /elevation/line in parallel).
+        self._op_lock = threading.RLock()
         self._ensure_locks: dict[str, threading.Lock] = {}
         self._ensure_locks_guard = threading.Lock()
 
@@ -360,55 +360,79 @@ class Glo30DEM:
     def _sample_stem(
         self, stem: str, items: list[tuple[int, dict[str, float]]]
     ) -> dict[int, dict[str, float]]:
-        """Open one COG and sample all points (caller must hold `_rio_lock`)."""
-        out: dict[int, dict[str, float]] = {}
-        src = self._open_path(stem)
-        if src is None:
-            self.stats.add(zoom_misses=len(items))
+        """Open one COG and sample all points (caller must hold `_op_lock`)."""
+
+        def _zeros() -> dict[int, dict[str, float]]:
+            z: dict[int, dict[str, float]] = {}
             for idx, sample in items:
-                out[idx] = {
+                z[idx] = {
                     "t_sec": sample["t_sec"],
                     "lat": sample["lat"],
                     "lon": sample["lon"],
                     "z": 0.0,
                 }
-            return out
-        self.stats.add(decode_misses=1)
-        try:
-            ds = rasterio.open(src)
-        except rasterio.errors.RasterioIOError as exc:
-            msg = str(exc).lower()
-            if "404" in msg or "not found" in msg or "does not exist" in msg:
-                self.disk.mark_missing(stem)
-                self.stats.add(zoom_misses=len(items))
+            return z
+
+        def _open_and_read(src: str) -> dict[int, dict[str, float]]:
+            try:
+                ds = rasterio.open(src)
+            except rasterio.errors.RasterioIOError as exc:
+                msg = str(exc).lower()
+                if "404" in msg or "not found" in msg or "does not exist" in msg:
+                    self.disk.mark_missing(stem)
+                    self.stats.add(zoom_misses=len(items))
+                    return _zeros()
+                raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+            except Exception as exc:
+                raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+            local: dict[int, dict[str, float]] = {}
+            try:
                 for idx, sample in items:
-                    out[idx] = {
+                    try:
+                        elev = self._sample_xy(ds, sample["lon"], sample["lat"])
+                    except Glo30DEMError:
+                        elev = None
+                    if elev is None:
+                        elev = 0.0
+                    local[idx] = {
                         "t_sec": sample["t_sec"],
                         "lat": sample["lat"],
                         "lon": sample["lon"],
-                        "z": 0.0,
+                        "z": float(elev),
                     }
-                return out
-            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
-        except Exception as exc:
-            raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
+            finally:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+            return local
+
+        src = self._open_path(stem)
+        if src is None:
+            self.stats.add(zoom_misses=len(items))
+            return _zeros()
+        self.stats.add(decode_misses=1)
         try:
-            for idx, sample in items:
-                elev = self._sample_xy(ds, sample["lon"], sample["lat"])
-                if elev is None:
-                    elev = 0.0
-                out[idx] = {
-                    "t_sec": sample["t_sec"],
-                    "lat": sample["lat"],
-                    "lon": sample["lon"],
-                    "z": float(elev),
-                }
-        finally:
+            return _open_and_read(src)
+        except Glo30DEMError as exc:
+            path = self.disk.get_path(stem)
+            if path is None:
+                raise
             try:
-                ds.close()
-            except Exception:
+                path.unlink(missing_ok=True)
+            except OSError:
                 pass
-        return out
+            # Force re-download on retry.
+            src2 = self._open_path(stem)
+            if src2 is None:
+                self.stats.add(zoom_misses=len(items))
+                return _zeros()
+            try:
+                return _open_and_read(src2)
+            except Glo30DEMError:
+                _log.warning("GLO-30 giving up on %s after retry: %s", stem, exc)
+                self.stats.add(zoom_misses=len(items))
+                return _zeros()
 
     def elevation_at(self, lat: float, lon: float) -> float | None:
         if not math.isfinite(lat) or not math.isfinite(lon):
@@ -420,8 +444,8 @@ class Glo30DEM:
         elif lon > 180 or lon < -180:
             lon = ((lon + 180) % 360) - 180
         stem = tile_stem(lat, lon)
-        self.stats.add(zoom_tries=1)
-        with self._rio_lock:
+        with self._op_lock:
+            self.stats.add(zoom_tries=1)
             src = self._open_path(stem)
             if src is None:
                 self.stats.add(zoom_misses=1)
@@ -441,9 +465,9 @@ class Glo30DEM:
                 raise
             except Exception as exc:
                 raise Glo30DEMError(f"GLO-30 open failed {stem}: {exc}") from exc
-        if elev is None:
-            return 0.0
-        return elev
+            if elev is None:
+                return 0.0
+            return elev
 
     def _prefetch_stems(self, stems: list[str]) -> None:
         if not stems:
@@ -452,14 +476,10 @@ class Glo30DEM:
         def _one(stem: str) -> None:
             self.ensure_tile(stem)
 
-        if len(stems) == 1 or self._fetch_bytes_fn is not None:
-            for stem in stems:
-                _one(stem)
-            return
-        with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
-            futs = [pool.submit(_one, s) for s in stems]
-            for fut in as_completed(futs):
-                fut.result()
+        # Keep downloads sequential under `_op_lock` callers — avoid concurrent
+        # httpx + any accidental GDAL interaction from vsicurl fallbacks.
+        for stem in stems:
+            _one(stem)
 
     def sample_line(
         self,
@@ -468,53 +488,52 @@ class Glo30DEM:
     ) -> list[dict[str, float]]:
         if not points or len(points) < 2:
             return []
-        self.stats.reset()
-        built = build_sample_times(
-            points,
-            interval_sec,
-            min_interval=MIN_INTERVAL_SEC,
-            max_line_points=MAX_LINE_POINTS,
-            max_samples=MAX_SAMPLES,
-        )
-        if built is None:
-            return []
-        pts, times = built
-        t0 = pts[0]["t_sec"]
-
-        pending: list[dict[str, float]] = []
-        for t_sec in times:
-            pos = point_at_track_time(pts, t_sec, t0)
-            if pos is None:
-                continue
-            pending.append(
-                {
-                    "t_sec": float(t_sec),
-                    "lat": float(pos["lat"]),
-                    "lon": float(pos["lon"]),
-                }
+        with self._op_lock:
+            self.stats.reset()
+            built = build_sample_times(
+                points,
+                interval_sec,
+                min_interval=MIN_INTERVAL_SEC,
+                max_line_points=MAX_LINE_POINTS,
+                max_samples=MAX_SAMPLES,
             )
+            if built is None:
+                return []
+            pts, times = built
+            t0 = pts[0]["t_sec"]
 
-        groups: dict[str, list[tuple[int, dict[str, float]]]] = defaultdict(list)
-        for idx, sample in enumerate(pending):
-            self.stats.add(zoom_tries=1)
-            stem = tile_stem(sample["lat"], sample["lon"])
-            groups[stem].append((idx, sample))
+            pending: list[dict[str, float]] = []
+            for t_sec in times:
+                pos = point_at_track_time(pts, t_sec, t0)
+                if pos is None:
+                    continue
+                pending.append(
+                    {
+                        "t_sec": float(t_sec),
+                        "lat": float(pos["lat"]),
+                        "lon": float(pos["lon"]),
+                    }
+                )
 
-        stems = list(groups.keys())
-        # HTTP downloads may run concurrently; rasterio sampling is serialized.
-        self._prefetch_stems(stems)
+            groups: dict[str, list[tuple[int, dict[str, float]]]] = defaultdict(list)
+            for idx, sample in enumerate(pending):
+                self.stats.add(zoom_tries=1)
+                stem = tile_stem(sample["lat"], sample["lon"])
+                groups[stem].append((idx, sample))
 
-        out: dict[int, dict[str, float]] = {}
-        with self._rio_lock:
+            stems = list(groups.keys())
+            self._prefetch_stems(stems)
+
+            out: dict[int, dict[str, float]] = {}
             for stem, items in groups.items():
                 out.update(self._sample_stem(stem, items))
 
-        samples = [out[i] for i in sorted(out)]
-        self.stats.add(samples=len(samples), unique_tiles=len(stems))
-        self.last_sample_stats = self.stats.as_dict()
-        if DEBUG:
-            _log.info("glo30 sample_line %s", self.last_sample_stats)
-        return samples
+            samples = [out[i] for i in sorted(out)]
+            self.stats.add(samples=len(samples), unique_tiles=len(stems))
+            self.last_sample_stats = self.stats.as_dict()
+            if DEBUG:
+                _log.info("glo30 sample_line %s", self.last_sample_stats)
+            return samples
 
 
 _dem_lock = threading.Lock()

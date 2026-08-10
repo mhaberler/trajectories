@@ -33,13 +33,15 @@ ExecStart=/home/mah/src/trajectories/python/.venv/bin/uvicorn \
   --host 127.0.0.1 \
   --port 8010 \
   --proxy-headers \
-  --forwarded-allow-ips=127.0.0.1
+  --forwarded-allow-ips=127.0.0.1 \
+  --timeout-graceful-shutdown 5
 Restart=always
 RestartSec=2
-# Stuck OmFileReader / threadpool work can ignore graceful SIGTERM; don't wait
-# forever on restart during model ingest.
-TimeoutStopSec=30
+# In-flight GLO-30 COG downloads / OM reads often ignore SIGTERM; don't block
+# restart for long — uvicorn graceful window above, then systemd SIGKILL.
+TimeoutStopSec=10
 KillMode=control-group
+FinalKillSignal=SIGKILL
 
 [Install]
 WantedBy=multi-user.target

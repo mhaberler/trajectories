@@ -27,6 +27,17 @@ def test_backend_mapterhorn(monkeypatch):
     importlib.reload(dem)
 
 
+def test_backend_glo30(monkeypatch):
+    monkeypatch.setenv("TRAJECTORIES_DEM_BACKEND", "glo30")
+    import trajectories.dem as dem
+
+    importlib.reload(dem)
+    assert dem.backend_name() == "glo30"
+    dem.reset_backend_for_tests()
+    monkeypatch.delenv("TRAJECTORIES_DEM_BACKEND", raising=False)
+    importlib.reload(dem)
+
+
 def test_invalid_backend_falls_back_to_joerd(monkeypatch):
     monkeypatch.setenv("TRAJECTORIES_DEM_BACKEND", "nope")
     import trajectories.dem as dem

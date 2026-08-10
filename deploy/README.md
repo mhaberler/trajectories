@@ -37,18 +37,19 @@ source python/.venv/bin/activate
 pip install -e "python/[api,om]"
 ```
 
-`api` extras include FastAPI/uvicorn plus **Pillow** (and **pmtiles** if using Mapterhorn) for DEM (`POST /v1/elevation/*`).
+`api` extras include FastAPI/uvicorn plus **Pillow**, **pmtiles** (Mapterhorn), and **rasterio** (GLO-30; needs system **GDAL**) for DEM (`POST /v1/elevation/*`).
 
-Default DEM backend is **Joerd** (AWS Terrarium PNG, fixed z=12). Select via `TRAJECTORIES_DEM_BACKEND=joerd|mapterhorn`. On-disk tile caches (default **5 GiB** each):
+Default DEM backend is **Joerd** (AWS Terrarium PNG, fixed z=12). Select via `TRAJECTORIES_DEM_BACKEND=joerd|mapterhorn|glo30`. On-disk caches (default **5 GiB** each); GLO-30 caches whole 1° COGs on demand (no preseed):
 
 ```bash
-sudo mkdir -p /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
+sudo mkdir -p /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn \
+  /var/cache/trajectories/glo30
 sudo chown openmeteo-api:openmeteo-api \
-  /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
+  /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn \
+  /var/cache/trajectories/glo30
 # optional overrides in /etc/default/trajectories-api.env — see
 # deploy/trajectories-api.env.example
 ```
-
 ## 2. systemd
 
 Runs as user `openmeteo-api`. Grant traverse on `/home/mah` (home is mode 700):

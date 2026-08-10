@@ -1,4 +1,4 @@
-"""DEM facade: select Joerd (default) or Mapterhorn via env."""
+"""DEM facade: select Joerd (default), Mapterhorn, or GLO-30 via env."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from typing import Any
 from .dem_common import env_flag
 
 BACKEND = os.environ.get("TRAJECTORIES_DEM_BACKEND", "joerd").strip().lower() or "joerd"
-if BACKEND not in ("joerd", "mapterhorn"):
+if BACKEND not in ("joerd", "mapterhorn", "glo30"):
     BACKEND = "joerd"
 
-# Shared contract (identical in joerd / mapterhorn).
+# Shared contract (identical in joerd / mapterhorn / glo30).
 MIN_INTERVAL_SEC = 15
 MAX_LINE_POINTS = 5000
 
@@ -20,6 +20,8 @@ DEBUG = env_flag("TRAJECTORIES_DEM_DEBUG") or (
     env_flag("TRAJECTORIES_JOERD_DEBUG")
     if BACKEND == "joerd"
     else env_flag("TRAJECTORIES_MAPTERHORN_DEBUG")
+    if BACKEND == "mapterhorn"
+    else env_flag("TRAJECTORIES_GLO30_DEBUG")
 )
 
 _mod_lock = threading.Lock()
@@ -37,6 +39,8 @@ def _module() -> Any:
             return _mod
         if BACKEND == "mapterhorn":
             from . import mapterhorn as mod
+        elif BACKEND == "glo30":
+            from . import glo30 as mod
         else:
             from . import joerd as mod
         _mod = mod

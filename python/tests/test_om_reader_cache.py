@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from unittest.mock import MagicMock
@@ -129,4 +130,86 @@ def test_invalidate_waits_for_active_read(tmp_path):
     assert not errors
     assert close_during_read == [False]
     assert cache.size == 0
+    cache.close()
+
+
+def test_resolve_cached_across_get_and_read_array(tmp_path, monkeypatch):
+    """Hot path must not call realpath on every chunk read."""
+    clear_om_reader_cache()
+    path = tmp_path / "chunk.om"
+    path.write_bytes(b"x")
+    path_s = str(path)
+
+    cache = OmReaderCache(max_readers=8)
+    if cache._observer is not None:
+        cache._observer.stop()
+        cache._observer.join(timeout=2)
+        cache._observer = None
+        cache._handler = None
+
+    real_calls = {"n": 0}
+    real_realpath = os.path.realpath
+
+    def counting_realpath(p):
+        real_calls["n"] += 1
+        return real_realpath(p)
+
+    monkeypatch.setattr(os.path, "realpath", counting_realpath)
+    cache._OmFileReader = lambda _p: MagicMock(
+        __getitem__=MagicMock(return_value=1.0),
+        close=MagicMock(),
+    )
+
+    cache.get(path_s)
+    n_after_get = real_calls["n"]
+    assert n_after_get >= 1
+    for _ in range(20):
+        cache.read_array(path_s, (0,))
+    # Further reads hit the resolve cache (no extra realpath).
+    assert real_calls["n"] == n_after_get
+    cache.close()
+
+
+def test_om_root_watch_scheduled_once(tmp_path, monkeypatch):
+    """Paths under OM_ROOT share one recursive inotify schedule."""
+    clear_om_reader_cache()
+    root = tmp_path / "open-meteo"
+    ds = root / "dwd_icon" / "wind_u_component" / "chunk_dir"
+    ds.mkdir(parents=True)
+    files = []
+    for i in range(5):
+        p = ds / f"c{i}.om"
+        p.write_bytes(b"x")
+        files.append(p)
+
+    monkeypatch.setenv("TRAJECTORIES_OM_ROOT", str(root))
+
+    cache = OmReaderCache(max_readers=8)
+    schedules: list[tuple[str, bool]] = []
+
+    class FakeObserver:
+        def schedule(self, _handler, path, recursive=False):
+            schedules.append((str(path), bool(recursive)))
+
+        def stop(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def start(self):
+            pass
+
+    cache._observer = FakeObserver()
+    cache._handler = object()
+    cache._OmFileReader = lambda _p: MagicMock(close=MagicMock())
+
+    for p in files:
+        cache.get(str(p))
+
+    assert len(schedules) == 1
+    assert schedules[0][1] is True
+    assert os.path.realpath(schedules[0][0]) == os.path.realpath(str(root))
+    assert cache._root_watch is not None
+    assert cache._dir_refs == {}
     cache.close()

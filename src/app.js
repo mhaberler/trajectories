@@ -956,6 +956,10 @@ async function fetchElevationLine(pts, intervalSec, signal) {
   if (!resp.ok || data?.error) {
     throw new Error(data?.reason || `DEM HTTP ${resp.status}`);
   }
+  const demStats = data?.properties?.dem_stats;
+  if (demStats && typeof demStats === "object") {
+    console.info("[dem]", demStats);
+  }
   const feats = Array.isArray(data?.features) ? data.features : [];
   /** @type {{ tSec: number, z: number }[]} */
   const series = [];

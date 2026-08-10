@@ -8,6 +8,10 @@ Ingest (inotify) may invalidate while trajectories read. Closing a reader withou
 ``entry.lock`` while another thread is inside ``reader[indexer]`` can wedge the
 native mmap and block ``systemctl restart``. Always pop under ``_lock``, then
 close under ``entry.lock`` after releasing ``_lock``.
+
+Hot path: never call ``Path.resolve()`` / ``realpath`` on every chunk read —
+resolve once and cache. Prefer one recursive inotify watch on OM_ROOT so
+watchdog does not spawn a thread pair per chunk directory.
 """
 
 from __future__ import annotations
@@ -16,7 +20,6 @@ import os
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 # Optional watchdog for inotify; mtime/inode fallback always works.
@@ -31,6 +34,9 @@ except ImportError:  # pragma: no cover
     _HAS_WATCHDOG = False
 
 DEFAULT_MAX_READERS = 128
+RESOLVE_CACHE_MAX = 4096
+# Fallback parent watches when path is outside OM_ROOT (tests / odd layouts).
+MAX_FALLBACK_DIR_WATCHES = 8
 
 
 class SlabStaleError(RuntimeError):
@@ -73,6 +79,18 @@ class _DirHandler(FileSystemEventHandler):  # type: ignore[misc]
         self._bump(event)
 
 
+def _om_watch_root() -> str | None:
+    """Resolved TRAJECTORIES_OM_ROOT (default ``/open-meteo``) if it exists."""
+    raw = os.environ.get("TRAJECTORIES_OM_ROOT", "").strip() or "/open-meteo"
+    try:
+        root = os.path.realpath(raw)
+    except OSError:
+        return None
+    if os.path.isdir(root):
+        return root
+    return None
+
+
 class OmReaderCache:
     """
     LRU of open OmFileReader instances (local mmap paths).
@@ -91,7 +109,11 @@ class OmReaderCache:
         self._active_tickets: dict[int, set[str]] = {}
         self._ticket_stale: dict[int, bool] = {}
         self._next_ticket = 1
-        # parent dir -> refcount of watched files under it
+        # Resolved-path cache (input path / realpath → realpath).
+        self._resolve_cache: OrderedDict[str, str] = OrderedDict()
+        # Single recursive OM_ROOT watch (preferred).
+        self._root_watch: str | None = None
+        # Fallback: parent dir -> refcount (paths outside OM_ROOT only).
         self._dir_refs: dict[str, int] = {}
         self._observer = None
         self._handler = None
@@ -107,6 +129,27 @@ class OmReaderCache:
 
             self._OmFileReader = OmFileReader
         return self._OmFileReader
+
+    def _resolve(self, path: str) -> str:
+        """``realpath`` once per path string; hot path must not re-walk symlinks."""
+        with self._lock:
+            hit = self._resolve_cache.get(path)
+            if hit is not None:
+                self._resolve_cache.move_to_end(path)
+                return hit
+        try:
+            key = os.path.realpath(path)
+        except OSError:
+            key = os.path.abspath(path)
+        with self._lock:
+            self._resolve_cache[path] = key
+            self._resolve_cache.move_to_end(path)
+            if key != path:
+                self._resolve_cache[key] = key
+                self._resolve_cache.move_to_end(key)
+            while len(self._resolve_cache) > RESOLVE_CACHE_MAX:
+                self._resolve_cache.popitem(last=False)
+        return key
 
     def begin_ticket(self) -> int:
         with self._lock:
@@ -133,30 +176,52 @@ class OmReaderCache:
         st = os.stat(path)
         return int(st.st_mtime_ns), int(st.st_ino)
 
-    def _watch_parent(self, path: str) -> None:
-        """Schedule parent dir watch. Caller must hold ``_lock``."""
+    def _ensure_watch(self, resolved_path: str) -> None:
+        """Schedule inotify. Prefer one recursive OM_ROOT watch.
+
+        Caller must hold ``_lock``. Paths outside the root get a capped
+        non-recursive parent watch; beyond the cap, mtime/inode still works.
+        """
         if self._observer is None or self._handler is None:
             return
-        parent = str(Path(path).resolve().parent)
-        if parent not in self._dir_refs:
+
+        root = _om_watch_root()
+        if root and (
+            resolved_path == root
+            or resolved_path.startswith(root + os.sep)
+        ):
+            if self._root_watch is not None:
+                return
             try:
-                self._observer.schedule(self._handler, parent, recursive=False)
+                self._observer.schedule(self._handler, root, recursive=True)
             except Exception:
                 return
-            self._dir_refs[parent] = 0
-        self._dir_refs[parent] += 1
+            self._root_watch = root
+            return
 
-    def _unwatch_parent(self, path: str) -> None:
-        if self._observer is None:
+        parent = os.path.dirname(resolved_path) or resolved_path
+        if parent in self._dir_refs:
+            self._dir_refs[parent] += 1
+            return
+        if len(self._dir_refs) >= MAX_FALLBACK_DIR_WATCHES:
             return
         try:
-            parent = str(Path(path).resolve().parent)
+            self._observer.schedule(self._handler, parent, recursive=False)
         except Exception:
             return
+        self._dir_refs[parent] = 1
+
+    def _unwatch_parent(self, resolved_path: str) -> None:
+        """Drop fallback parent refcount. No-op under the OM_ROOT recursive watch."""
+        if self._root_watch and (
+            resolved_path == self._root_watch
+            or resolved_path.startswith(self._root_watch + os.sep)
+        ):
+            return
+        parent = os.path.dirname(resolved_path) or resolved_path
         n = self._dir_refs.get(parent, 0) - 1
         if n <= 0:
             self._dir_refs.pop(parent, None)
-            # watchdog has no easy unschedule-by-path; leave watch (cheap)
         else:
             self._dir_refs[parent] = n
 
@@ -172,10 +237,7 @@ class OmReaderCache:
             self._unwatch_parent(path)
 
     def _path_candidates(self, path: str) -> set[str]:
-        try:
-            key = str(Path(path).resolve())
-        except Exception:
-            key = str(path)
+        key = self._resolve(path)
         return {key, str(path), os.path.abspath(path)}
 
     def invalidate(self, path: str) -> None:
@@ -215,7 +277,7 @@ class OmReaderCache:
 
     def get(self, path: str, *, ticket: int | None = None) -> _Entry:
         """Return cache entry; caller must hold ``entry.lock`` while reading."""
-        key = str(Path(path).resolve())
+        key = self._resolve(path)
         OmFileReader = self._ensure_reader_cls()
         stale_close: list[tuple[str, _Entry]] = []
         hit: _Entry | None = None
@@ -278,7 +340,7 @@ class OmReaderCache:
                         self._entries.pop(key, None)
                         close_published.append((key, existing))
                     self._entries[key] = new_entry
-                    self._watch_parent(key)
+                    self._ensure_watch(key)
                     result = new_entry
                     while len(self._entries) > self._max:
                         old_p, old_e = self._entries.popitem(last=False)
@@ -295,12 +357,13 @@ class OmReaderCache:
 
     def read_array(self, path: str, indexer, *, ticket: int | None = None):
         """Thread-safe slice read from a cached reader."""
+        key = self._resolve(path)
         entry = self.get(path, ticket=ticket)
         with entry.lock:
             if ticket is not None:
                 self.check_ticket(ticket)
             try:
-                mtime_ns, inode = self._stat(str(Path(path).resolve()))
+                mtime_ns, inode = self._stat(key)
             except OSError as exc:
                 raise SlabStaleError(str(exc)) from exc
             if mtime_ns == entry.mtime_ns and inode == entry.inode:
@@ -325,6 +388,10 @@ class OmReaderCache:
             except Exception:
                 pass
             self._observer = None
+        with self._lock:
+            self._root_watch = None
+            self._dir_refs.clear()
+            self._resolve_cache.clear()
 
     @property
     def size(self) -> int:

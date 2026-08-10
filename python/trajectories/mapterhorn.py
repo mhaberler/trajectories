@@ -49,7 +49,10 @@ MAX_LINE_POINTS = 5000
 MAX_SAMPLES = 2000
 # Cap concurrent PMTiles Range GETs so elevation/line cannot stampede httpx.
 FETCH_CONCURRENCY = 4
-HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+# Keep Range GETs short — download.mapterhorn.com can stall and pin workers.
+HTTP_TIMEOUT = httpx.Timeout(8.0, connect=5.0)
+# Line sampling: planet zoom is enough for Querschnitt/Flugprofil terrain.
+LINE_MAX_ZOOM = PLANET_MAX_ZOOM
 DEBUG = os.environ.get("TRAJECTORIES_MAPTERHORN_DEBUG", "").strip() not in ("", "0", "false")
 
 _log = logging.getLogger(__name__)
@@ -674,10 +677,16 @@ class MapterhornDEM:
             )
 
         planet_z = self._planet_max_zoom
-        start_z = self._start_zoom()
+        # Prefer sticky zoom when already learned, else planet (not z=15).
+        # High-zoom regional tiles multiply unique HTTP Ranges along a track.
+        with self._sticky_lock:
+            sticky = self._sticky_zoom
+        line_max = min(LINE_MAX_ZOOM, MAX_ZOOM_TRY)
+        if sticky is not None:
+            start_z = max(planet_z, min(line_max, sticky))
+        else:
+            start_z = planet_z
         zoom_order = list(range(start_z, planet_z - 1, -1))
-        if start_z < MAX_ZOOM_TRY:
-            zoom_order.extend(range(MAX_ZOOM_TRY, start_z, -1))
 
         out: dict[int, dict[str, float]] = {}
         remaining = list(enumerate(pending))

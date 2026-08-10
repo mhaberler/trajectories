@@ -15,5 +15,5 @@ python/**/__pycache__/
 python/tests/artifacts/
 .vscode
 myvisualizer
-
+.cache
 .claude/settings.json

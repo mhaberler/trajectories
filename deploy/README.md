@@ -37,16 +37,16 @@ source python/.venv/bin/activate
 pip install -e "python/[api,om]"
 ```
 
-`api` extras include FastAPI/uvicorn plus **Pillow** and **pmtiles** for Mapterhorn DEM (`POST /v1/elevation/*`).
+`api` extras include FastAPI/uvicorn plus **Pillow** (and **pmtiles** if using Mapterhorn) for DEM (`POST /v1/elevation/*`).
 
-Mapterhorn on-disk tile cache (default **5 GiB**):
+Default DEM backend is **Joerd** (AWS Terrarium PNG, fixed z=12). Select via `TRAJECTORIES_DEM_BACKEND=joerd|mapterhorn`. On-disk tile caches (default **5 GiB** each):
 
 ```bash
-sudo mkdir -p /var/cache/trajectories/mapterhorn
-sudo chown openmeteo-api:openmeteo-api /var/cache/trajectories/mapterhorn
-# optional overrides in /etc/default/trajectories-api.env:
-#   TRAJECTORIES_MAPTERHORN_CACHE=/var/cache/trajectories/mapterhorn
-#   TRAJECTORIES_MAPTERHORN_CACHE_MAX_BYTES=5368709120
+sudo mkdir -p /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
+sudo chown openmeteo-api:openmeteo-api \
+  /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
+# optional overrides in /etc/default/trajectories-api.env — see
+# deploy/trajectories-api.env.example
 ```
 
 ## 2. systemd

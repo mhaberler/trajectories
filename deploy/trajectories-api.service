@@ -12,15 +12,19 @@ WorkingDirectory=/home/mah/src/trajectories/python
 EnvironmentFile=-/etc/default/trajectories-api.env
 Environment=TRAJECTORIES_OM_ROOT=/open-meteo
 Environment=TRAJECTORIES_BACKEND=auto
+Environment=TRAJECTORIES_DEM_BACKEND=joerd
+Environment=TRAJECTORIES_JOERD_CACHE=/var/cache/trajectories/joerd
+Environment=TRAJECTORIES_JOERD_CACHE_MAX_BYTES=5368709120
 Environment=TRAJECTORIES_MAPTERHORN_CACHE=/var/cache/trajectories/mapterhorn
 Environment=TRAJECTORIES_MAPTERHORN_CACHE_MAX_BYTES=5368709120
 # Bind loopback only; Caddy terminates TLS and reverse-proxies.
 # Requires traverse on /home/mah (mode 700), e.g.:
 #   sudo setfacl -m u:openmeteo-api:--x /home/mah
-# Mapterhorn cache dir (create once):
-#   sudo mkdir -p /var/cache/trajectories/mapterhorn
-#   sudo chown openmeteo-api:openmeteo-api /var/cache/trajectories/mapterhorn
-ReadWritePaths=/var/cache/trajectories/mapterhorn
+# DEM cache dirs (create once):
+#   sudo mkdir -p /var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
+#   sudo chown openmeteo-api:openmeteo-api /var/cache/trajectories/joerd \
+#     /var/cache/trajectories/mapterhorn
+ReadWritePaths=/var/cache/trajectories/joerd /var/cache/trajectories/mapterhorn
 ExecStart=/home/mah/src/trajectories/python/.venv/bin/uvicorn \
   trajectories.api:app \
   --host 127.0.0.1 \

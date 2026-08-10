@@ -34,13 +34,14 @@ app = FastAPI(
         "properties.terrain_m (model orography m AMSL, parallel to coordinates). "
         "Point wind samples are available at GET /v1/wind (flat JSON). "
         "Optional kinematic AGL flight profiles via profile_time + profile_height. "
-        "Mapterhorn DEM: POST /v1/elevation/point and /v1/elevation/line (GeoJSON)."
+        "DEM elevation: POST /v1/elevation/point and /v1/elevation/line (GeoJSON); "
+        "TRAJECTORIES_DEM_BACKEND=joerd|mapterhorn (default joerd)."
     ),
     version="0.1.0",
     openapi_tags=[
         {"name": "trajectory", "description": "Compute wind trajectories"},
         {"name": "wind", "description": "Sample wind at a single point"},
-        {"name": "elevation", "description": "Mapterhorn DEM elevation samples"},
+        {"name": "elevation", "description": "DEM elevation samples (Joerd / Mapterhorn)"},
         {"name": "meta", "description": "Health and service metadata"},
     ],
 )
@@ -521,20 +522,20 @@ class ElevationLineBody(BaseModel):
 @app.post(
     "/v1/elevation/point",
     tags=["elevation"],
-    summary="Mapterhorn elevation at a point",
+    summary="DEM elevation at a point",
     response_description="GeoJSON Feature Point",
 )
 def elevation_point(body: ElevationPointBody) -> JSONResponse:
     try:
-        from . import mapterhorn as mapterhorn_dem
+        from . import dem as dem_mod
     except ImportError as exc:
         return _om_error(500, str(exc))
     try:
-        elev = mapterhorn_dem.elevation_at(body.lat, body.lon)
+        elev = dem_mod.elevation_at(body.lat, body.lon)
     except ImportError as exc:
         return _om_error(500, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _om_error(500, f"DEM error: {exc}")
+        return _om_error(502, f"DEM error: {exc}")
     if elev is None or not math.isfinite(elev):
         return _om_error(404, "No elevation at this location")
     return JSONResponse(
@@ -549,26 +550,26 @@ def elevation_point(body: ElevationPointBody) -> JSONResponse:
 @app.post(
     "/v1/elevation/line",
     tags=["elevation"],
-    summary="Mapterhorn elevation samples along a timed polyline",
+    summary="DEM elevation samples along a timed polyline",
     response_description="GeoJSON FeatureCollection of Points",
 )
 def elevation_line(body: ElevationLineBody) -> JSONResponse:
     try:
-        from . import mapterhorn as mapterhorn_dem
+        from . import dem as dem_mod
     except ImportError as exc:
         return _om_error(500, str(exc))
-    if len(body.points) > mapterhorn_dem.MAX_LINE_POINTS:
+    if len(body.points) > dem_mod.MAX_LINE_POINTS:
         return _om_error(
             400,
-            f"Too many points (max {mapterhorn_dem.MAX_LINE_POINTS})",
+            f"Too many points (max {dem_mod.MAX_LINE_POINTS})",
         )
     pts = [{"lat": p.lat, "lon": p.lon, "t_sec": p.t_sec} for p in body.points]
     try:
-        samples = mapterhorn_dem.sample_line(pts, body.interval_sec)
+        samples = dem_mod.sample_line(pts, body.interval_sec)
     except ImportError as exc:
         return _om_error(500, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _om_error(500, f"DEM error: {exc}")
+        return _om_error(502, f"DEM error: {exc}")
     features = [
         {
             "type": "Feature",
@@ -584,13 +585,12 @@ def elevation_line(body: ElevationLineBody) -> JSONResponse:
         for s in samples
     ]
     props: dict = {
-        "interval_sec": max(
-            mapterhorn_dem.MIN_INTERVAL_SEC, float(body.interval_sec)
-        ),
+        "interval_sec": max(dem_mod.MIN_INTERVAL_SEC, float(body.interval_sec)),
         "count": len(features),
     }
-    if mapterhorn_dem.DEBUG:
-        dem_stats = getattr(mapterhorn_dem.get_dem(), "last_sample_stats", None)
+    if dem_mod.DEBUG:
+        props["dem_backend"] = dem_mod.backend_name()
+        dem_stats = getattr(dem_mod.get_dem(), "last_sample_stats", None)
         if dem_stats:
             props["dem_stats"] = dem_stats
     return JSONResponse(

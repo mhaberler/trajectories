@@ -360,7 +360,7 @@ def test_elevation_line_validation_too_few_points():
     assert r.json().get("error") is True
 
 
-@patch("trajectories.mapterhorn.sample_line")
+@patch("trajectories.dem.sample_line")
 def test_elevation_line_happy_path(mock_sample):
     mock_sample.return_value = [
         {"t_sec": 0.0, "lat": 47.8, "lon": 11.3, "z": 612.5},
@@ -387,7 +387,7 @@ def test_elevation_line_happy_path(mock_sample):
     mock_sample.assert_called_once()
 
 
-@patch("trajectories.mapterhorn.elevation_at", return_value=555.25)
+@patch("trajectories.dem.elevation_at", return_value=555.25)
 def test_elevation_point_happy_path(mock_elev):
     r = client.post("/v1/elevation/point", json={"lat": 47.8, "lon": 11.3})
     assert r.status_code == 200

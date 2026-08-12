@@ -4735,7 +4735,7 @@ el("sharehtml").addEventListener("click", async () => {
   setStatus("Baue HTML und lade zu GitHub hoch …");
   try {
     htmlExportMod ??= await import("./export/html.ts");
-    const { shareHtml, buildShareFilename } = await import("./export/shareGithub.ts");
+    const { shareHtml, buildShareFilename, waitForPagesUrl } = await import("./export/shareGithub.ts");
     const html = htmlExportMod.buildHTML(state.lastRuns, exportCtx("html"));
     const filename = buildShareFilename(state.lastRuns.modelKey, state.lastRuns.t0Ms);
     const pagesBase = shareGithub.pagesBaseCustom && shareGithub.pagesBase
@@ -4752,9 +4752,17 @@ el("sharehtml").addEventListener("click", async () => {
     });
     try {
       await navigator.clipboard.writeText(pagesUrl);
-      setStatus(`Geteilt — Link kopiert: ${pagesUrl}`);
     } catch {
-      setStatus(`Geteilt: ${pagesUrl}`);
+      /* Clipboard optional */
+    }
+    setStatus(`Geteilt — Link kopiert. Warte auf GitHub Pages … ${pagesUrl}`);
+    const ready = await waitForPagesUrl(pagesUrl, { timeoutMs: 90_000, intervalMs: 3_000 });
+    if (ready) setStatus(`Pages bereit — Link kopiert: ${pagesUrl}`);
+    else {
+      setStatus(
+        `Hochgeladen; Pages noch nicht erreichbar (oft 1–2 min). Link: ${pagesUrl}`,
+        true,
+      );
     }
   } catch (err) {
     setStatus(`Teilen: ${err?.message || err}`, true);

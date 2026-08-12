@@ -8,6 +8,7 @@ import {
   pagesUrl,
   sanitizeShareName,
   shareHtml,
+  waitForPagesUrl,
 } from "../src/export/shareGithub.ts";
 
 let failures = 0;
@@ -67,6 +68,31 @@ function check(name, cond, detail) {
   check("PUT once", calls.length === 1);
   check("PUT branch", JSON.parse(calls[0].init.body).branch === "gh-pages");
   check("Auth bearer", calls[0].init.headers.Authorization === "Bearer ghp_test");
+}
+
+{
+  let n = 0;
+  const fakeFetch = async () => {
+    n += 1;
+    return { ok: n >= 2, status: n >= 2 ? 200 : 404 };
+  };
+  const ok = await waitForPagesUrl("https://example.test/x.html", {
+    timeoutMs: 50,
+    intervalMs: 10,
+    fetchImpl: fakeFetch,
+  });
+  check("waitForPages eventually ok", ok === true);
+  check("waitForPages retried", n >= 2, String(n));
+}
+
+{
+  const fakeFetch = async () => ({ ok: false, status: 404 });
+  const ok = await waitForPagesUrl("https://example.test/x.html", {
+    timeoutMs: 35,
+    intervalMs: 20,
+    fetchImpl: fakeFetch,
+  });
+  check("waitForPages timeout", ok === false);
 }
 
 {

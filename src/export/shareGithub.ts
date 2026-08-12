@@ -17,6 +17,8 @@ export interface ShareGithubResult {
   pagesUrl: string;
   path: string;
   commitSha?: string;
+  /** GitHub-Web-URL der Datei (sofort sichtbar, kein Pages-Build). */
+  htmlUrl?: string;
 }
 
 export const SHARE_GITHUB_DEFAULTS = {
@@ -117,9 +119,11 @@ export async function shareHtml(opts: ShareGithubOpts, fetchImpl: typeof fetch =
   if (!res.ok) throw new Error(apiErrorMessage(res.status, text));
 
   let commitSha: string | undefined;
+  let htmlUrl: string | undefined;
   try {
     const j = JSON.parse(text);
     commitSha = j?.commit?.sha;
+    htmlUrl = j?.content?.html_url;
   } catch {
     /* ignore */
   }
@@ -128,5 +132,35 @@ export async function shareHtml(opts: ShareGithubOpts, fetchImpl: typeof fetch =
     pagesUrl: pagesUrl(path, owner, repo, opts.pagesBase),
     path,
     commitSha,
+    htmlUrl,
   };
+}
+
+/**
+ * Wartet, bis die Pages-URL HTTP 200 liefert (Deploy-Verzögerung), oder Timeout.
+ * @returns true wenn erreichbar
+ */
+export async function waitForPagesUrl(
+  url: string,
+  opts: { timeoutMs?: number; intervalMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const intervalMs = opts.intervalMs ?? 3_000;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      let res = await fetchImpl(url, { method: "HEAD", cache: "no-store" });
+      if (res.ok) return true;
+      // Manche CDNs/Proxies blockieren HEAD — GET als Fallback
+      if (res.status === 404 || res.status === 405 || res.status === 403) {
+        res = await fetchImpl(url, { method: "GET", cache: "no-store" });
+        if (res.ok) return true;
+      }
+    } catch {
+      /* CORS/netz — weiter versuchen */
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
 }

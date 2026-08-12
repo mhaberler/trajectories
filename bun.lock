@@ -8,6 +8,7 @@
         "@tmcw/togeojson": "^7.1.2",
         "@xmldom/xmldom": "^0.9.10",
         "cesium": "^1.143.0",
+        "fflate": "^0.8.3",
         "leaflet": "1.9.4",
         "pmtiles": "^4.4.1",
       },

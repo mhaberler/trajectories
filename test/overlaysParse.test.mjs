@@ -128,5 +128,28 @@ const KML = `<?xml version="1.0" encoding="UTF-8"?>
   check("payload: Defaults defaultView", p.opts.defaultView === HTML_EXPORT_DEFAULTS.defaultView);
 }
 
+{
+  const { zipSync, strToU8 } = await import("fflate");
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>KmzLine</name>
+      <LineString>
+        <coordinates>11.1,47.1,900 11.2,47.2,950 11.3,47.3,980</coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>`;
+  const kmz = zipSync({ "doc.kml": strToU8(kml) });
+  const { parseOverlayBytes, kmlFromKmz } = await import("../src/overlays/parse.js");
+  const extracted = await kmlFromKmz(kmz);
+  check("kmz: doc.kml extrahiert", /KmzLine/.test(extracted.kmlText));
+  const { drafts } = await parseOverlayBytes(kmz, "flight.kmz");
+  check("kmz: eine Spur", drafts.length === 1, `n=${drafts.length}`);
+  check("kmz: Name", drafts[0]?.name === "KmzLine", drafts[0]?.name);
+  check("kmz: Höhe", drafts[0]?.coords[0].z === 900, String(drafts[0]?.coords[0].z));
+}
+
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle Overlay-Tests bestanden.");
 process.exit(failures ? 1 : 0);

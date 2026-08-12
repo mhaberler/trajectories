@@ -4267,16 +4267,23 @@ async function importOverlayFiles(fileList) {
   if (!files.length) return;
   const newIds = [];
   const warnings = [];
+  const { parseOverlayBytes } = await import("./overlays/parse.js");
   for (const file of files) {
-    let text;
+    let drafts = [];
+    let w = [];
     try {
-      text = await file.text();
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith(".kmz")) {
+        const buf = await file.arrayBuffer();
+        ({ drafts, warnings: w } = await parseOverlayBytes(buf, file.name));
+      } else {
+        const text = await file.text();
+        ({ drafts, warnings: w } = await parseOverlayBytes(text, file.name));
+      }
     } catch (err) {
       warnings.push(`${file.name}: ${err.message}`);
       continue;
     }
-    const { parseOverlayFile } = await import("./overlays/parse.js");
-    const { drafts, warnings: w } = await parseOverlayFile(text, file.name);
     for (const msg of w || []) warnings.push(`${file.name}: ${msg}`);
     for (const d of drafts) {
       const id = `ov-${++overlayIdSeq}`;

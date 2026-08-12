@@ -1,6 +1,6 @@
 /**
- * Import GPX / KML / GeoJSON flight tracks → overlay drafts (line geometry only).
- * Uses @tmcw/togeojson for XML formats; GeoJSON via JSON.parse.
+ * Import GPX / KML / KMZ / GeoJSON flight tracks → overlay drafts (line geometry only).
+ * Uses @tmcw/togeojson for XML formats; GeoJSON via JSON.parse; KMZ via fflate unzip.
  */
 
 /**
@@ -113,6 +113,26 @@ async function parseXml(xml) {
 }
 
 /**
+ * KML-Text aus einem KMZ (ZIP) holen. Bevorzugt `doc.kml`, sonst erste `.kml`.
+ * @param {ArrayBuffer|Uint8Array} buffer
+ * @returns {Promise<{ kmlText: string, kmlPath: string }>}
+ */
+export async function kmlFromKmz(buffer) {
+  const { unzipSync, strFromU8 } = await import("fflate");
+  const raw = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  let files;
+  try {
+    files = unzipSync(raw);
+  } catch (err) {
+    throw new Error(`KMZ konnte nicht entpackt werden: ${err.message || err}`);
+  }
+  const paths = Object.keys(files).filter((p) => /\.kml$/i.test(p) && !p.endsWith("/"));
+  if (!paths.length) throw new Error("Keine .kml-Datei im KMZ.");
+  const preferred = paths.find((p) => /(^|\/)doc\.kml$/i.test(p)) || paths[0];
+  return { kmlText: strFromU8(files[preferred]), kmlPath: preferred };
+}
+
+/**
  * @param {string} text
  * @param {string} filename
  * @returns {Promise<{ drafts: OverlayDraft[], warnings: string[] }>}
@@ -120,6 +140,12 @@ async function parseXml(xml) {
 export async function parseOverlayFile(text, filename) {
   const sourceName = filename || "track";
   const lower = sourceName.toLowerCase();
+  if (lower.endsWith(".kmz")) {
+    return {
+      drafts: [],
+      warnings: ["KMZ bitte als Binärdatei laden (parseOverlayBytes)."],
+    };
+  }
   const trimmed = String(text || "").trim();
   if (!trimmed) return { drafts: [], warnings: ["Datei ist leer."] };
 
@@ -153,11 +179,36 @@ export async function parseOverlayFile(text, filename) {
     }
   }
 
-  // Fallback: try JSON then GPX sniff
   try {
     return overlaysFromGeoJSON(JSON.parse(trimmed), sourceName);
   } catch {
     /* fall through */
   }
-  return { drafts: [], warnings: ["Format nicht erkannt (GPX, KML oder GeoJSON)."] };
+  return { drafts: [], warnings: ["Format nicht erkannt (GPX, KML, KMZ oder GeoJSON)."] };
+}
+
+/**
+ * Binäre oder textuelle Overlay-Datei (KMZ als ArrayBuffer).
+ * @param {ArrayBuffer|Uint8Array|string} data
+ * @param {string} filename
+ */
+export async function parseOverlayBytes(data, filename) {
+  const sourceName = filename || "track";
+  const lower = sourceName.toLowerCase();
+  if (lower.endsWith(".kmz")) {
+    try {
+      const buf = typeof data === "string"
+        ? new TextEncoder().encode(data)
+        : data;
+      const { kmlText } = await kmlFromKmz(buf);
+      return parseOverlayFile(kmlText, sourceName.replace(/\.kmz$/i, ".kml"));
+    } catch (err) {
+      return { drafts: [], warnings: [err.message || String(err)] };
+    }
+  }
+  if (typeof data === "string") return parseOverlayFile(data, filename);
+  const text = new TextDecoder("utf-8").decode(
+    data instanceof Uint8Array ? data : new Uint8Array(data),
+  );
+  return parseOverlayFile(text, filename);
 }

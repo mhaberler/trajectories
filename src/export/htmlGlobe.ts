@@ -4,7 +4,15 @@
  */
 
 import type { Payload, PopupRow } from "./htmlPayload";
-import { hasCamera, readViewState, writeViewState, throttle, type CameraState } from "./htmlUrl";
+import {
+  hasCamera,
+  isImageryKind,
+  readViewState,
+  writeViewState,
+  throttle,
+  type CameraState,
+  type ImageryKind,
+} from "./htmlUrl";
 
 declare const Cesium: any;
 
@@ -15,6 +23,7 @@ let zOffset = 0;
 let terrainKind = "flat";
 let lastData: Payload | null = null;
 let flew = false;
+let currentImagery: ImageryKind = "esri";
 
 function esc(s: string) {
   return String(s).replace(/[<>&"']/g, (c) =>
@@ -33,7 +42,20 @@ function exaggeration() {
   return Math.max(1, +(inp?.value || 1));
 }
 
-function imageryEsri() {
+function imageryLayers(kind: ImageryKind) {
+  if (kind === "osm") {
+    return [new Cesium.OpenStreetMapImageryProvider({ url: "https://tile.openstreetmap.org/" })];
+  }
+  if (kind === "opentopo") {
+    return [
+      new Cesium.UrlTemplateImageryProvider({
+        url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        subdomains: ["a", "b", "c"],
+        maximumLevel: 17,
+        credit: "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)",
+      }),
+    ];
+  }
   return [
     new Cesium.UrlTemplateImageryProvider({
       url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -45,6 +67,20 @@ function imageryEsri() {
       maximumLevel: 19,
     }),
   ];
+}
+
+function setImagery(kind: ImageryKind) {
+  if (!viewer) return;
+  currentImagery = kind;
+  viewer.imageryLayers.removeAll();
+  for (const p of imageryLayers(kind)) viewer.imageryLayers.addImageryProvider(p);
+  viewer.scene.requestRender();
+}
+
+function resolveImagery(urlImagery: ImageryKind | undefined, fallback: string | undefined): ImageryKind {
+  if (isImageryKind(urlImagery)) return urlImagery;
+  if (isImageryKind(fallback)) return fallback;
+  return "esri";
 }
 
 function markerDescription(name: string, rows: PopupRow[]) {
@@ -87,11 +123,18 @@ function createViewer() {
     viewer.scene.requestRender();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-  for (const p of imageryEsri()) viewer.imageryLayers.addImageryProvider(p);
+  for (const p of imageryLayers(currentImagery)) viewer.imageryLayers.addImageryProvider(p);
 
   const pushCamera = () => {
     const cam = readCamera();
-    if (cam) writeViewState({ view: "3d", camera: cam, exagg: exaggeration() });
+    if (cam) {
+      writeViewState({
+        view: "3d",
+        camera: cam,
+        exagg: exaggeration(),
+        imagery: currentImagery,
+      });
+    }
   };
   // Live in der Adresszeile während Drehen/Zoomen; moveEnd schreibt den Endstand.
   viewer.camera.changed.addEventListener(throttle(pushCamera, 200));
@@ -241,7 +284,14 @@ function flyToAll() {
   if (viewer && viewer.entities.values.length) {
     void viewer.flyTo(viewer.entities).then(() => {
       const cam = readCamera();
-      if (cam) writeViewState({ view: "3d", camera: cam, exagg: exaggeration() });
+      if (cam) {
+        writeViewState({
+          view: "3d",
+          camera: cam,
+          exagg: exaggeration(),
+          imagery: currentImagery,
+        });
+      }
     });
   }
 }
@@ -252,10 +302,21 @@ function wireExagg() {
   if (!inp || !label) return;
   const sync = () => {
     label.textContent = `×${inp.value}`;
-    writeViewState({ view: "3d", exagg: +inp.value });
+    writeViewState({ view: "3d", exagg: +inp.value, imagery: currentImagery });
     redraw();
   };
   inp.addEventListener("input", sync);
+}
+
+function wireImagery() {
+  const sel = document.getElementById("ex-globe-imagery") as HTMLSelectElement | null;
+  if (!sel) return;
+  sel.value = currentImagery;
+  sel.addEventListener("change", () => {
+    const kind = isImageryKind(sel.value) ? sel.value : "esri";
+    setImagery(kind);
+    writeViewState({ view: "3d", imagery: kind });
+  });
 }
 
 /**
@@ -264,6 +325,7 @@ function wireExagg() {
 export async function initGlobe(data: Payload): Promise<void> {
   lastData = data;
   const url = readViewState();
+  currentImagery = resolveImagery(url.imagery, data.opts.defaultImagery);
   const inp = document.getElementById("ex-globe-exagg") as HTMLInputElement | null;
   if (inp && !viewer) {
     const ex = url.exagg ?? data.opts.exaggeration ?? 3;
@@ -274,7 +336,12 @@ export async function initGlobe(data: Payload): Promise<void> {
   if (!viewer) {
     createViewer();
     wireExagg();
+    wireImagery();
     await setTerrainReearth();
+  } else {
+    setImagery(currentImagery);
+    const sel = document.getElementById("ex-globe-imagery") as HTMLSelectElement | null;
+    if (sel) sel.value = currentImagery;
   }
   await recalibrate();
   redraw();
@@ -286,6 +353,7 @@ export async function initGlobe(data: Payload): Promise<void> {
   writeViewState({
     view: "3d",
     exagg: exaggeration(),
+    imagery: currentImagery,
     ...(hasCamera(url) ? { camera: url.camera } : {}),
   });
   // Pane war ggf. hidden beim ersten Paint — Größe nachziehen.

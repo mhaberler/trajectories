@@ -39,11 +39,19 @@ function check(name, cond, detail) {
 }
 
 {
+  const s = parseViewState("view=3d&imagery=opentopo&exagg=3");
+  check("parse: imagery opentopo", s.imagery === "opentopo");
+  const bad = parseViewState("imagery=bing");
+  check("parse: bad imagery ignored", bad.imagery === undefined);
+}
+
+{
   const cam = { lon: 15.630009, lat: 48.450021, h: 4200.14, heading: 28.24, pitch: -32.36, roll: 0.41 };
   const q = applyViewStateToSearch("foo=bar", {
     view: "3d",
     profile: false,
     exagg: 3,
+    imagery: "osm",
     camera: cam,
   });
   const back = parseViewState(q);
@@ -51,6 +59,7 @@ function check(name, cond, detail) {
   check("roundtrip: view", back.view === "3d");
   check("roundtrip: profile", back.profile === false);
   check("roundtrip: exagg", back.exagg === 3);
+  check("roundtrip: imagery", back.imagery === "osm");
   check("roundtrip: lon rounded", back.camera?.lon === 15.63001, String(back.camera?.lon));
   check("roundtrip: h rounded", back.camera?.h === 4200.1, String(back.camera?.h));
 }

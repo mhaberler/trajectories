@@ -105,6 +105,8 @@ function fixture({ label = "500 m AGL", legendHtml = "" } = {}) {
   check("doc: genau ein #profile", (doc.match(/<div id="profile">/g) || []).length === 1);
   check("doc: genau ein #globe", (doc.match(/<div id="globe">/g) || []).length === 1);
   check("doc: 2D|3D-Schalter", doc.includes('data-view="2d"') && doc.includes('data-view="3d"'));
+  check("doc: 3D-Kartenwahl", doc.includes('id="ex-globe-imagery"') && doc.includes('value="opentopo"'));
+  check("doc: kein Netz-Hinweis", !doc.includes("3D braucht Netzwerk"));
   check("doc: Titel maskiert", doc.includes("<title>Titel &amp; &lt;Test&gt;</title>"));
   check("doc: Leaflet und Viewer eingebettet", doc.includes("/*L*/") && doc.includes("/*V*/"));
 }

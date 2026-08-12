@@ -11,7 +11,7 @@ import { fmtHeight, fmtWind } from "./units";
 //  - Cesium World Terrain (braucht Ion-Token)
 //  - flach (Ellipsoid) als Fallback
 //
-// Kartengrundlagen: Esri hybrid (Standard) oder OSM.
+// Kartengrundlagen: Esri hybrid (Standard), OSM oder OpenTopoMap.
 //
 // Höhenbezug: Die Trajektorien führen Meter über NN (Geoid), Cesium rechnet
 // in Höhen über dem WGS84-Ellipsoid (~45-50 m Unterschied in den Alpen).
@@ -56,10 +56,22 @@ function savePrefs(patch) {
 }
 
 // Kartengrundlagen; Satellit ist in 3D der Standard, weil das stilisierte
-// OSM-Raster über steilem, überhöhtem Gelände stark verzerrt.
+// OSM-/Topo-Raster über steilem, überhöhtem Gelände stark verzerrt.
+const IMAGERY_KINDS = ["esri", "osm", "opentopo"];
+
 function imageryLayers(kind) {
   if (kind === "osm") {
     return [new Cesium.OpenStreetMapImageryProvider({ url: "https://tile.openstreetmap.org/" })];
+  }
+  if (kind === "opentopo") {
+    return [
+      new Cesium.UrlTemplateImageryProvider({
+        url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        subdomains: ["a", "b", "c"],
+        maximumLevel: 17,
+        credit: "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)",
+      }),
+    ];
   }
   return [
     new Cesium.UrlTemplateImageryProvider({
@@ -114,7 +126,7 @@ function initViewer() {
     viewer.selectedEntity = marker;
     viewer.scene.requestRender();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  const img = ["esri", "osm"].includes(prefs.imagery) ? prefs.imagery : "esri";
+  const img = IMAGERY_KINDS.includes(prefs.imagery) ? prefs.imagery : "esri";
   setImagery(img);
 }
 
@@ -388,11 +400,22 @@ function wireControls() {
 
   const imagery = el("v3d-imagery");
   if (prefs.imagery === "versatiles") prefs.imagery = "esri";
-  if (["esri", "osm"].includes(prefs.imagery)) imagery.value = prefs.imagery;
+  if (IMAGERY_KINDS.includes(prefs.imagery)) imagery.value = prefs.imagery;
   imagery.addEventListener("change", () => {
-    savePrefs({ imagery: imagery.value });
-    setImagery(imagery.value);
+    const kind = imagery.value;
+    savePrefs({ imagery: kind });
+    setImagery(kind);
+    try {
+      window.dispatchEvent(new CustomEvent("traj-3d-imagery", { detail: kind }));
+    } catch {
+      /* Sync zur Export-Default-Karte ist Komfort */
+    }
   });
+  try {
+    window.dispatchEvent(new CustomEvent("traj-3d-imagery", { detail: imagery.value }));
+  } catch {
+    /* ignore */
+  }
 
   el("v3d-center").addEventListener("click", flyToAll);
   const deg = Math.PI / 180;

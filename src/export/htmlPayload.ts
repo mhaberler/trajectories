@@ -30,6 +30,8 @@ export interface HtmlExportOpts {
   defaultView: "2d" | "3d";
   /** Anfangs-Überhöhung der 3D-Ansicht. */
   exaggeration: number;
+  /** 3D-Kartengrundlage (esri|osm|opentopo). */
+  defaultImagery: "esri" | "osm" | "opentopo";
 }
 
 /** Importierte Flugspur für HTML 2D/3D. coords: [lat, lon, z|null]. */
@@ -100,6 +102,7 @@ export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
   legendHtml: "",
   defaultView: "2d",
   exaggeration: 3,
+  defaultImagery: "esri",
 };
 
 /** Gepinnte Cesium-Version für CDN (Workers/Assets über CESIUM_BASE_URL). */
@@ -169,6 +172,9 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
   const opts: HtmlExportOpts = { ...HTML_EXPORT_DEFAULTS, ...ctx.opts };
   if (opts.defaultView !== "3d") opts.defaultView = "2d";
   if (!(opts.exaggeration >= 1)) opts.exaggeration = HTML_EXPORT_DEFAULTS.exaggeration;
+  if (opts.defaultImagery !== "osm" && opts.defaultImagery !== "opentopo") {
+    opts.defaultImagery = "esri";
+  }
   const prec = 5;
   const { runs, modelKey, mode, t0Ms, duration, direction } = data;
 
@@ -303,10 +309,16 @@ ${p.viewerCss}
       <input type="range" id="ex-globe-exagg" min="1" max="10" step="0.5" />
       <span id="ex-globe-exagg-label">×3</span>
     </label>
+    <label class="gv-exagg">Karte
+      <select id="ex-globe-imagery">
+        <option value="esri">Esri Satellit</option>
+        <option value="osm">OpenStreetMap</option>
+        <option value="opentopo">OpenTopoMap</option>
+      </select>
+    </label>
     <div id="ex-globe-note" class="gv-3d-note"></div>
   </div>
 </div>
-<p class="gv-net-hint">3D braucht Netzwerk (Cesium-CDN, Gelände, Satellitenkarte).</p>
 <script>
 ${p.leafletJs}
 </script>

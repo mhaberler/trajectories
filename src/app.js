@@ -104,13 +104,17 @@ const map = L.map("map", {
 });
 map.on("moveend", () => persist());
 
-// Basiskarten: OSM und Esri-Hybrid (Satellitenbild + Beschriftung), wie in
-// DZMaster. Die Wahl wird mitgespeichert.
+// Basiskarten: OSM, OpenTopo und Esri-Hybrid. Die Wahl wird mitgespeichert.
 const baseLayers = {
   "OpenStreetMap": L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     subdomains: ["a", "b", "c"],
+  }),
+  "OpenTopoMap": L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17,
+    subdomains: ["a", "b", "c"],
+    attribution: "© OpenStreetMap contributors, SRTM | © <a href=\"https://opentopomap.org\">OpenTopoMap</a> (CC-BY-SA)",
   }),
   "Esri Satellit (hybrid)": L.layerGroup([
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
@@ -148,6 +152,8 @@ const EXPORT_DEFAULTS = {
     legendHtml: "",
     defaultView: "2d",
     exaggeration: 3,
+    /** 3D-Kartengrundlage (esri|osm|opentopo); mit App-3D synchron. */
+    defaultImagery: "esri",
   },
   kml: {
     markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3,
@@ -210,6 +216,22 @@ let xsecRight = Number.isFinite(saved.xsecRight) ? saved.xsecRight : null;
 // wie der Rest: `legendHtml` steckt in einem Textfeld, das nie geöffnet
 // worden sein muss — über das DOM ginge der Wert vorher verloren.
 const exportOpts = mergeExportOpts(saved.exportOpts, saved.exportOptsRev || 0);
+
+/** 3D-Kartenwahl der App → Default für HTML-Export-3D. */
+const IMAGERY_KINDS = ["esri", "osm", "opentopo"];
+try {
+  const v3d = JSON.parse(localStorage.getItem("trajectories.view3d.v1") || "{}");
+  if (IMAGERY_KINDS.includes(v3d?.imagery)) exportOpts.html.defaultImagery = v3d.imagery;
+} catch {
+  /* ignore */
+}
+window.addEventListener("traj-3d-imagery", (e) => {
+  const kind = e?.detail;
+  if (!IMAGERY_KINDS.includes(kind)) return;
+  if (exportOpts.html.defaultImagery === kind) return;
+  exportOpts.html.defaultImagery = kind;
+  persist();
+});
 
 /** GitHub-Pages-Teilen: PAT/Repo nur im Browser (localStorage). */
 const SHARE_GITHUB_DEFAULTS = {

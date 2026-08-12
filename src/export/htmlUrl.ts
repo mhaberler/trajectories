@@ -1,9 +1,19 @@
 /**
  * Query-Parameter der exportierten HTML-Seite: Ansicht, Höhenprofil,
- * Überhöhung und Cesium-Kamera. Schreiben per replaceState (kein History-Spam).
+ * Überhöhung, 3D-Kartengrundlage und Cesium-Kamera.
+ * Schreiben per replaceState (kein History-Spam).
  */
 
 export type ExportView = "2d" | "3d";
+
+/** Kurzschlüssel wie in der App-3D-Ansicht. */
+export type ImageryKind = "esri" | "osm" | "opentopo";
+
+export const IMAGERY_KINDS: readonly ImageryKind[] = ["esri", "osm", "opentopo"];
+
+export function isImageryKind(v: unknown): v is ImageryKind {
+  return typeof v === "string" && (IMAGERY_KINDS as readonly string[]).includes(v);
+}
 
 export interface CameraState {
   lon: number;
@@ -18,6 +28,7 @@ export interface ViewState {
   view?: ExportView;
   profile?: boolean;
   exagg?: number;
+  imagery?: ImageryKind;
   camera?: CameraState | null;
 }
 
@@ -67,6 +78,9 @@ export function parseViewState(search: string): ViewState {
   const exagg = num(q.get("exagg"), 1, 20);
   if (exagg !== undefined) out.exagg = exagg;
 
+  const imagery = q.get("imagery");
+  if (isImageryKind(imagery)) out.imagery = imagery;
+
   const lon = num(q.get("lon"), -180, 180);
   const lat = num(q.get("lat"), -90, 90);
   const h = num(q.get("h"), 1);
@@ -94,6 +108,7 @@ export function readViewState(): ViewState {
     fromQuery.view ||
     fromQuery.profile !== undefined ||
     fromQuery.exagg !== undefined ||
+    fromQuery.imagery ||
     fromQuery.camera
   ) {
     return fromQuery;
@@ -116,6 +131,10 @@ export function applyViewStateToSearch(search: string, partial: ViewState): stri
 
   if (partial.exagg !== undefined && Number.isFinite(partial.exagg) && partial.exagg >= 1) {
     q.set("exagg", String(round(partial.exagg, 1)));
+  }
+
+  if (partial.imagery !== undefined) {
+    if (isImageryKind(partial.imagery)) q.set("imagery", partial.imagery);
   }
 
   if (partial.camera === null) {

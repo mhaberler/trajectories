@@ -4,6 +4,7 @@
  */
 
 import type { Payload, PopupRow } from "./htmlPayload";
+import { hasCamera, readViewState, writeViewState, throttle, type CameraState } from "./htmlUrl";
 
 declare const Cesium: any;
 
@@ -87,6 +88,40 @@ function createViewer() {
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   for (const p of imageryEsri()) viewer.imageryLayers.addImageryProvider(p);
+
+  const pushCamera = () => {
+    const cam = readCamera();
+    if (cam) writeViewState({ view: "3d", camera: cam, exagg: exaggeration() });
+  };
+  // Live in der Adresszeile während Drehen/Zoomen; moveEnd schreibt den Endstand.
+  viewer.camera.changed.addEventListener(throttle(pushCamera, 200));
+  viewer.camera.moveEnd.addEventListener(pushCamera);
+}
+
+function readCamera(): CameraState | null {
+  if (!viewer) return null;
+  const carto = Cesium.Cartographic.fromCartesian(viewer.camera.positionWC);
+  if (!carto || !Number.isFinite(carto.longitude) || !Number.isFinite(carto.height)) return null;
+  return {
+    lon: Cesium.Math.toDegrees(carto.longitude),
+    lat: Cesium.Math.toDegrees(carto.latitude),
+    h: carto.height,
+    heading: Cesium.Math.toDegrees(viewer.camera.heading),
+    pitch: Cesium.Math.toDegrees(viewer.camera.pitch),
+    roll: Cesium.Math.toDegrees(viewer.camera.roll),
+  };
+}
+
+function applyCamera(cam: CameraState) {
+  viewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(cam.lon, cam.lat, cam.h),
+    orientation: {
+      heading: Cesium.Math.toRadians(cam.heading),
+      pitch: Cesium.Math.toRadians(cam.pitch),
+      roll: Cesium.Math.toRadians(cam.roll),
+    },
+  });
+  viewer.scene.requestRender();
 }
 
 async function setTerrainReearth() {
@@ -203,7 +238,12 @@ function redraw() {
 }
 
 function flyToAll() {
-  if (viewer && viewer.entities.values.length) viewer.flyTo(viewer.entities);
+  if (viewer && viewer.entities.values.length) {
+    void viewer.flyTo(viewer.entities).then(() => {
+      const cam = readCamera();
+      if (cam) writeViewState({ view: "3d", camera: cam, exagg: exaggeration() });
+    });
+  }
 }
 
 function wireExagg() {
@@ -212,6 +252,7 @@ function wireExagg() {
   if (!inp || !label) return;
   const sync = () => {
     label.textContent = `×${inp.value}`;
+    writeViewState({ view: "3d", exagg: +inp.value });
     redraw();
   };
   inp.addEventListener("input", sync);
@@ -222,9 +263,11 @@ function wireExagg() {
  */
 export async function initGlobe(data: Payload): Promise<void> {
   lastData = data;
+  const url = readViewState();
   const inp = document.getElementById("ex-globe-exagg") as HTMLInputElement | null;
   if (inp && !viewer) {
-    inp.value = String(data.opts.exaggeration ?? 3);
+    const ex = url.exagg ?? data.opts.exaggeration ?? 3;
+    inp.value = String(ex);
     const label = document.getElementById("ex-globe-exagg-label");
     if (label) label.textContent = `×${inp.value}`;
   }
@@ -237,8 +280,14 @@ export async function initGlobe(data: Payload): Promise<void> {
   redraw();
   if (!flew) {
     flew = true;
-    flyToAll();
+    if (hasCamera(url)) applyCamera(url.camera);
+    else flyToAll();
   }
+  writeViewState({
+    view: "3d",
+    exagg: exaggeration(),
+    ...(hasCamera(url) ? { camera: url.camera } : {}),
+  });
   // Pane war ggf. hidden beim ersten Paint — Größe nachziehen.
   try {
     viewer.resize();

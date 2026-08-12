@@ -5,6 +5,7 @@
 import { initViewer } from "./htmlViewer";
 import { initGlobe, resizeGlobe } from "./htmlGlobe";
 import { CESIUM_CDN_BASE, type Payload } from "./htmlPayload";
+import { hasCamera, readViewState, writeViewState } from "./htmlUrl";
 
 declare const L: any;
 
@@ -45,6 +46,7 @@ async function showView(view: "2d" | "3d") {
     pane2d.hidden = false;
     pane3d.hidden = true;
     if (!mapApi) mapApi = initViewer(payload);
+    writeViewState({ view: "2d", camera: null });
     // Nach Show/Init: Layout (Flex) neu messen — sonst Tiles ohne Pfade
     // bzw. Pfade mit veralteter Viewport-Größe.
     requestAnimationFrame(() => {
@@ -55,6 +57,7 @@ async function showView(view: "2d" | "3d") {
   }
   pane2d.hidden = true;
   pane3d.hidden = false;
+  writeViewState({ view: "3d" });
   const note = document.getElementById("ex-globe-note");
   try {
     if (!globeReady) {
@@ -91,7 +94,12 @@ export function initExport(data: Payload) {
       void showView(v);
     });
   }
-  const start = data.opts.defaultView === "3d" ? "3d" : "2d";
+  const url = readViewState();
+  const profile = url.profile !== undefined ? url.profile : !!data.opts.profile;
+  writeViewState({ profile });
+  let start: "2d" | "3d" = data.opts.defaultView === "3d" ? "3d" : "2d";
+  if (url.view === "2d" || url.view === "3d") start = url.view;
+  else if (hasCamera(url)) start = "3d";
   void showView(start);
 }
 

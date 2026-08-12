@@ -11,6 +11,7 @@
 import { renderCrossSection } from "../crosssection";
 import { setUnits } from "../units";
 import type { Payload, PayloadRun, PopupRow } from "./htmlPayload";
+import { readViewState, writeViewState } from "./htmlUrl";
 
 declare const L: any;
 
@@ -205,7 +206,10 @@ function buildTracklist(
     cb.type = "checkbox";
     cb.id = "gv-profile-toggle";
     cb.checked = profileOn;
-    cb.addEventListener("change", () => onProfile(cb.checked));
+    cb.addEventListener("change", () => {
+      onProfile(cb.checked);
+      writeViewState({ profile: cb.checked });
+    });
 
     const label = document.createElement("label");
     label.className = "gv-name";
@@ -233,17 +237,12 @@ function buildLegend(map: any, html: string, generated: string) {
 }
 
 /**
- * Querschnitt unter der Karte. `renderCrossSection` liest `clientWidth` beim
- * Aufruf und fällt sonst auf 320 px zurück — deshalb erst zeichnen, wenn der
- * Host wirklich Breite hat, und bei jeder Größenänderung neu.
- */
-/**
  * Querschnitt unter der Karte. Gibt einen Schalter zurück, damit die
- * Tracklist ihn ein- und ausblenden kann; `data.opts.profile` bestimmt nur
- * noch den Anfangszustand.
+ * Tracklist ihn ein- und ausblenden kann; `profileOn` ist der Anfangszustand
+ * (URL oder Export-Default).
  * @returns null, wenn es gar keine Höhendaten gibt (dann kein Schalter).
  */
-function buildProfile(map: any, data: Payload): ((on: boolean) => void) | null {
+function buildProfile(map: any, data: Payload, profileOn: boolean): ((on: boolean) => void) | null {
   const host = document.getElementById("profile") as HTMLElement;
   if (!data.xsec?.runs?.length) {
     host.style.display = "none";
@@ -284,7 +283,7 @@ function buildProfile(map: any, data: Payload): ((on: boolean) => void) | null {
       redraw();
     }, 0);
   };
-  setVisible(!!data.opts.profile);
+  setVisible(profileOn);
   return setVisible;
 }
 
@@ -323,11 +322,16 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   if (bounds) map.fitBounds(bounds, { padding: [30, 30] });
 
   // Erst den Querschnitt aufbauen — die Tracklist braucht seinen Schalter.
-  const toggleProfile = buildProfile(map, data);
+  // URL `profile` schlägt den Export-Default.
+  const urlProfile = readViewState().profile;
+  const profileOn = urlProfile !== undefined ? urlProfile : !!data.opts.profile;
+  const toggleProfile = buildProfile(map, data, profileOn);
   if (data.opts.tracklist && tracks.length) {
-    buildTracklist(map, tracks, toggleProfile, !!data.opts.profile);
+    buildTracklist(map, tracks, toggleProfile, profileOn);
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
+
+  writeViewState({ view: "2d", profile: profileOn });
 
   const syncSize = () => map.invalidateSize();
   // Flex-Layout (#map) oft erst nach dem ersten Paint mit echter Höhe.

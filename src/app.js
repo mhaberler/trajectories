@@ -85,6 +85,7 @@ function persist() {
     downloadFmt: el("downloadfmt").value,
     exportOpts,
     exportOptsRev: EXPORT_OPTS_REV,
+    shareGithub: { ...shareGithub },
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     fpInheritMode: profileInheritMode(),
     view3dRight,
@@ -209,6 +210,79 @@ let xsecRight = Number.isFinite(saved.xsecRight) ? saved.xsecRight : null;
 // wie der Rest: `legendHtml` steckt in einem Textfeld, das nie geöffnet
 // worden sein muss — über das DOM ginge der Wert vorher verloren.
 const exportOpts = mergeExportOpts(saved.exportOpts, saved.exportOptsRev || 0);
+
+/** GitHub-Pages-Teilen: PAT/Repo nur im Browser (localStorage). */
+const SHARE_GITHUB_DEFAULTS = {
+  owner: "mhaberler",
+  repo: "trajectories",
+  branch: "gh-pages",
+  pagesBase: "",
+  token: "",
+  pagesBaseCustom: false,
+};
+function mergeShareGithub(stored) {
+  const s = { ...SHARE_GITHUB_DEFAULTS, ...(stored && typeof stored === "object" ? stored : {}) };
+  s.owner = String(s.owner || SHARE_GITHUB_DEFAULTS.owner).trim() || SHARE_GITHUB_DEFAULTS.owner;
+  s.repo = String(s.repo || SHARE_GITHUB_DEFAULTS.repo).trim() || SHARE_GITHUB_DEFAULTS.repo;
+  s.branch = String(s.branch || SHARE_GITHUB_DEFAULTS.branch).trim() || SHARE_GITHUB_DEFAULTS.branch;
+  s.token = String(s.token || "");
+  s.pagesBase = String(s.pagesBase || "");
+  s.pagesBaseCustom = !!s.pagesBaseCustom;
+  return s;
+}
+const shareGithub = mergeShareGithub(saved.shareGithub);
+
+function defaultSharePagesBase(owner, repo) {
+  const o = String(owner || "").trim();
+  const r = String(repo || "").trim();
+  if (!o || !r) return "";
+  return `https://${o}.github.io/${r}/`;
+}
+
+function applyShareGithubUI() {
+  const tok = el("ex-share-token");
+  const owner = el("ex-share-owner");
+  const repo = el("ex-share-repo");
+  const branch = el("ex-share-branch");
+  const base = el("ex-share-pagesbase");
+  if (!tok || !owner || !repo || !branch || !base) return;
+  tok.value = shareGithub.token;
+  owner.value = shareGithub.owner;
+  repo.value = shareGithub.repo;
+  branch.value = shareGithub.branch;
+  base.value = shareGithub.pagesBaseCustom && shareGithub.pagesBase
+    ? shareGithub.pagesBase
+    : defaultSharePagesBase(shareGithub.owner, shareGithub.repo);
+}
+
+function readShareGithubUI() {
+  const tok = el("ex-share-token");
+  const owner = el("ex-share-owner");
+  const repo = el("ex-share-repo");
+  const branch = el("ex-share-branch");
+  const base = el("ex-share-pagesbase");
+  if (!tok || !owner || !repo || !branch || !base) return;
+  shareGithub.token = tok.value;
+  shareGithub.owner = owner.value.trim() || SHARE_GITHUB_DEFAULTS.owner;
+  shareGithub.repo = repo.value.trim() || SHARE_GITHUB_DEFAULTS.repo;
+  shareGithub.branch = branch.value.trim() || SHARE_GITHUB_DEFAULTS.branch;
+  const auto = defaultSharePagesBase(shareGithub.owner, shareGithub.repo);
+  const typed = base.value.trim();
+  if (!typed || typed === auto) {
+    shareGithub.pagesBaseCustom = false;
+    shareGithub.pagesBase = "";
+    if (base.value !== auto) base.value = auto;
+  } else {
+    shareGithub.pagesBaseCustom = true;
+    shareGithub.pagesBase = typed.endsWith("/") ? typed : `${typed}/`;
+  }
+}
+
+function setDownloadEnabled(on) {
+  el("download").disabled = !on;
+  const shareBtn = el("sharehtml");
+  if (shareBtn) shareBtn.disabled = !on;
+}
 
 
 const state = {
@@ -2092,7 +2166,7 @@ function dropRunsForHeight(m) {
     state.xsec = null;
     resetRunSelection();
     el("results").innerHTML = "";
-    el("download").disabled = true;
+    setDownloadEnabled(false);
     el("xsecbtn").disabled = true;
     el("view3dbtn").disabled = true;
     showCrossSection(false);
@@ -3214,7 +3288,7 @@ async function runTrajectoriesViaApi({
       : null;
     if (!state.profileEdit?.active) restoreStartMarkerVisibility();
   }
-  el("download").disabled = true;
+  setDownloadEnabled(false);
   el("xsecbtn").disabled = true;
   el("view3dbtn").disabled = true;
   if (!keepSiblings) showCrossSection(false);
@@ -3349,7 +3423,7 @@ async function runTrajectoriesViaApi({
 
     const g0 = (keepSiblings ? runs[0] : runs[0])?.terrain?.find((g) => Number.isFinite(g));
     if (Number.isFinite(g0)) state.startElevation = g0;
-    el("download").disabled = false;
+    setDownloadEnabled(true);
     el("xsecbtn").disabled = false;
     el("view3dbtn").disabled = false;
     if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
@@ -3469,7 +3543,7 @@ async function runTrajectories() {
     state.pinRuns.clear();
     state.pinKey = "";
   }
-  el("download").disabled = true;
+  setDownloadEnabled(false);
   el("xsecbtn").disabled = true;
   el("view3dbtn").disabled = true;
   const xsecWasOpen = !el("xsec").hidden;
@@ -3600,7 +3674,7 @@ async function runTrajectories() {
     const runs = [...activeRuns, ...pinRunList].sort((a, b) => a.heightM - b.heightM);
     for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
     state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
-    el("download").disabled = runs.length === 0;
+    setDownloadEnabled(runs.length > 0);
 
     // Querschnitt: Modellgelände entlang jedes Pfades aus dem Punkt-Cache.
     // Im Vergleichsmodus als Overlay (ein Streifen, Gelände der Referenz).
@@ -4521,11 +4595,35 @@ el("ex-modal").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !el("ex-modal").hidden) closeExportModal();
 });
-el("ex-modal").addEventListener("input", () => {
+el("ex-modal").addEventListener("input", (e) => {
+  const id = e.target?.id || "";
+  if (id.startsWith("ex-share-")) {
+    // Owner/Repo: abgeleitete Pages-Basis mitziehen, solange nicht custom.
+    if ((id === "ex-share-owner" || id === "ex-share-repo") && !shareGithub.pagesBaseCustom) {
+      const o = el("ex-share-owner").value.trim() || SHARE_GITHUB_DEFAULTS.owner;
+      const r = el("ex-share-repo").value.trim() || SHARE_GITHUB_DEFAULTS.repo;
+      el("ex-share-pagesbase").value = defaultSharePagesBase(o, r);
+    }
+    if (id === "ex-share-pagesbase") {
+      const o = el("ex-share-owner").value.trim() || SHARE_GITHUB_DEFAULTS.owner;
+      const r = el("ex-share-repo").value.trim() || SHARE_GITHUB_DEFAULTS.repo;
+      const auto = defaultSharePagesBase(o, r);
+      const typed = el("ex-share-pagesbase").value.trim();
+      shareGithub.pagesBaseCustom = !!(typed && typed !== auto && typed !== auto.replace(/\/$/, ""));
+    }
+    readShareGithubUI();
+    persist();
+    return;
+  }
   readExportOptsUI();
   persist();
 });
-el("ex-modal").addEventListener("change", () => {
+el("ex-modal").addEventListener("change", (e) => {
+  if (String(e.target?.id || "").startsWith("ex-share-")) {
+    readShareGithubUI();
+    persist();
+    return;
+  }
   readExportOptsUI();
   persist();
 });
@@ -4559,6 +4657,7 @@ const DOWNLOAD_FORMATS = {
 // setzt aber dieselben Werte — daher unschädlich.
 if (DOWNLOAD_FORMATS[saved.downloadFmt]) el("downloadfmt").value = saved.downloadFmt;
 applyExportOptsUI();
+applyShareGithubUI();
 showExportSection(el("downloadfmt").value);
 
 /** @type {typeof import("./export/html.ts") | null} */
@@ -4593,7 +4692,7 @@ el("download").addEventListener("click", async () => {
   const ctx = exportCtx(key);
   let text;
   if (fmt.lazy) {
-    el("download").disabled = true;
+    setDownloadEnabled(false);
     setStatus("Baue HTML-Karte …");
     try {
       htmlExportMod ??= await import("./export/html.ts");
@@ -4603,7 +4702,7 @@ el("download").addEventListener("click", async () => {
       setStatus(`HTML-Export: ${err?.message || err}`, true);
       return;
     } finally {
-      el("download").disabled = false;
+      setDownloadEnabled(true);
     }
   } else {
     text = fmt.build(state.lastRuns, ctx);
@@ -4616,6 +4715,52 @@ el("download").addEventListener("click", async () => {
   a.download = `trajektorien_${state.lastRuns.modelKey}_${stamp}Z.${fmt.ext}`;
   a.click();
   URL.revokeObjectURL(a.href);
+});
+
+el("sharehtml").addEventListener("click", async () => {
+  if (!state.lastRuns) return;
+  readShareGithubUI();
+  if (!shareGithub.token.trim()) {
+    setStatus("Teilen: GitHub-PAT in den Export-Einstellungen setzen.", true);
+    openExportModal();
+    showExportSection("html");
+    return;
+  }
+  if (!shareGithub.owner.trim() || !shareGithub.repo.trim()) {
+    setStatus("Teilen: Owner und Repo setzen.", true);
+    openExportModal();
+    return;
+  }
+  setDownloadEnabled(false);
+  setStatus("Baue HTML und lade zu GitHub hoch …");
+  try {
+    htmlExportMod ??= await import("./export/html.ts");
+    const { shareHtml, buildShareFilename } = await import("./export/shareGithub.ts");
+    const html = htmlExportMod.buildHTML(state.lastRuns, exportCtx("html"));
+    const filename = buildShareFilename(state.lastRuns.modelKey, state.lastRuns.t0Ms);
+    const pagesBase = shareGithub.pagesBaseCustom && shareGithub.pagesBase
+      ? shareGithub.pagesBase
+      : defaultSharePagesBase(shareGithub.owner, shareGithub.repo);
+    const { pagesUrl } = await shareHtml({
+      html,
+      filename,
+      token: shareGithub.token,
+      owner: shareGithub.owner,
+      repo: shareGithub.repo,
+      branch: shareGithub.branch,
+      pagesBase,
+    });
+    try {
+      await navigator.clipboard.writeText(pagesUrl);
+      setStatus(`Geteilt — Link kopiert: ${pagesUrl}`);
+    } catch {
+      setStatus(`Geteilt: ${pagesUrl}`);
+    }
+  } catch (err) {
+    setStatus(`Teilen: ${err?.message || err}`, true);
+  } finally {
+    setDownloadEnabled(true);
+  }
 });
 
 /** Trackname mit Start- und Zielhöhe (AMSL, in Metern wie die Höhenwerte in

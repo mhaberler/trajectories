@@ -98,6 +98,24 @@ FeatureCollection: je Höhe eine LineString (mit Höhe als dritter Koordinate,
 Zeitstempeln je Stützpunkt und allen Berechnungs-Metadaten in den properties)
 plus die Zeitmarken als Points mit Wind.
 
+### HTML teilen (GitHub Pages)
+
+Der Knopf **↗** neben dem Download baut dieselbe eigenständige HTML-Karte und
+lädt sie per GitHub Contents API auf einen konfigurierbaren Branch (Vorgabe
+`gh-pages`). PAT, Owner, Repo, Branch und optional die Pages-Basis-URL stehen
+unter **Export-Einstellungen (⚙)** und liegen nur in `localStorage`.
+
+**Einmalig am Ziel-Repo** (Beispiel
+[mhaberler/trajectories](https://github.com/mhaberler/trajectories)):
+
+1. Orphan-Branch `gh-pages` anlegen und pushen (nur Share-HTML, nicht `main`).
+2. **Settings → Pages**: Quelle `gh-pages` / Root.
+3. Fine-grained PAT mit **Contents: Read and write** nur für dieses Repo.
+4. In der App PAT + Owner/Repo/Branch eintragen; Teilen → Link
+   `https://{owner}.github.io/{repo}/trajektorien_….html` (Clipboard).
+
+Pages braucht nach dem ersten Upload oft 30–60 s. Cesium kommt weiter vom CDN.
+
 ## Meteorologik
 
 - **Integration:** Petterssen-Schema (iterativ-implizit, wie HYSPLIT) mit
@@ -132,6 +150,7 @@ plus die Zeitmarken als Points mit Wind.
 | `src/windfield.js` | Datenzugriff: Levelfenster, Punkt-Cache, 4-D-Interpolation |
 | `src/config.js` | Server, Modellgitter/BBoxen, feste Höhen-Farbzuordnung |
 | `src/app.js` | Leaflet-UI |
+| `src/export/shareGithub.ts` | HTML-Share via GitHub Contents API / Pages |
 | `src/view3d.js` | 3D-Ansicht (CesiumJS lazy; Re:Earth / Ion / flat; Esri / OSM) |
 | `test/` | Offline-Tests (Kreisschluss, Umkehrbarkeit) + Live-Smoke-Test |
 

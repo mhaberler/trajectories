@@ -273,6 +273,30 @@
           </label>
         </div>
 
+        <div class="ex-share-block">
+          <div class="label">Teilen (GitHub Pages) <span class="hint">HTML → öffentlicher Link</span></div>
+          <label class="row">
+            <span class="label">PAT</span>
+            <input type="password" id="ex-share-token" autocomplete="off" placeholder="github_pat_…" />
+          </label>
+          <div class="grid2">
+            <label>Owner
+              <input type="text" id="ex-share-owner" spellcheck="false" />
+            </label>
+            <label>Repo
+              <input type="text" id="ex-share-repo" spellcheck="false" />
+            </label>
+            <label>Branch
+              <input type="text" id="ex-share-branch" spellcheck="false" />
+            </label>
+            <label>Pages-Basis-URL
+              <input type="url" id="ex-share-pagesbase" spellcheck="false"
+                     placeholder="https://owner.github.io/repo/" />
+            </label>
+          </div>
+          <p class="hint">Token nur lokal gespeichert. Branch typisch <code>gh-pages</code>.</p>
+        </div>
+
         <button type="button" id="ex-reset" class="secondary">Auf Standard zurücksetzen</button>
       </div>
     </div>
@@ -289,6 +313,7 @@
       </select>
       <button id="exportcfg" class="secondary" title="Export-Einstellungen" aria-haspopup="dialog">⚙</button>
       <button id="download" class="secondary" title="Herunterladen" aria-label="Herunterladen" disabled>↓</button>
+      <button id="sharehtml" class="secondary" title="HTML auf GitHub Pages teilen" aria-label="Teilen" disabled>↗</button>
     </div>
     <button id="xsecbtn" class="secondary" disabled>Querschnitt anzeigen</button>
     <button id="view3dbtn" class="secondary" disabled>3D-Ansicht</button>

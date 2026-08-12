@@ -1,0 +1,112 @@
+/**
+ * GitHub-Pages-Share-Helfer (ohne Netz, außer gemocktem fetch).
+ */
+import {
+  SHARE_GITHUB_DEFAULTS,
+  buildShareFilename,
+  defaultPagesBase,
+  pagesUrl,
+  sanitizeShareName,
+  shareHtml,
+} from "../src/export/shareGithub.ts";
+
+let failures = 0;
+function check(name, cond, detail) {
+  console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+  if (!cond) failures++;
+}
+
+{
+  check("defaults owner", SHARE_GITHUB_DEFAULTS.owner === "mhaberler");
+  check("defaults repo", SHARE_GITHUB_DEFAULTS.repo === "trajectories");
+  check("defaults branch", SHARE_GITHUB_DEFAULTS.branch === "gh-pages");
+}
+
+{
+  check("pages base", defaultPagesBase("mhaberler", "trajectories") ===
+    "https://mhaberler.github.io/trajectories/");
+  check("pagesUrl default", pagesUrl("a.html", "u", "r") ===
+    "https://u.github.io/r/a.html");
+  check("pagesUrl custom base", pagesUrl("a.html", "u", "r", "https://share.example/") ===
+    "https://share.example/a.html");
+  check("pagesUrl base ohne Slash", pagesUrl("a.html", "u", "r", "https://share.example") ===
+    "https://share.example/a.html");
+}
+
+{
+  check("sanitize", sanitizeShareName("icon d2!") === "icon_d2");
+  const fn = buildShareFilename("icon_d2", Date.UTC(2026, 7, 12, 8, 0), "abc123");
+  check("filename shape", fn === "trajektorien_icon_d2_20260812_0800_abc123.html", fn);
+}
+
+{
+  const calls = [];
+  const fakeFetch = async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 201,
+      async text() {
+        return JSON.stringify({ commit: { sha: "deadbeef" } });
+      },
+    };
+  };
+  const r = await shareHtml({
+    html: "<!DOCTYPE html><title>t</title>",
+    filename: "trajektorien_icon_d2_20260812_0800_abc123.html",
+    token: "ghp_test",
+    owner: "mhaberler",
+    repo: "trajectories",
+    branch: "gh-pages",
+  }, fakeFetch);
+  check("share url", r.pagesUrl ===
+    "https://mhaberler.github.io/trajectories/trajektorien_icon_d2_20260812_0800_abc123.html",
+  r.pagesUrl);
+  check("share path", r.path.endsWith(".html"));
+  check("share commit", r.commitSha === "deadbeef");
+  check("PUT once", calls.length === 1);
+  check("PUT branch", JSON.parse(calls[0].init.body).branch === "gh-pages");
+  check("Auth bearer", calls[0].init.headers.Authorization === "Bearer ghp_test");
+}
+
+{
+  let threw = null;
+  try {
+    await shareHtml({
+      html: "<html></html>",
+      filename: "x.html",
+      token: "",
+      owner: "a",
+      repo: "b",
+      branch: "gh-pages",
+    }, async () => ({ ok: true, status: 200, text: async () => "{}" }));
+  } catch (e) {
+    threw = e;
+  }
+  check("missing token throws", !!threw && /PAT/.test(threw.message), threw?.message);
+}
+
+{
+  let threw = null;
+  const fakeFetch = async () => ({
+    ok: false,
+    status: 401,
+    async text() { return JSON.stringify({ message: "Bad credentials" }); },
+  });
+  try {
+    await shareHtml({
+      html: "<html></html>",
+      filename: "x.html",
+      token: "bad",
+      owner: "a",
+      repo: "b",
+      branch: "gh-pages",
+    }, fakeFetch);
+  } catch (e) {
+    threw = e;
+  }
+  check("401 mapped", !!threw && /401/.test(threw.message), threw?.message);
+}
+
+console.log(failures ? `\n${failures} Fehler.` : "\nAlle shareGithub-Tests bestanden.");
+process.exit(failures ? 1 : 0);

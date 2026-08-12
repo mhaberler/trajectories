@@ -633,9 +633,22 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   box-sizing: border-box;
 }
 #ex-reset { width: 100%; margin-top: 10px; }
-/* Icon-Knopf: der Text „Herunterladen" sprengte sonst die Spalte. Beschriftung
-   steckt in title/aria-label. */
-#download {
+.ex-share-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e8e7e3;
+}
+.ex-share-block .hint { margin: 6px 0 0; }
+.ex-share-block input[type="password"],
+.ex-share-block input[type="text"],
+.ex-share-block input[type="url"] {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+/* Icon-Knöpfe: Text in title/aria-label, damit die Spalte nicht gesprengt wird. */
+#download,
+#sharehtml {
   flex: none;
   width: 34px;
   padding: 6px 0;
@@ -648,7 +661,8 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   border-radius: 6px;
   cursor: pointer;
 }
-#download:disabled { color: #9c9b95; border-color: #c9c8c2; cursor: default; }
+#download:disabled,
+#sharehtml:disabled { color: #9c9b95; border-color: #c9c8c2; cursor: default; }
 
 #overlays-block { margin-top: 12px; }
 #overlays-row { margin: 4px 0 6px; }

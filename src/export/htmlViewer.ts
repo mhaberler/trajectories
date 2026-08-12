@@ -296,7 +296,12 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   const startName = bases[data.opts.defaultBase] ? data.opts.defaultBase : "OpenStreetMap";
   let active = bases[startName];
 
-  const map = L.map("map", { layers: [active] });
+  // Zuerst setView: sonst ist die Karte beim Path.onAdd noch nicht „loaded“,
+  // der SVG-Renderer hat kein `_bounds`, und Leaflet wirft in `_clipPoints`
+  // (`bounds.min` an undefined) — Pane da, Trajektorien fehlen.
+  const map = L.map("map");
+  map.setView([50.5, 10.5], 6);
+  active.addTo(map);
   L.control.layers(bases, null, { position: "topleft" }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
   map.on("baselayerchange", (e: any) => {
@@ -316,7 +321,6 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
     bounds = bounds ? bounds.extend(b) : b;
   }
   if (bounds) map.fitBounds(bounds, { padding: [30, 30] });
-  else map.setView([50.5, 10.5], 6);
 
   // Erst den Querschnitt aufbauen — die Tracklist braucht seinen Schalter.
   const toggleProfile = buildProfile(map, data);
@@ -325,7 +329,14 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
 
-  return { invalidateSize: () => map.invalidateSize() };
+  const syncSize = () => map.invalidateSize();
+  // Flex-Layout (#map) oft erst nach dem ersten Paint mit echter Höhe.
+  requestAnimationFrame(() => {
+    syncSize();
+    requestAnimationFrame(syncSize);
+  });
+
+  return { invalidateSize: syncSize };
 }
 
 function buildOverlays(map: any, data: Payload) {

@@ -31,8 +31,10 @@ check("CDN-Version == package.json", cdn[0] === pinned, `${cdn[0]} vs ${pinned}`
 // Der Viewer wird als eigener Vite-Einstieg gebaut; die Quelle darf daher
 // ganz normal importieren. Nur der Einstiegspunkt muss stimmen.
 const viewer = readFileSync(join(root, "src/export/htmlViewer.ts"), "utf8");
+const entry = readFileSync(join(root, "src/export/htmlExportMain.ts"), "utf8");
 check("Viewer ruft initViewer auf", /function initViewer/.test(viewer));
-check("Viewer hängt sich an window", /window[^)]*\)?\s*\.initViewer\s*=/.test(viewer));
+check("Einstieg hängt initExport an window", /initExport\s*=/.test(entry) && /window[^;]*initExport/.test(entry));
+check("Einstieg hängt initViewer an window", /window[^;]*initViewer\s*=/.test(entry));
 
 // Leaflets CSS verweist relativ auf images/*.png. html.ts ersetzt diese
 // Verweise beim Export durch data:-URIs; passt das Muster nicht mehr, bliebe

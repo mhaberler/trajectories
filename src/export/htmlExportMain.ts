@@ -45,10 +45,12 @@ async function showView(view: "2d" | "3d") {
     pane2d.hidden = false;
     pane3d.hidden = true;
     if (!mapApi) mapApi = initViewer(payload);
-    else {
-      // Layout war ggf. versteckt — Größe neu messen.
-      setTimeout(() => mapApi?.invalidateSize(), 0);
-    }
+    // Nach Show/Init: Layout (Flex) neu messen — sonst Tiles ohne Pfade
+    // bzw. Pfade mit veralteter Viewport-Größe.
+    requestAnimationFrame(() => {
+      mapApi?.invalidateSize();
+      requestAnimationFrame(() => mapApi?.invalidateSize());
+    });
     return;
   }
   pane2d.hidden = true;

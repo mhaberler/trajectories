@@ -165,6 +165,40 @@ function redraw() {
       });
     }
   }
+
+  for (const o of lastData.overlays || []) {
+    if (o.visible === false || !o.coords?.length || o.coords.length < 2) continue;
+    const hasZ = o.coords.some((c) => Number.isFinite(c[2] as number));
+    const color = Cesium.Color.fromCssColorString(o.color || "#c45c26");
+    const material = new Cesium.PolylineOutlineMaterialProperty({
+      color,
+      outlineColor: Cesium.Color.WHITE.withAlpha(0.7),
+      outlineWidth: 1,
+    });
+    if (hasZ) {
+      const pts = o.coords.filter((c) => Number.isFinite(c[2] as number));
+      if (pts.length < 2) continue;
+      const positions = pts.map((c) =>
+        Cesium.Cartesian3.fromDegrees(c[1], c[0], H(c[2] as number)));
+      viewer.entities.add({
+        name: o.name,
+        description: o.note
+          ? `<div><strong>${esc(o.name)}</strong><br>${esc(o.note)}</div>`
+          : undefined,
+        polyline: { positions, width: 4, material, clampToGround: false },
+      });
+    } else {
+      const positions = o.coords.map((c) =>
+        Cesium.Cartesian3.fromDegrees(c[1], c[0], 0));
+      viewer.entities.add({
+        name: o.name,
+        description: o.note
+          ? `<div><strong>${esc(o.name)}</strong><br>${esc(o.note)}</div>`
+          : undefined,
+        polyline: { positions, width: 4, material, clampToGround: true },
+      });
+    }
+  }
   viewer.scene.requestRender();
 }
 

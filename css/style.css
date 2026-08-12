@@ -650,6 +650,35 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 }
 #download:disabled { color: #9c9b95; border-color: #c9c8c2; cursor: default; }
 
+#overlays-block { margin-top: 12px; }
+#overlays-row { margin: 4px 0 6px; }
+#overlays-list { display: flex; flex-direction: column; gap: 8px; }
+.overlay-card {
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #f7f6f2;
+  font-size: 12px;
+}
+.overlay-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.overlay-card-head input[type="text"] { flex: 1 1 auto; min-width: 0; font: inherit; }
+.overlay-card-head input[type="color"] {
+  flex: none; width: 28px; height: 22px; padding: 0; border: 1px solid #c9c8c2; background: #fff;
+}
+.overlay-card textarea {
+  width: 100%; box-sizing: border-box; font: inherit; min-height: 40px; resize: vertical;
+  margin-top: 4px;
+}
+.overlay-card .overlay-rm {
+  flex: none; border: none; background: none; color: #52514e; cursor: pointer; font-size: 16px; line-height: 1;
+}
+.overlay-card .overlay-rm:hover { color: #b3261e; }
+
 #status { margin: 8px 0 0; min-height: 1em; color: #52514e; }
 #status.error { color: #b3261e; }
 

@@ -29,11 +29,12 @@ const STORAGE_KEY = "trajectories.view3d.v1";
 const el = (id) => document.getElementById(id);
 
 let viewer = null;
-let lastData = null;   // { runs, start, modelElev }
+let lastData = null;   // { runs, start, modelElev, overlays }
 let zOffset = 0;       // Ellipsoid/Geoid/Modell-Abgleich (m), am Startpunkt kalibriert
 let terrainKind = "flat"; // tatsächlich aktive Quelle (nach evtl. Fallback)
 let calKey = null;     // wofür zOffset gilt: Startpunkt + Geländequelle
 let wired = false;
+let overlayEntities = []; // Flugspur-Entities für flyTo
 
 const prefs = loadPrefs();
 
@@ -134,26 +135,44 @@ function orbit(dHeading, dPitch, rangeFactor = 1) {
   scene.requestRender();
 }
 
-/** Öffnet die Ansicht und zeichnet die Läufe (Modul wird lazy geladen). */
-export async function show(data) {
+/** Öffnet die Ansicht und zeichnet Läufe + Flugspuren. */
+export async function show(data, opts = {}) {
   if (!viewer) {
     initViewer();
     wireControls();
     await setTerrain(prefs.terrain === "mapterhorn" ? "reearth" : (prefs.terrain || "reearth"));
   }
   await update(data);
-  flyToAll();
+  if (opts.flyToOverlayIds?.length) flyToOverlays(opts.flyToOverlayIds);
+  else flyToAll();
 }
 
-/** Zeichnet neue Läufe nach (Live-Modus, Neuberechnung bei offener Ansicht). */
+/** Zeichnet neue Läufe/Overlays nach (Live-Modus, Neuberechnung, Import). */
 export async function update(data) {
-  lastData = data;
-  const key = `${data.start?.lat},${data.start?.lon}|${terrainKind}`;
+  lastData = {
+    runs: data.runs || [],
+    start: data.start ?? null,
+    modelElev: data.modelElev ?? null,
+    overlays: data.overlays || [],
+  };
+  const key = `${lastData.start?.lat},${lastData.start?.lon}|${terrainKind}`;
   if (key !== calKey) {
     calKey = key;
     await recalibrate();
   }
   redraw();
+}
+
+/** Kamera auf eine oder mehrere Flugspuren. */
+export function flyToOverlays(ids) {
+  if (!viewer) return;
+  const want = new Set(ids || []);
+  const ents = overlayEntities
+    .filter((o) => want.has(o.id))
+    .map((o) => o.entity)
+    .filter(Boolean);
+  if (ents.length) viewer.flyTo(ents.length === 1 ? ents[0] : ents);
+  else flyToAll();
 }
 
 async function setTerrain(kind) {
@@ -206,9 +225,11 @@ function redraw() {
   const f = exaggeration();
   viewer.scene.verticalExaggeration = f;
   viewer.entities.removeAll();
+  overlayEntities = [];
   const H = (z) => (z + zOffset) * f;
+  const runs = lastData.runs || [];
 
-  for (const run of lastData.runs) {
+  for (const run of runs) {
     const pts = run.r.points.filter((p) => Number.isFinite(p.z));
     if (pts.length < 2) continue;
     const positions = pts.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, H(p.z)));
@@ -249,7 +270,60 @@ function redraw() {
       });
     }
   }
+
+  drawOverlays(H);
   viewer.scene.requestRender();
+}
+
+/** Flugspuren: mit Dateihöhe absolut, sonst clamp-to-ground. */
+function drawOverlays(H) {
+  const list = (lastData.overlays || []).filter((o) => o.visible !== false);
+  for (const o of list) {
+    const coords = o.coords || [];
+    if (coords.length < 2) continue;
+    const hasZ = coords.some((c) => Number.isFinite(c.z));
+    const color = Cesium.Color.fromCssColorString(o.color || "#c45c26");
+    const material = new Cesium.PolylineOutlineMaterialProperty({
+      color,
+      outlineColor: Cesium.Color.WHITE.withAlpha(0.7),
+      outlineWidth: 1,
+    });
+    let ent;
+    if (hasZ) {
+      const pts = coords.filter((c) => Number.isFinite(c.z));
+      if (pts.length < 2) continue;
+      const positions = pts.map((c) => Cesium.Cartesian3.fromDegrees(c.lon, c.lat, H(c.z)));
+      ent = viewer.entities.add({
+        id: o.id ? `overlay-${o.id}` : undefined,
+        name: o.name,
+        description: o.note
+          ? `<div style="font-variant-numeric:tabular-nums"><strong>${escHtml(o.name)}</strong><br>${escHtml(o.note)}</div>`
+          : undefined,
+        polyline: { positions, width: 4, material, clampToGround: false },
+      });
+    } else {
+      const positions = coords.map((c) => Cesium.Cartesian3.fromDegrees(c.lon, c.lat, 0));
+      ent = viewer.entities.add({
+        id: o.id ? `overlay-${o.id}` : undefined,
+        name: o.name,
+        description: o.note
+          ? `<div style="font-variant-numeric:tabular-nums"><strong>${escHtml(o.name)}</strong><br>${escHtml(o.note)}</div>`
+          : undefined,
+        polyline: {
+          positions,
+          width: 4,
+          material,
+          clampToGround: true,
+        },
+      });
+    }
+    overlayEntities.push({ id: o.id, entity: ent });
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/[<>&"']/g, (c) =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function markerHtml(m, label) {

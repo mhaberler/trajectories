@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "bun test/integrator.test.mjs && bun test/profileExpand.test.mjs && bun test/exportHtml.test.mjs && bun test/exportRaw.test.mjs",
+    "test": "bun test/integrator.test.mjs && bun test/profileExpand.test.mjs && bun test/exportHtml.test.mjs && bun test/exportRaw.test.mjs && bun test/overlaysParse.test.mjs",
     "test:live": "bun test/live-smoke.mjs",
     "deploy": "bash scripts/deploy-hetzner.sh",
     "deploy:vps": "bash scripts/deploy-vps.sh"
@@ -21,6 +21,8 @@
     "vite-plugin-cesium": "^1.2.23"
   },
   "dependencies": {
+    "@tmcw/togeojson": "^7.1.2",
+    "@xmldom/xmldom": "^0.9.10",
     "cesium": "^1.143.0",
     "leaflet": "1.9.4",
     "pmtiles": "^4.4.1"

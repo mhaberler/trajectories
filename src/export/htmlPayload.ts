@@ -32,6 +32,15 @@ export interface HtmlExportOpts {
   exaggeration: number;
 }
 
+/** Importierte Flugspur für HTML 2D/3D. coords: [lat, lon, z|null]. */
+export interface PayloadOverlay {
+  name: string;
+  color: string;
+  note: string;
+  visible: boolean;
+  coords: [number, number, number | null][];
+}
+
 /** Was `buildPayload` außer `state.lastRuns` noch braucht. */
 export interface ExportCtx {
   xsec: XsecData | null;
@@ -43,6 +52,8 @@ export interface ExportCtx {
   start?: { lat: number; lon: number } | null;
   /** Modellorographie am Start (m NN), für denselben Abgleich. */
   modelElev?: number | null;
+  /** Importierte Flugspuren (bereits [lat,lon,z] fürs Payload). */
+  overlays?: PayloadOverlay[];
   /** Nur für Tests/Reproduzierbarkeit; sonst „jetzt". */
   now?: number;
 }
@@ -73,6 +84,7 @@ export interface Payload {
   xsec: XsecData;
   start: { lat: number; lon: number } | null;
   modelElev: number | null;
+  overlays: PayloadOverlay[];
 }
 
 export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
@@ -195,6 +207,20 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     : null;
   const modelElev = Number.isFinite(ctx.modelElev as number) ? Math.round(ctx.modelElev as number) : null;
 
+  const overlays: PayloadOverlay[] = (ctx.overlays || [])
+    .filter((o) => o.visible !== false && Array.isArray(o.coords) && o.coords.length >= 2)
+    .map((o) => ({
+      name: o.name,
+      color: o.color,
+      note: o.note || "",
+      visible: true,
+      coords: o.coords.map((c) => [
+        rd(c[0], prec),
+        rd(c[1], prec),
+        Number.isFinite(c[2] as number) ? Math.round(c[2] as number) : null,
+      ] as [number, number, number | null]),
+    }));
+
   return {
     meta: {
       modelKey,
@@ -211,6 +237,7 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     xsec: pickXsec(ctx.xsec, prec),
     start,
     modelElev,
+    overlays,
   };
 }
 

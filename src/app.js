@@ -213,6 +213,7 @@ const state = {
   dimLayers: L.layerGroup().addTo(map), // Geschwister-Tracks im Profil-Edit (stark gedimmt)
   pinLayers: L.layerGroup().addTo(map),
   layers: L.layerGroup().addTo(map),
+  overlayLayers: L.layerGroup().addTo(map), // importierte Flugspuren
   pinRuns: new Map(), // Höhe(m) -> berechneter Run, damit Pins beim Scrubben nicht neu rechnen
   pinKey: "",         // Satz der aktuell gezeichneten Pin-Höhen (für „nur bei Änderung neu zeichnen")
   startMarker: null,
@@ -225,6 +226,8 @@ const state = {
   modelLevelProbe: null,
   // Isobaren von api.open-meteo.com: { …, levels: [{ hPa, zAmsl }] }
   pressureLevelProbe: null,
+  // Importierte Flugspuren (Session): { id, name, color, note, sourceName, visible, coords }
+  overlays: [],
 };
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
@@ -3608,8 +3611,8 @@ async function runTrajectories() {
     el("xsecbtn").disabled = runs.length === 0;
     if (liveMode && xsecWasOpen && runs.length) showCrossSection(true);
     // Offene 3D-Ansicht läuft mit (Live-Modus, Neuberechnung).
-    el("view3dbtn").disabled = runs.length === 0;
-    if (view3dMod && !el("view3d").hidden && runs.length) view3dMod.update(view3dData());
+    el("view3dbtn").disabled = !canOpen3d();
+    if (view3dMod && !el("view3d").hidden && canOpen3d()) view3dMod.update(view3dData());
     // Scrub-Läufe sind sehr kurz und häufig — Zeit nur bei Full-Runs zeigen.
     if (!scrub) {
       setStatus(`${runs.length} Trajektorie(n) · ${fmtMs(performance.now() - t0)}`);
@@ -4151,6 +4154,169 @@ window.addEventListener("resize", () => drawCrossSection());
   });
 })();
 
+// --- Flugspuren (GPX/KML/GeoJSON Overlays) ----------------------------------
+const OVERLAY_COLORS = [
+  "#c45c26", "#5c6bc0", "#00897b", "#8e24aa", "#f9a825", "#546e7a", "#d81b60", "#00838f",
+];
+let overlayIdSeq = 0;
+
+function nextOverlayColor() {
+  const used = new Set(state.overlays.map((o) => o.color));
+  return OVERLAY_COLORS.find((c) => !used.has(c))
+    || OVERLAY_COLORS[state.overlays.length % OVERLAY_COLORS.length];
+}
+
+function redrawOverlayMap() {
+  state.overlayLayers.clearLayers();
+  for (const o of state.overlays) {
+    if (o.visible === false || o.coords.length < 2) continue;
+    const latlngs = o.coords.map((c) => [c.lat, c.lon]);
+    const line = L.polyline(latlngs, {
+      color: o.color,
+      weight: 3.5,
+      opacity: 0.9,
+      dashArray: "6 4",
+    }).bindTooltip(o.name, { sticky: true });
+    if (o.note) {
+      const esc = (s) => String(s).replace(/[<>&]/g, (ch) =>
+        ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
+      line.bindPopup(`<strong>${esc(o.name)}</strong>` +
+        `<div style="margin-top:4px;white-space:pre-wrap">${esc(o.note)}</div>`);
+    }
+    line.addTo(state.overlayLayers);
+  }
+}
+
+function renderOverlaysList() {
+  const host = el("overlays-list");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const o of state.overlays) {
+    const card = document.createElement("div");
+    card.className = "overlay-card";
+    card.dataset.id = o.id;
+
+    const head = document.createElement("div");
+    head.className = "overlay-card-head";
+
+    const vis = document.createElement("input");
+    vis.type = "checkbox";
+    vis.checked = o.visible !== false;
+    vis.title = "Sichtbar";
+    vis.addEventListener("change", () => {
+      o.visible = vis.checked;
+      redrawOverlayMap();
+      refreshOverlays3d();
+      updateView3dButton();
+    });
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.value = o.name;
+    name.addEventListener("change", () => {
+      o.name = name.value.trim() || o.sourceName || "Flugspur";
+      redrawOverlayMap();
+      renderOverlaysList();
+      refreshOverlays3d();
+    });
+
+    const color = document.createElement("input");
+    color.type = "color";
+    color.value = o.color;
+    color.addEventListener("input", () => {
+      o.color = color.value;
+      redrawOverlayMap();
+      refreshOverlays3d();
+    });
+
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "overlay-rm";
+    rm.title = "Entfernen";
+    rm.textContent = "×";
+    rm.addEventListener("click", () => {
+      state.overlays = state.overlays.filter((x) => x.id !== o.id);
+      redrawOverlayMap();
+      renderOverlaysList();
+      refreshOverlays3d();
+      updateView3dButton();
+    });
+
+    head.append(vis, name, color, rm);
+
+    const note = document.createElement("textarea");
+    note.placeholder = "Notiz…";
+    note.value = o.note || "";
+    note.addEventListener("change", () => {
+      o.note = note.value;
+      redrawOverlayMap();
+      refreshOverlays3d();
+    });
+
+    card.append(head, note);
+    host.appendChild(card);
+  }
+}
+
+function refreshOverlays3d() {
+  if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
+}
+
+async function importOverlayFiles(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const newIds = [];
+  const warnings = [];
+  for (const file of files) {
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      warnings.push(`${file.name}: ${err.message}`);
+      continue;
+    }
+    const { parseOverlayFile } = await import("./overlays/parse.js");
+    const { drafts, warnings: w } = await parseOverlayFile(text, file.name);
+    for (const msg of w || []) warnings.push(`${file.name}: ${msg}`);
+    for (const d of drafts) {
+      const id = `ov-${++overlayIdSeq}`;
+      state.overlays.push({
+        id,
+        name: d.name,
+        color: nextOverlayColor(),
+        note: "",
+        sourceName: d.sourceName,
+        visible: true,
+        coords: d.coords,
+      });
+      newIds.push(id);
+    }
+  }
+  redrawOverlayMap();
+  renderOverlaysList();
+  updateView3dButton();
+  if (newIds.length) {
+    const added = state.overlays.filter((o) => newIds.includes(o.id));
+    const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    await openOrRefresh3d({ flyToOverlayIds: newIds });
+    setStatus(`${newIds.length} Flugspur(en) geladen`);
+  } else {
+    setStatus(warnings[0] || "Keine Flugspuren in der Datei.", true);
+  }
+  if (warnings.length && newIds.length) console.warn("Overlay-Import:", warnings);
+}
+
+el("overlay-add")?.addEventListener("click", () => el("overlay-file")?.click());
+el("overlay-file")?.addEventListener("change", async (e) => {
+  const input = e.target;
+  try {
+    await importOverlayFiles(input.files);
+  } finally {
+    input.value = "";
+  }
+});
+
 // --- 3D-Ansicht (Cesium, lazy geladen) --------------------------------------
 (function initView3dResize() {
   const east = el("view3d-resize-e");
@@ -4245,35 +4411,52 @@ window.addEventListener("resize", () => drawCrossSection());
 // die Geländewerte entlang des Pfads liegen im Querschnitts-Zustand vor.
 function view3dData() {
   return {
-    runs: state.lastRuns.runs,
+    runs: state.lastRuns?.runs || [],
     start: state.start,
     modelElev: state.xsec?.runs?.[0]?.terrain?.[0] ?? state.startElevation,
+    overlays: state.overlays,
   };
+}
+
+function canOpen3d() {
+  return (state.lastRuns?.runs?.length > 0) || state.overlays.some((o) => o.visible !== false);
+}
+
+function updateView3dButton() {
+  el("view3dbtn").disabled = !canOpen3d() && el("view3d").hidden;
+  if (!el("view3d").hidden) el("view3dbtn").disabled = false;
 }
 
 function hide3D() {
   el("view3d").hidden = true;
   el("view3dbtn").textContent = "3D-Ansicht";
+  updateView3dButton();
 }
 
-el("view3dbtn").addEventListener("click", async () => {
-  if (!el("view3d").hidden) return hide3D();
-  if (!state.lastRuns?.runs?.length) return;
+/** 3D öffnen/aktualisieren; nach Import auf neue Spuren zoomen. */
+async function openOrRefresh3d({ flyToOverlayIds } = {}) {
+  if (!canOpen3d() && !(flyToOverlayIds?.length)) return;
   el("view3dbtn").disabled = true;
   setStatus("Lade 3D-Ansicht …");
   try {
     view3dMod ??= await import("./view3d.js");
     el("view3d").hidden = false;
     layoutView3d();
-    await view3dMod.show(view3dData());
+    await view3dMod.show(view3dData(), { flyToOverlayIds });
     el("view3dbtn").textContent = "3D-Ansicht schließen";
     setStatus("");
   } catch (err) {
     hide3D();
     setStatus(`3D-Ansicht: ${err.message}`, true);
   } finally {
-    el("view3dbtn").disabled = false;
+    updateView3dButton();
   }
+}
+
+el("view3dbtn").addEventListener("click", async () => {
+  if (!el("view3d").hidden) return hide3D();
+  if (!canOpen3d()) return;
+  await openOrRefresh3d();
 });
 el("v3d-close").addEventListener("click", hide3D);
 
@@ -4377,6 +4560,15 @@ function exportCtx(key) {
     trackName,
     start: state.start,
     modelElev: state.xsec?.runs?.[0]?.terrain?.[0] ?? state.startElevation,
+    overlays: state.overlays
+      .filter((o) => o.visible !== false && o.coords?.length >= 2)
+      .map((o) => ({
+        name: o.name,
+        color: o.color,
+        note: o.note || "",
+        visible: true,
+        coords: o.coords.map((c) => [c.lat, c.lon, c.z]),
+      })),
   };
 }
 

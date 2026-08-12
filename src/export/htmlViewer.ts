@@ -307,8 +307,15 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   buildOpacityControl(map, () => active, data.opts.baseOpacity);
 
   const tracks = buildTracks(map, data);
-  const all = tracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
-  if (all) map.fitBounds(all, { padding: [30, 30] });
+  buildOverlays(map, data);
+  let bounds = tracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
+  for (const o of data.overlays || []) {
+    if (o.visible === false || !o.coords?.length) continue;
+    const b = L.latLngBounds(o.coords.map((c) => [c[0], c[1]]));
+    if (!b.isValid()) continue;
+    bounds = bounds ? bounds.extend(b) : b;
+  }
+  if (bounds) map.fitBounds(bounds, { padding: [30, 30] });
   else map.setView([50.5, 10.5], 6);
 
   // Erst den Querschnitt aufbauen — die Tracklist braucht seinen Schalter.
@@ -319,6 +326,25 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
 
   return { invalidateSize: () => map.invalidateSize() };
+}
+
+function buildOverlays(map: any, data: Payload) {
+  for (const o of data.overlays || []) {
+    if (o.visible === false || !o.coords || o.coords.length < 2) continue;
+    const latlngs = o.coords.map((c) => [c[0], c[1]]);
+    const line = L.polyline(latlngs, {
+      color: o.color || "#c45c26",
+      weight: Math.max(2, (data.opts.lineWidth || 3) - 0.5),
+      opacity: 0.9,
+      dashArray: "6 4",
+    }).bindTooltip(o.name, { sticky: true });
+    if (o.note) {
+      line.bindPopup(
+        `<strong>${esc(o.name)}</strong><div style="margin-top:4px;white-space:pre-wrap">${esc(o.note)}</div>`,
+      );
+    }
+    line.addTo(map);
+  }
 }
 
 export { initViewer };

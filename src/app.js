@@ -84,6 +84,7 @@ function persist() {
     xsecRight,
     downloadFmt: el("downloadfmt").value,
     exportOpts,
+    exportOptsRev: EXPORT_OPTS_REV,
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     fpInheritMode: profileInheritMode(),
     view3dRight,
@@ -179,11 +180,17 @@ const EXPORT_FIELDS = [
   ["ex-geojson-precision", "geojson", "precision", "num"],
 ];
 
-function mergeExportOpts(stored) {
+/** Bump when an export default flips and old localStorage must not keep the prior value. */
+const EXPORT_OPTS_REV = 2; // 2: html.profile default false (was true)
+
+function mergeExportOpts(stored, rev = 0) {
   const out = {};
   for (const [fmt, def] of Object.entries(EXPORT_DEFAULTS)) {
     out[fmt] = { ...def, ...(stored?.[fmt] || {}) };
   }
+  // Einmalig: gespeichertes profile:true stammte vom alten Default, nicht
+  // zwingend von einer bewussten Wahl — nach Rev-Bump auf den neuen Default.
+  if (rev < 2 && out.html) out.html.profile = false;
   return out;
 }
 
@@ -201,7 +208,7 @@ let xsecRight = Number.isFinite(saved.xsecRight) ? saved.xsecRight : null;
 // Bewusst als JS-Objekt geführt statt bei jedem persist() aus dem DOM gelesen
 // wie der Rest: `legendHtml` steckt in einem Textfeld, das nie geöffnet
 // worden sein muss — über das DOM ginge der Wert vorher verloren.
-const exportOpts = mergeExportOpts(saved.exportOpts);
+const exportOpts = mergeExportOpts(saved.exportOpts, saved.exportOptsRev || 0);
 
 
 const state = {

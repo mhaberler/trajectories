@@ -103,6 +103,8 @@ function fixture({ label = "500 m AGL", legendHtml = "" } = {}) {
   check("doc: beginnt mit DOCTYPE", doc.startsWith("<!DOCTYPE html>"));
   check("doc: genau ein #map", (doc.match(/<div id="map">/g) || []).length === 1);
   check("doc: genau ein #profile", (doc.match(/<div id="profile">/g) || []).length === 1);
+  check("doc: genau ein #globe", (doc.match(/<div id="globe">/g) || []).length === 1);
+  check("doc: 2D|3D-Schalter", doc.includes('data-view="2d"') && doc.includes('data-view="3d"'));
   check("doc: Titel maskiert", doc.includes("<title>Titel &amp; &lt;Test&gt;</title>"));
   check("doc: Leaflet und Viewer eingebettet", doc.includes("/*L*/") && doc.includes("/*V*/"));
 }
@@ -116,6 +118,22 @@ function fixture({ label = "500 m AGL", legendHtml = "" } = {}) {
   check("marker: rows als {label,value}",
     mk[0].rows.length === 2 && mk[0].rows[0].label === "Zeit" && mk[0].rows[0].value === "14:00");
   check("marker: kein key-Feld", !("key" in mk[0].rows[0]));
+  check("marker: z mitgegeben", mk[0].z === 1251, String(mk[0].z));
+}
+
+// 6b — 3D-Felder
+{
+  const { lastRuns, ctx } = fixture();
+  const p = buildPayload(lastRuns, {
+    ...ctx,
+    start: { lat: 47.1, lon: 11.9 },
+    modelElev: 612.4,
+    opts: { defaultView: "3d", exaggeration: 4 },
+  });
+  check("3d: start gerundet", p.start?.lat === 47.1 && p.start?.lon === 11.9);
+  check("3d: modelElev gerundet", p.modelElev === 612);
+  check("3d: defaultView", p.opts.defaultView === "3d");
+  check("3d: exaggeration", p.opts.exaggeration === 4);
 }
 
 // 6 — Einstellungen wirken

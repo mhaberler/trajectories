@@ -15,9 +15,104 @@ body {
   flex-direction: column;
 }
 
+.gv-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #c9c8c2;
+  background: #f7f6f2;
+}
+
+.gv-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gv-view-toggle {
+  flex: none;
+  display: inline-flex;
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.gv-view-btn {
+  border: none;
+  background: #fcfcfb;
+  color: #52514e;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.gv-view-btn + .gv-view-btn { border-left: 1px solid #c9c8c2; }
+.gv-view-btn.active {
+  background: #1c5cab;
+  color: #fff;
+}
+
+.gv-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gv-pane[hidden] { display: none !important; }
+
 #map {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+#globe {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.gv-3d-chrome {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 6px 10px;
+  border-top: 1px solid #c9c8c2;
+  background: #f7f6f2;
+  font-size: 12px;
+}
+
+.gv-exagg {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gv-exagg input { width: 120px; }
+
+.gv-3d-note {
+  color: #52514e;
+  font-variant-numeric: tabular-nums;
+}
+
+.gv-3d-note.error { color: #b3261e; }
+
+.gv-net-hint {
+  flex: none;
+  margin: 0;
+  padding: 3px 10px 5px;
+  font-size: 11px;
+  color: #7a7970;
+  border-top: 1px solid #e8e7e3;
 }
 
 #profile {
@@ -130,3 +225,7 @@ body {
   padding: 3px 8px;
   border-top: 1px solid #e8e7e3;
 }
+
+/* Cesium InfoBox / Widgets leicht anpassen */
+.cesium-viewer-bottom { display: none !important; }
+.cesium-viewer-toolbar { display: none !important; }

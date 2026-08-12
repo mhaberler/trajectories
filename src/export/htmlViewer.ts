@@ -288,7 +288,7 @@ function buildProfile(map: any, data: Payload): ((on: boolean) => void) | null {
   return setVisible;
 }
 
-function initViewer(data: Payload) {
+function initViewer(data: Payload): { invalidateSize: () => void } {
   setUnits(data.units);
   document.title = data.meta.title;
 
@@ -317,7 +317,8 @@ function initViewer(data: Payload) {
     buildTracklist(map, tracks, toggleProfile, !!data.opts.profile);
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
+
+  return { invalidateSize: () => map.invalidateSize() };
 }
 
-// Der Exportbau ruft dies aus einem zweiten <script>-Block auf.
-(window as any).initViewer = initViewer;
+export { initViewer };

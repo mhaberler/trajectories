@@ -138,12 +138,14 @@ const EXPORT_DEFAULTS = {
     markerRadius: 5,
     lineWidth: 3,
     lineOpacity: 0.85,
-    profile: true,
+    profile: false,
     profileHeight: 200,
     baseOpacity: 1,
     defaultBase: "OpenStreetMap",
     tracklist: true,
     legendHtml: "",
+    defaultView: "2d",
+    exaggeration: 3,
   },
   kml: {
     markers: true, iconScale: 1.6, labelScale: 0.7, lineWidth: 3,
@@ -165,6 +167,8 @@ const EXPORT_FIELDS = [
   ["ex-html-defaultbase", "html", "defaultBase", "text"],
   ["ex-html-tracklist", "html", "tracklist", "bool"],
   ["ex-html-legend", "html", "legendHtml", "text"],
+  ["ex-html-defaultview", "html", "defaultView", "text"],
+  ["ex-html-exaggeration", "html", "exaggeration", "num"],
   ["ex-kml-markers", "kml", "markers", "bool"],
   ["ex-kml-hidelabels", "kml", "hideLabels", "bool"],
   ["ex-kml-iconscale", "kml", "iconScale", "num"],
@@ -4371,6 +4375,8 @@ function exportCtx(key) {
     unitState: { ...unitState },
     markerFields: kmlMarkerFields,
     trackName,
+    start: state.start,
+    modelElev: state.xsec?.runs?.[0]?.terrain?.[0] ?? state.startElevation,
   };
 }
 

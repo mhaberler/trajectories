@@ -50,9 +50,9 @@ export function buildHTML(data: LastRuns, ctx: ExportCtx): string {
     leafletCss: inlineLeafletImages(),
     viewerCss,
     leafletJs,
-    // Bündel definiert window.initViewer; danach mit den Daten starten.
+    // Bündel definiert window.initExport; danach mit den Daten starten.
     viewerJs: `${viewerBundle}
-initViewer(JSON.parse(document.getElementById("data").textContent));`,
+initExport(JSON.parse(document.getElementById("data").textContent));`,
     json: jsonForScript(payload),
   });
 }

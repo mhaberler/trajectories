@@ -66,14 +66,14 @@ function viewerBundle() {
           write: false,
           minify: "esbuild",
           lib: {
-            entry: new URL("./src/export/htmlViewer.ts", import.meta.url).pathname,
+            entry: new URL("./src/export/htmlExportMain.ts", import.meta.url).pathname,
             formats: ["iife"],
             name: "TrajektorienViewer",
           },
           rollupOptions: {
-            // Leaflet liegt zur Laufzeit als globales L vor.
-            external: ["leaflet"],
-            output: { globals: { leaflet: "L" } },
+            // Leaflet liegt zur Laufzeit als globales L vor; Cesium kommt vom CDN.
+            external: ["leaflet", "cesium"],
+            output: { globals: { leaflet: "L", cesium: "Cesium" } },
           },
         },
       });

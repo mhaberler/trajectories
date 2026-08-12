@@ -26,6 +26,10 @@ export interface HtmlExportOpts {
   defaultBase: string;
   tracklist: boolean;
   legendHtml: string;
+  /** Startansicht der exportierten Datei. */
+  defaultView: "2d" | "3d";
+  /** Anfangs-Überhöhung der 3D-Ansicht. */
+  exaggeration: number;
 }
 
 /** Was `buildPayload` außer `state.lastRuns` noch braucht. */
@@ -35,6 +39,10 @@ export interface ExportCtx {
   unitState: { height: string; wind: string };
   markerFields: (m: unknown, label: string) => (PopupRow & { key?: string })[];
   trackName: (run: Run, direction: number) => string;
+  /** Startpunkt für 3D-Höhenabgleich (Geoid/Ellipsoid). */
+  start?: { lat: number; lon: number } | null;
+  /** Modellorographie am Start (m NN), für denselben Abgleich. */
+  modelElev?: number | null;
   /** Nur für Tests/Reproduzierbarkeit; sonst „jetzt". */
   now?: number;
 }
@@ -46,7 +54,7 @@ export interface PayloadRun {
   name: string;
   /** [lat, lon, z|null, tMs] — z fehlt, solange die Höhe unbekannt ist. */
   pts: [number, number, number | null, number][];
-  markers: { lat: number; lon: number; rows: PopupRow[] }[];
+  markers: { lat: number; lon: number; z: number | null; rows: PopupRow[] }[];
 }
 
 export interface Payload {
@@ -63,6 +71,8 @@ export interface Payload {
   opts: HtmlExportOpts;
   runs: PayloadRun[];
   xsec: XsecData;
+  start: { lat: number; lon: number } | null;
+  modelElev: number | null;
 }
 
 export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
@@ -70,13 +80,20 @@ export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
   markerRadius: 5,
   lineWidth: 3,
   lineOpacity: 0.85,
-  profile: true,
+  profile: false,
   profileHeight: 200,
   baseOpacity: 1,
   defaultBase: "OpenStreetMap",
   tracklist: true,
   legendHtml: "",
+  defaultView: "2d",
+  exaggeration: 3,
 };
+
+/** Gepinnte Cesium-Version für CDN (Workers/Assets über CESIUM_BASE_URL). */
+export const CESIUM_CDN_VERSION = "1.143.0";
+export const CESIUM_CDN_BASE =
+  `https://cdn.jsdelivr.net/npm/cesium@${CESIUM_CDN_VERSION}/Build/Cesium/`;
 
 /** Koordinaten auf `prec` Nachkommastellen, Höhe auf ganze Meter. */
 function rd(x: number, prec: number) {
@@ -138,6 +155,8 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     throw new Error("Kein Querschnitt-Zustand — bitte Trajektorien neu berechnen.");
   }
   const opts: HtmlExportOpts = { ...HTML_EXPORT_DEFAULTS, ...ctx.opts };
+  if (opts.defaultView !== "3d") opts.defaultView = "2d";
+  if (!(opts.exaggeration >= 1)) opts.exaggeration = HTML_EXPORT_DEFAULTS.exaggeration;
   const prec = 5;
   const { runs, modelKey, mode, t0Ms, duration, direction } = data;
 
@@ -160,6 +179,9 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
         .map((m) => ({
           lat: rd(m.lat, prec),
           lon: rd(m.lon, prec),
+          z: Number.isFinite((m as { z?: number }).z)
+            ? Math.round((m as { z: number }).z)
+            : null,
           rows: ctx.markerFields(m, run.label)
             .filter(Boolean)
             .map(({ label, value }) => ({ label, value })),
@@ -168,6 +190,11 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
   }));
 
   const generated = new Date(ctx.now ?? Date.now()).toISOString();
+  const start = ctx.start && Number.isFinite(ctx.start.lat) && Number.isFinite(ctx.start.lon)
+    ? { lat: rd(ctx.start.lat, prec), lon: rd(ctx.start.lon, prec) }
+    : null;
+  const modelElev = Number.isFinite(ctx.modelElev as number) ? Math.round(ctx.modelElev as number) : null;
+
   return {
     meta: {
       modelKey,
@@ -182,6 +209,8 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     opts,
     runs: payloadRuns,
     xsec: pickXsec(ctx.xsec, prec),
+    start,
+    modelElev,
   };
 }
 
@@ -213,7 +242,7 @@ function esc(s: string) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string));
 }
 
-/** Vollständiges, eigenständiges HTML-Dokument. */
+/** Vollständiges, eigenständiges HTML-Dokument (2D Leaflet + optional 3D Cesium). */
 export function renderDocument(p: DocParts): string {
   return `<!DOCTYPE html>
 <html lang="de">
@@ -229,8 +258,28 @@ ${p.viewerCss}
 </style>
 </head>
 <body>
-<div id="map"></div>
-<div id="profile"></div>
+<header class="gv-top">
+  <div class="gv-title">${esc(p.title)}</div>
+  <div class="gv-view-toggle" role="group" aria-label="Ansicht">
+    <button type="button" class="gv-view-btn" data-view="2d">Karte</button>
+    <button type="button" class="gv-view-btn" data-view="3d">3D</button>
+  </div>
+</header>
+<div id="view-2d" class="gv-pane">
+  <div id="map"></div>
+  <div id="profile"></div>
+</div>
+<div id="view-3d" class="gv-pane" hidden>
+  <div id="globe"></div>
+  <div class="gv-3d-chrome">
+    <label class="gv-exagg">Überhöhung
+      <input type="range" id="ex-globe-exagg" min="1" max="10" step="0.5" />
+      <span id="ex-globe-exagg-label">×3</span>
+    </label>
+    <div id="ex-globe-note" class="gv-3d-note"></div>
+  </div>
+</div>
+<p class="gv-net-hint">3D braucht Netzwerk (Cesium-CDN, Gelände, Satellitenkarte).</p>
 <script>
 ${p.leafletJs}
 </script>

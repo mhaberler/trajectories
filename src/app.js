@@ -1,6 +1,7 @@
 import {
   TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, SERIES_COLORS, DEFAULT_HEIGHTS,
   HEIGHT_MIN, HEIGHT_MAX, MARKER_INTERVALS, METHODS,
+  OM_PUBLIC_FORECAST, OM_PRESSURE_LEVELS_HPA,
 } from "./config.js";
 import { WindField } from "./windfield.js";
 import { computeTrajectory } from "./integrator.js";
@@ -215,6 +216,11 @@ const state = {
   profileEdit: null, // { active, candidateKey, siblingRuns, t0Ms }
   profileRedrawGen: 0,
   selectedRunKey: null, // ausgewählter Lauf für den Querschnitt (runKey)
+  startElevation: null, // Modellorographie am Start (m NN)
+  // ICON-Modelllevel (geometrisch) am Start: { …, levels: [{ n, hAgl }] }
+  modelLevelProbe: null,
+  // Isobaren von api.open-meteo.com: { …, levels: [{ hPa, zAmsl }] }
+  pressureLevelProbe: null,
 };
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
@@ -2016,7 +2022,7 @@ async function runProfileRedraw() {
 
 // Oberes Ende der Höhenbalken-Skala, in den Einstellungen wählbar (Default
 // 6 km). HEIGHT_MAX bleibt die absolute Obergrenze für diese Auswahl.
-const BAR_MAX_OPTIONS = [3000, 4000, 5000, 6000, 8000, 10000];
+const BAR_MAX_OPTIONS = [2000, 3000, 4000, 5000, 6000, 8000, 10000];
 let barMax = BAR_MAX_OPTIONS.includes(saved.barMax) ? saved.barMax : 6000;
 
 function addHeight(m) {
@@ -2115,9 +2121,36 @@ function repaintRuns() {
 // --- Höhenbalken: Skala, Umrechnung Pixel<->Höhe, Rendern -------------------
 // Der Balken bildet 0…barMax mit einer Wurzel-Skala ab (Grund unten, hohe
 // Werte oben): der häufig genutzte untere Bereich wird gespreizt, oben wird
-// gestaucht. Die beschrifteten Ticks machen die Abstände transparent.
+// gestaucht. Im NN-Bezug wird der Streifen NN→Grund auf einen festen kleinen
+// Anteil gestaucht, damit das Gelände nicht den unteren Balken dominiert.
+const BAR_TERRAIN_FRAC = 0.1;
+
 function metersToFrac(m) {
+  const mode = el("refmode").value;
+  const elev = state.startElevation;
+  if (mode === "amsl" && elev != null && elev > 0 && elev < barMax) {
+    if (m <= elev) {
+      return BAR_TERRAIN_FRAC * Math.sqrt(Math.min(1, Math.max(0, m / elev)));
+    }
+    const u = (m - elev) / (barMax - elev);
+    return BAR_TERRAIN_FRAC + (1 - BAR_TERRAIN_FRAC) * Math.sqrt(Math.min(1, Math.max(0, u)));
+  }
   return Math.sqrt(Math.min(1, Math.max(0, m / barMax)));
+}
+
+function fracToMeters(frac) {
+  const f = Math.min(1, Math.max(0, frac));
+  const mode = el("refmode").value;
+  const elev = state.startElevation;
+  if (mode === "amsl" && elev != null && elev > 0 && elev < barMax) {
+    if (f <= BAR_TERRAIN_FRAC) {
+      const t = f / BAR_TERRAIN_FRAC;
+      return t * t * elev;
+    }
+    const u = (f - BAR_TERRAIN_FRAC) / (1 - BAR_TERRAIN_FRAC);
+    return elev + u * u * (barMax - elev);
+  }
+  return f * f * barMax;
 }
 
 // Oben und unten einen Rand freilassen, damit die Endbeschriftungen („Grund",
@@ -2140,9 +2173,9 @@ function snapMeters(m) {
 function yToMeters(clientY) {
   const r = bar.getBoundingClientRect();
   const raw = Math.min(1, Math.max(0, 1 - (clientY - r.top) / r.height));
-  // Rand herausrechnen, dann Wurzel-Skala umkehren.
+  // Rand herausrechnen, dann Skala umkehren.
   const frac = Math.min(1, Math.max(0, (raw - BAR_PAD) / (1 - 2 * BAR_PAD)));
-  return snapMeters(frac * frac * barMax);
+  return snapMeters(fracToMeters(frac));
 }
 
 // Gitterlinien passend zu barMax: „Grund" und Maximum immer, dazwischen runde
@@ -2189,7 +2222,10 @@ function renderBar() {
   }
 
   for (const v of tickValues()) {
-    const pos = posPct(heightFromDisplay(v));
+    const mTick = heightFromDisplay(v);
+    // Im gestauchten Geländestreifen keine Zwischen-Ticks (nur NN bleibt).
+    if (mode === "amsl" && elev != null && mTick > 0 && mTick < elev) continue;
+    const pos = posPct(mTick);
     html += `<div class="bar-tick" style="bottom:${pos}%"></div>` +
       `<div class="bar-ticklabel" style="bottom:${pos}%">${tickLabel(v)}</div>`;
   }
@@ -2216,6 +2252,38 @@ function renderBar() {
       `<button class="bar-rm" data-m="${m}" title="Entfernen" tabindex="-1">×</button>` +
       `</div>`;
   }
+
+  // Modelllevel-Carets links (geometrisch) / Isobaren rechts (api.open-meteo.com).
+  // Außerhalb des blauen Balkens in eigenen Spalten; Hover über data-tip.
+  let hCarets = "";
+  let pCarets = "";
+  const probe = state.modelLevelProbe;
+  if (probe?.levels?.length && (mode === "agl" || elev != null)) {
+    for (const lv of probe.levels) {
+      if (!(lv.hAgl > 0)) continue;
+      const mDisp = mode === "amsl" ? lv.hAgl + elev : lv.hAgl;
+      if (!(mDisp > 0) || mDisp > barMax) continue;
+      const pos = posPct(mDisp);
+      const mSnap = snapMeters(mDisp);
+      hCarets += `<div class="bar-model-caret bar-model-caret--h" data-m="${mSnap}" ` +
+        `style="bottom:${pos}%" data-tip="${lv.n}: ${fmtHeight(mDisp)}"></div>`;
+    }
+  }
+  const pProbe = state.pressureLevelProbe;
+  if (pProbe?.levels?.length) {
+    for (const lv of pProbe.levels) {
+      let mDisp;
+      if (mode === "amsl") mDisp = lv.zAmsl;
+      else if (elev != null) mDisp = lv.zAmsl - elev;
+      else continue;
+      if (!(mDisp > 0) || mDisp > barMax) continue;
+      const pos = posPct(mDisp);
+      const mSnap = snapMeters(mDisp);
+      pCarets += `<div class="bar-model-caret bar-model-caret--p" data-m="${mSnap}" ` +
+        `style="bottom:${pos}%" data-tip="${Math.round(lv.hPa)} hPa"></div>`;
+    }
+  }
+
   // Modell-Geländehöhe rechts neben der Grundlinie (bei AGL am unteren Rand,
   // bei AMSL an der Geländeoberkante).
   if (elev != null) {
@@ -2223,6 +2291,8 @@ function renderBar() {
     labelHtml += `<div class="bar-groundinfo" style="bottom:${groundPos}%">${fmtHeight(elev)} NN</div>`;
   }
   bar.innerHTML = html;
+  el("heightbar-carets-h").innerHTML = hCarets;
+  el("heightbar-carets-p").innerHTML = pCarets;
   el("heightbar-labels").innerHTML = labelHtml;
 
   updateActiveHint();
@@ -2277,6 +2347,20 @@ bar.addEventListener("pointerdown", (e) => {
   // Leere Stelle: neuen Punkt anlegen (wird aktiv) und gleich ziehbar machen.
   if (addHeight(m)) { drag = { m }; updateHeightContext(); maybeLive(); }
 });
+
+function onCaretPointerDown(e) {
+  const caretEl = e.target.closest(".bar-model-caret");
+  if (!caretEl) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const m = +caretEl.dataset.m;
+  if (addHeight(m)) {
+    updateHeightContext();
+    maybeLive();
+  }
+}
+el("heightbar-carets-h").addEventListener("pointerdown", onCaretPointerDown);
+el("heightbar-carets-p").addEventListener("pointerdown", onCaretPointerDown);
 
 bar.addEventListener("pointermove", (e) => {
   if (!drag) return;
@@ -2704,34 +2788,150 @@ function setStart(lat, lon) {
 
 initGeocode({ map, setStart, debounce, el });
 
-// Modell-Geländehöhe am Startort — bewusst aus der Forecast-Antwort des
-// gewählten Modells (Modellorographie), damit die Anzeige zu dem passt,
-// womit die Trajektorien rechnen.
-async function fetchStartElevation() {
+// Modell-Geländehöhe + ICON-Levelhöhen am Start (privater OM-Host) und
+// Isobaren-Geopotential von api.open-meteo.com (dort verfügbar).
+let modelLevelProbeGen = 0;
+
+function firstFiniteHourly(arr) {
+  if (!arr) return null;
+  if (!Array.isArray(arr)) return Number.isFinite(arr) ? arr : null;
+  for (const x of arr) if (x != null && Number.isFinite(x)) return x;
+  return null;
+}
+
+function hourlyTimeIndex(times, tSec) {
+  if (!times?.length) return 0;
+  let ti = 0;
+  let best = Infinity;
+  for (let i = 0; i < times.length; i++) {
+    const dt = Math.abs(times[i] - tSec);
+    if (dt < best) { best = dt; ti = i; }
+  }
+  return ti;
+}
+
+function probeDateRange(tSec) {
+  return {
+    day0: new Date((tSec - 3600) * 1000).toISOString().slice(0, 10),
+    day1: new Date((tSec + 3600) * 1000).toISOString().slice(0, 10),
+  };
+}
+
+async function fetchStartElevation({ soft = false } = {}) {
   const s = state.start;
-  if (!s) return;
-  const model = MODELS[el("model").value];
-  state.startElevation = null;
-  updateHeightContext();
-  renderBar();
-  try {
+  if (!s) {
+    state.startElevation = null;
+    state.modelLevelProbe = null;
+    state.pressureLevelProbe = null;
+    updateHeightContext();
+    renderBar();
+    return;
+  }
+  const modelKey = el("model").value;
+  const model = MODELS[modelKey];
+  const timeKey = el("timeslider").value;
+  const gen = ++modelLevelProbeGen;
+  if (!soft) {
+    state.startElevation = null;
+    state.modelLevelProbe = null;
+    state.pressureLevelProbe = null;
+    updateHeightContext();
+    renderBar();
+  }
+  const tSec = Number.isFinite(+timeKey) ? +timeKey * 3600 : Math.floor(Date.now() / 3600e3) * 3600;
+  const { day0, day1 } = probeDateRange(tSec);
+
+  // Parallel: Modelllevel-Höhen (privat) + Isobaren-Geopotential (public).
+  const heightJob = (async () => {
+    const n = model.nLevels;
+    const vars = [];
+    for (let l = 1; l <= n; l++) vars.push(`height_agl_level${l}`);
     const params = new URLSearchParams({
       latitude: s.lat.toFixed(5),
       longitude: s.lon.toFixed(5),
-      hourly: `wind_speed_level${model.nLevels}`,
+      hourly: vars.join(","),
       models: model.apiModel,
-      forecast_days: "1",
+      timeformat: "unixtime",
+      start_date: day0,
+      end_date: day1,
+      cell_selection: "nearest",
     });
     const d = await (await fetch(`${modelForecastUrl(model)}?${params}`)).json();
-    if (Number.isFinite(d.elevation) && state.start === s) {
-      state.startElevation = d.elevation;
-      updateHeightContext();
-      renderBar(); // Terrain-Schraffur am Balken (NN-Bezug) aktualisieren
+    return d;
+  })();
+
+  const pressureJob = (async () => {
+    const vars = OM_PRESSURE_LEVELS_HPA.map((p) => `geopotential_height_${p}hPa`);
+    const params = new URLSearchParams({
+      latitude: s.lat.toFixed(5),
+      longitude: s.lon.toFixed(5),
+      hourly: vars.join(","),
+      models: model.apiModel,
+      timeformat: "unixtime",
+      start_date: day0,
+      end_date: day1,
+      cell_selection: "nearest",
+    });
+    const d = await (await fetch(`${OM_PUBLIC_FORECAST}?${params}`)).json();
+    return d;
+  })();
+
+  try {
+    const [dH, dP] = await Promise.all([
+      heightJob.catch(() => null),
+      pressureJob.catch(() => null),
+    ]);
+    if (gen !== modelLevelProbeGen || state.start !== s) return;
+
+    if (dH && Number.isFinite(dH.elevation)) state.startElevation = dH.elevation;
+    else if (dP && Number.isFinite(dP.elevation) && state.startElevation == null) {
+      state.startElevation = dP.elevation;
     }
+
+    if (dH?.hourly) {
+      const hourly = dH.hourly;
+      const ti = hourlyTimeIndex(hourly.time, tSec);
+      const levels = [];
+      for (let l = 1; l <= model.nLevels; l++) {
+        const hArr = hourly[`height_agl_level${l}`];
+        const hAgl = (Array.isArray(hArr) && Number.isFinite(hArr[ti]))
+          ? hArr[ti]
+          : firstFiniteHourly(hArr);
+        if (!(hAgl > 0)) continue;
+        levels.push({ n: l, hAgl });
+      }
+      state.modelLevelProbe = {
+        modelKey, lat: s.lat, lon: s.lon, timeKey: String(timeKey), levels,
+      };
+    }
+
+    if (dP?.hourly) {
+      const hourly = dP.hourly;
+      const ti = hourlyTimeIndex(hourly.time, tSec);
+      const levels = [];
+      for (const hPa of OM_PRESSURE_LEVELS_HPA) {
+        const zArr = hourly[`geopotential_height_${hPa}hPa`];
+        const zAmsl = (Array.isArray(zArr) && Number.isFinite(zArr[ti]))
+          ? zArr[ti]
+          : firstFiniteHourly(zArr);
+        if (!Number.isFinite(zAmsl)) continue;
+        levels.push({ hPa, zAmsl });
+      }
+      state.pressureLevelProbe = {
+        modelKey, lat: s.lat, lon: s.lon, timeKey: String(timeKey), levels,
+      };
+    }
+
+    updateHeightContext();
+    renderBar();
   } catch {
     /* Anzeige bleibt leer */
   }
 }
+
+const fetchModelLevelsDebounced = debounce(() => {
+  if (state.start) fetchStartElevation({ soft: true });
+}, 300);
 
 /** Macht den Bezug der aktiven Starthöhe sichtbar: Geländehöhe am Start und
  *  die Umrechnung AGL <-> NN für den aktiven Höhenpunkt. */
@@ -2784,6 +2984,7 @@ async function loadMeta() {
     updateTimeLabel();
     updateReachHint();
     el("status").textContent = "";
+    if (state.start) fetchStartElevation({ soft: true }); // Zeitfenster/Stunde kann sich geändert haben
   } catch (err) {
     el("status").textContent = `Modelllauf-Info nicht erreichbar: ${err.message}`;
     el("status").className = "error";
@@ -2828,7 +3029,11 @@ function updateReachHint() {
   }
 }
 
-el("timeslider").addEventListener("input", () => { updateTimeLabel(); updateReachHint(); });
+el("timeslider").addEventListener("input", () => {
+  updateTimeLabel();
+  updateReachHint();
+  fetchModelLevelsDebounced();
+});
 el("timeslider").addEventListener("change", persist);
 el("duration").addEventListener("input", updateReachHint);
 el("direction").addEventListener("change", () => {
@@ -2840,7 +3045,7 @@ el("model").addEventListener("change", () => {
   persist();
   loadMeta();
   updateWDetection();
-  fetchStartElevation(); // Modellorographie unterscheidet sich je Modell
+  fetchStartElevation(); // Modellorographie + Level-Carets je Modell
 });
 // Beim Wechsel des Höhenbezugs die vorhandenen Höhen physisch beibehalten:
 // AGL→AMSL addiert die Geländehöhe, AMSL→AGL zieht sie ab (gerundet auf die

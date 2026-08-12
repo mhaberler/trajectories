@@ -129,11 +129,19 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
    224px ist nur noch die Untergrenze für sehr flache Fenster. */
 #heightbar-wrap {
   display: flex;
-  gap: 14px;
+  gap: 4px;
   align-items: stretch;
   margin: 8px 0 4px;
   flex: 1;
   min-height: 224px;
+}
+#heightbar-carets-h,
+#heightbar-carets-p {
+  position: relative;
+  flex: none;
+  width: 11px;
+  align-self: stretch;
+  overflow: visible;
 }
 #heightbar {
   position: relative;
@@ -166,10 +174,63 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   position: absolute; left: 0; right: 0; transform: translateY(50%);
   font-size: 11px; color: #6b5f45; font-style: italic; pointer-events: none; white-space: nowrap;
 }
+/* Carets außerhalb des Balkens: links Modellhöhen, rechts Isobaren (OM.com). */
+.bar-model-caret {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 12px;
+  transform: translateY(50%);
+  z-index: 1;
+  cursor: pointer;
+}
+.bar-model-caret::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-style: solid;
+  border-color: transparent;
+  opacity: 0.8;
+}
+.bar-model-caret--h::before {
+  border-width: 3.5px 0 3.5px 6px;
+  border-left-color: #6b7380;
+}
+.bar-model-caret--p::before {
+  border-width: 3.5px 6px 3.5px 0;
+  border-right-color: #6b7380;
+}
+.bar-model-caret:hover::before { opacity: 1; }
+.bar-model-caret--h:hover::before { border-left-color: #2a2a28; }
+.bar-model-caret--p:hover::before { border-right-color: #2a2a28; }
+.bar-model-caret[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #2a2a28;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 6;
+  transition: opacity 0.05s ease;
+}
+.bar-model-caret:hover::after { opacity: 1; }
+.bar-model-caret--h[data-tip]::after { right: calc(100% + 3px); }
+.bar-model-caret--p[data-tip]::after { left: calc(100% + 3px); }
+
 /* Im Lineal nur der farbige Strich als Klick-/Ziehziel. */
 .bar-marker {
   position: absolute; left: 0; right: 0; height: 16px;
   transform: translateY(50%); display: flex; align-items: center; cursor: grab;
+  z-index: 2;
 }
 .bar-marker.dim { opacity: 0.32; }
 .bar-line {
@@ -180,7 +241,7 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 
 /* Beschriftung außerhalb des Lineals, gleiche Höhe für die Ausrichtung. Der
    aktive Punkt trägt hier ein Editierfeld für den genauen Höhenwert. */
-#heightbar-labels { position: relative; flex: none; width: 130px; height: auto; }
+#heightbar-labels { position: relative; flex: none; width: 130px; height: auto; margin-left: 6px; }
 .bar-labelrow {
   position: absolute; left: 0; right: 0; transform: translateY(50%);
   display: flex; align-items: center; gap: 5px; cursor: pointer;

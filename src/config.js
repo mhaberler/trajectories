@@ -1,5 +1,13 @@
 export const API_BASE = "https://open-meteo.mah.priv.at";
 
+/** Public Open-Meteo (pressure-level / geopotential vars not on private hosts). */
+export const OM_PUBLIC_FORECAST = "https://api.open-meteo.com/v1/forecast";
+
+/** Isobaric levels available on api.open-meteo.com (ICON). */
+export const OM_PRESSURE_LEVELS_HPA = [
+  1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30,
+];
+
 /** FastAPI trajectories service (GeoJSON). Used when „API abrufen“ is checked. */
 export const TRAJECTORY_API = "https://trajectory.mah.priv.at";
 

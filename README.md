@@ -114,6 +114,11 @@ unter **Export-Einstellungen (⚙)** und liegen nur in `localStorage`.
 4. In der App PAT + Owner/Repo/Branch eintragen; Teilen → Link
    `https://{owner}.github.io/{repo}/trajektorien_….html` (Clipboard).
 
+Die Branch-Startseite (`index.html`, Vorlage
+[`share/gh-pages-index.html`](share/gh-pages-index.html)) listet vorhandene
+Exporte per GitHub Contents API. Nach dem ersten Anlegen ggf. einmalig
+dorthin kopieren: `cp share/gh-pages-index.html …` und auf `gh-pages` pushen.
+
 Pages braucht nach dem ersten Upload oft 30–60 s. Cesium kommt weiter vom CDN.
 
 ## Meteorologik

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trajektorien — geteilte HTML-Exporte</title>
+  <style>
+    :root {
+      --bg: #f4f3ef;
+      --ink: #1c1b19;
+      --muted: #5c5a54;
+      --line: #d4d2ca;
+      --link: #0b57d0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.45 system-ui, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    main {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 3rem;
+    }
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.45rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    .lead {
+      margin: 0 0 1.5rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    #status {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    #status.error { color: #b3261e; }
+    ul {
+      list-style: none;
+      margin: 1rem 0 0;
+      padding: 0;
+      border-top: 1px solid var(--line);
+    }
+    li {
+      border-bottom: 1px solid var(--line);
+    }
+    a {
+      display: block;
+      padding: 0.75rem 0.15rem;
+      color: var(--link);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    a:hover { text-decoration: underline; }
+    .meta {
+      display: block;
+      margin-top: 0.2rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Geteilte HTML-Exporte</h1>
+    <p class="lead">Standalone Trajektorien-Karten von diesem GitHub-Pages-Branch.</p>
+    <p id="status">Lade Liste …</p>
+    <ul id="list" hidden></ul>
+  </main>
+  <script>
+    (function () {
+      const status = document.getElementById("status");
+      const list = document.getElementById("list");
+
+      function repoFromLocation() {
+        const host = location.hostname || "";
+        const m = host.match(/^([^.]+)\.github\.io$/i);
+        if (!m) return { owner: "mhaberler", repo: "trajectories" };
+        const owner = m[1];
+        const parts = (location.pathname || "/").split("/").filter(Boolean);
+        // Project Pages: /{repo}/…  — User Pages: /
+        const repo = parts[0] || (owner + ".github.io");
+        return { owner, repo };
+      }
+
+      function fmtSize(n) {
+        if (!Number.isFinite(n)) return "";
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(0) + " KB";
+        return (n / (1024 * 1024)).toFixed(1) + " MB";
+      }
+
+      async function main() {
+        const { owner, repo } = repoFromLocation();
+        const url = "https://api.github.com/repos/" +
+          encodeURIComponent(owner) + "/" + encodeURIComponent(repo) +
+          "/contents/?ref=gh-pages";
+        let items;
+        try {
+          const res = await fetch(url, {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!res.ok) throw new Error("GitHub API " + res.status);
+          items = await res.json();
+        } catch (err) {
+          status.textContent = "Liste nicht ladbar: " + (err && err.message ? err.message : err);
+          status.classList.add("error");
+          return;
+        }
+        if (!Array.isArray(items)) {
+          status.textContent = "Unerwartete API-Antwort.";
+          status.classList.add("error");
+          return;
+        }
+        const files = items
+          .filter(function (f) {
+            return f && f.type === "file" &&
+              /\.html$/i.test(f.name) &&
+              f.name.toLowerCase() !== "index.html";
+          })
+          .sort(function (a, b) {
+            return String(b.name).localeCompare(String(a.name));
+          });
+
+        if (!files.length) {
+          status.textContent = "Noch keine Exporte auf diesem Branch.";
+          return;
+        }
+
+        status.hidden = true;
+        list.hidden = false;
+        for (const f of files) {
+          const li = document.createElement("li");
+          const a = document.createElement("a");
+          a.href = encodeURI(f.name);
+          a.textContent = f.name;
+          const meta = document.createElement("span");
+          meta.className = "meta";
+          meta.textContent = fmtSize(f.size);
+          a.appendChild(meta);
+          li.appendChild(a);
+          list.appendChild(li);
+        }
+      }
+
+      main();
+    })();
+  </script>
+</body>
+</html>

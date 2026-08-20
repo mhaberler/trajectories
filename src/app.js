@@ -10,7 +10,7 @@ import {
   setUnits, unitState, fmtHeight, fmtWind, heightUnit,
   heightToDisplay, heightFromDisplay, heightSliderCfg,
 } from "./units";
-import { initGeocode } from "./geocode.js";
+import { initGeocode, reversePlaceName } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
 
@@ -190,7 +190,7 @@ const EXPORT_FIELDS = [
 ];
 
 /** Bump when an export default flips and old localStorage must not keep the prior value. */
-const EXPORT_OPTS_REV = 2; // 2: html.profile default false (was true)
+const EXPORT_OPTS_REV = 3; // 3: html.exaggeration default 1.5 (was 3)
 
 function mergeExportOpts(stored, rev = 0) {
   const out = {};
@@ -200,6 +200,8 @@ function mergeExportOpts(stored, rev = 0) {
   // Einmalig: gespeichertes profile:true stammte vom alten Default, nicht
   // zwingend von einer bewussten Wahl — nach Rev-Bump auf den neuen Default.
   if (rev < 2 && out.html) out.html.profile = false;
+  // Einmalig: Überhöhung auf 1.5 (alter Default 3; Zwischenspeicher oft 2–3).
+  if (rev < 3 && out.html) out.html.exaggeration = 1.5;
   return out;
 }
 
@@ -4901,7 +4903,6 @@ async function resolveExportPlaceName() {
   if (state.startPlace) return state.startPlace;
   if (!state.start) return null;
   try {
-    const { reversePlaceName } = await import("./geocode.js");
     const name = await reversePlaceName(state.start.lat, state.start.lon);
     if (name) {
       state.startPlace = name;

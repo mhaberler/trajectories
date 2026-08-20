@@ -306,7 +306,7 @@ ${p.viewerCss}
   <div id="globe"></div>
   <div class="gv-3d-chrome">
     <label class="gv-exagg">Überhöhung
-      <input type="range" id="ex-globe-exagg" min="1" max="10" step="0.5" />
+      <input type="range" id="ex-globe-exagg" min="1" max="10" step="0.1" value="1.5" />
       <span id="ex-globe-exagg-label">×1.5</span>
     </label>
     <label class="gv-exagg">Karte

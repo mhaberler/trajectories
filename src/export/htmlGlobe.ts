@@ -39,7 +39,8 @@ function setNote(msg: string, isError = false) {
 
 function exaggeration() {
   const inp = document.getElementById("ex-globe-exagg") as HTMLInputElement | null;
-  return Math.max(1, +(inp?.value || 1));
+  const v = +(inp?.value || 1.5);
+  return Math.min(10, Math.max(1, Number.isFinite(v) ? v : 1.5));
 }
 
 function imageryLayers(kind: ImageryKind) {
@@ -301,8 +302,9 @@ function wireExagg() {
   const label = document.getElementById("ex-globe-exagg-label");
   if (!inp || !label) return;
   const sync = () => {
-    label.textContent = `×${inp.value}`;
-    writeViewState({ view: "3d", exagg: +inp.value, imagery: currentImagery });
+    const v = exaggeration();
+    label.textContent = `×${v % 1 === 0 ? String(v) : v.toFixed(1)}`;
+    writeViewState({ view: "3d", exagg: v, imagery: currentImagery });
     redraw();
   };
   inp.addEventListener("input", sync);
@@ -329,9 +331,12 @@ export async function initGlobe(data: Payload): Promise<void> {
   const inp = document.getElementById("ex-globe-exagg") as HTMLInputElement | null;
   if (inp && !viewer) {
     const ex = url.exagg ?? data.opts.exaggeration ?? 1.5;
-    inp.value = String(ex);
+    const clamped = Math.min(10, Math.max(1, Number(ex) || 1.5));
+    inp.value = String(clamped);
     const label = document.getElementById("ex-globe-exagg-label");
-    if (label) label.textContent = `×${inp.value}`;
+    if (label) {
+      label.textContent = `×${clamped % 1 === 0 ? String(clamped) : clamped.toFixed(1)}`;
+    }
   }
   if (!viewer) {
     createViewer();

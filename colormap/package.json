@@ -1,0 +1,21 @@
+{
+  "name": "colormap",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "chroma-js": "^3.2.0",
+    "d3-scale-chromatic": "^3.1.0",
+    "dicopal": "^0.8.1",
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vite": "^8.2.2"
+  }
+}

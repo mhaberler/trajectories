@@ -639,12 +639,16 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   border-top: 1px solid #e8e7e3;
 }
 .ex-share-block .hint { margin: 6px 0 0; }
-.ex-share-block input[type="password"],
 .ex-share-block input[type="text"],
 .ex-share-block input[type="url"] {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
+}
+/* PAT als Text (kein type=password) — sonst „Passwort speichern?“ beim Teilen. */
+.ex-share-block input.ex-share-token {
+  -webkit-text-security: disc;
+  text-security: disc;
 }
 /* Icon-Knöpfe: Text in title/aria-label, damit die Spalte nicht gesprengt wird. */
 #download,
@@ -667,6 +671,66 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 #overlays-block { margin-top: 12px; }
 #overlays-row { margin: 4px 0 6px; }
 #overlays-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* Karten-Tracks-Panel (Leaflet-Control, analog HTML-Export) */
+.map-tracks-panel {
+  background: rgba(252, 252, 251, 0.96);
+  border: 1px solid #c9c8c2;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.2);
+  font-size: 12px;
+  max-width: 240px;
+}
+.map-tracks-panel .gv-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-weight: 600;
+  cursor: move;
+  border-bottom: 1px solid #e8e7e3;
+  user-select: none;
+}
+.map-tracks-panel.collapsed .gv-panel-body { display: none; }
+.map-tracks-panel.collapsed .gv-panel-head { border-bottom: none; }
+.map-tracks-panel .gv-panel-body {
+  padding: 4px 8px 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+.map-tracks-panel .gv-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+}
+.map-tracks-panel .gv-row input { margin: 0; flex: none; }
+.map-tracks-panel .gv-row .gv-name { flex: 1 1 auto; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-tracks-panel .gv-row .gv-zoom {
+  flex: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #1c5cab;
+  font-size: 12px;
+  padding: 0 2px;
+}
+.map-tracks-panel .gv-section {
+  margin-top: 6px;
+  padding: 4px 0 2px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7a7970;
+  border-top: 1px solid #e8e7e3;
+}
+.map-tracks-panel .chip {
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  box-shadow: none;
+}
 .overlay-card {
   border: 1px solid #c9c8c2;
   border-radius: 6px;
@@ -1013,7 +1077,7 @@ body.v3d-resizing-s #map { pointer-events: none; }
   }
 
   /* Touch-Ziele vergrößern; 16px verhindert den Auto-Zoom von iOS Safari. */
-  select, input[type="number"], input[type="password"], button { font-size: 16px; }
+  select, input[type="number"], input[type="text"], input[type="password"], button { font-size: 16px; }
   select, input[type="number"] { padding: 6px 8px; }
   #run { padding: 12px; }
   #download, #xsecbtn, #view3dbtn { padding: 10px; }

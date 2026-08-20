@@ -21,6 +21,15 @@ interface Track {
   bounds: any;
 }
 
+interface OverlayTrack {
+  name: string;
+  color: string;
+  note: string;
+  visible: boolean;
+  layer: any;
+  bounds: any;
+}
+
 function esc(s: string) {
   return String(s).replace(/[<>&"']/g, (c) =>
     ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c] as string));
@@ -162,10 +171,12 @@ function floatingPanel(map: any, position: string, title: string, body: HTMLElem
 function buildTracklist(
   map: any,
   tracks: Track[],
+  overlays: OverlayTrack[],
   onProfile: ((on: boolean) => void) | null,
   profileOn: boolean,
 ) {
   const body = document.createElement("div");
+
   for (const t of tracks) {
     const row = document.createElement("div");
     row.className = "gv-row";
@@ -195,6 +206,46 @@ function buildTracklist(
 
     row.append(cb, chip, name, zoom);
     body.appendChild(row);
+  }
+
+  if (overlays.length) {
+    const head = document.createElement("div");
+    head.className = "gv-section";
+    head.textContent = "Flugspuren";
+    body.appendChild(head);
+
+    for (const o of overlays) {
+      const row = document.createElement("div");
+      row.className = "gv-row";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = o.visible !== false;
+      cb.addEventListener("change", () => {
+        if (cb.checked) o.layer.addTo(map);
+        else map.removeLayer(o.layer);
+      });
+
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.background = o.color;
+
+      const name = document.createElement("span");
+      name.className = "gv-name";
+      name.textContent = o.name;
+      if (o.note) name.title = o.note;
+
+      const zoom = document.createElement("button");
+      zoom.className = "gv-zoom";
+      zoom.textContent = "⤢";
+      zoom.title = "Auf diese Flugspur zoomen";
+      zoom.addEventListener("click", () => {
+        if (o.bounds?.isValid?.()) map.fitBounds(o.bounds, { padding: [20, 20] });
+      });
+
+      row.append(cb, chip, name, zoom);
+      body.appendChild(row);
+    }
   }
 
   // Querschnitt-Schalter am Ende der Liste, abgesetzt von den Tracks.
@@ -311,13 +362,11 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   buildOpacityControl(map, () => active, data.opts.baseOpacity);
 
   const tracks = buildTracks(map, data);
-  buildOverlays(map, data);
+  const overlays = buildOverlays(map, data);
   let bounds = tracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
-  for (const o of data.overlays || []) {
-    if (o.visible === false || !o.coords?.length) continue;
-    const b = L.latLngBounds(o.coords.map((c) => [c[0], c[1]]));
-    if (!b.isValid()) continue;
-    bounds = bounds ? bounds.extend(b) : b;
+  for (const o of overlays) {
+    if (o.visible === false || !o.bounds?.isValid?.()) continue;
+    bounds = bounds ? bounds.extend(o.bounds) : o.bounds;
   }
   if (bounds) map.fitBounds(bounds, { padding: [30, 30] });
 
@@ -326,8 +375,8 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   const urlProfile = readViewState().profile;
   const profileOn = urlProfile !== undefined ? urlProfile : !!data.opts.profile;
   const toggleProfile = buildProfile(map, data, profileOn);
-  if (data.opts.tracklist && tracks.length) {
-    buildTracklist(map, tracks, toggleProfile, profileOn);
+  if (data.opts.tracklist && (tracks.length || overlays.length)) {
+    buildTracklist(map, tracks, overlays, toggleProfile, profileOn);
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
 
@@ -343,10 +392,13 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   return { invalidateSize: syncSize };
 }
 
-function buildOverlays(map: any, data: Payload) {
+function buildOverlays(map: any, data: Payload): OverlayTrack[] {
+  const out: OverlayTrack[] = [];
   for (const o of data.overlays || []) {
-    if (o.visible === false || !o.coords || o.coords.length < 2) continue;
+    if (!o.coords || o.coords.length < 2) continue;
     const latlngs = o.coords.map((c) => [c[0], c[1]]);
+    const bounds = L.latLngBounds(latlngs);
+    const group = L.layerGroup();
     const line = L.polyline(latlngs, {
       color: o.color || "#c45c26",
       weight: Math.max(2, (data.opts.lineWidth || 3) - 0.5),
@@ -358,8 +410,19 @@ function buildOverlays(map: any, data: Payload) {
         `<strong>${esc(o.name)}</strong><div style="margin-top:4px;white-space:pre-wrap">${esc(o.note)}</div>`,
       );
     }
-    line.addTo(map);
+    line.addTo(group);
+    const visible = o.visible !== false;
+    if (visible) group.addTo(map);
+    out.push({
+      name: o.name,
+      color: o.color || "#c45c26",
+      note: o.note || "",
+      visible,
+      layer: group,
+      bounds,
+    });
   }
+  return out;
 }
 
 export { initViewer };

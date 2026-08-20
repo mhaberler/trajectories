@@ -17,3 +17,4 @@ python/tests/artifacts/
 myvisualizer
 .cache
 .claude/settings.json
+skills.json

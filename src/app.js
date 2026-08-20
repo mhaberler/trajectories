@@ -151,7 +151,7 @@ const EXPORT_DEFAULTS = {
     tracklist: true,
     legendHtml: "",
     defaultView: "2d",
-    exaggeration: 3,
+    exaggeration: 1.5,
     /** 3D-Kartengrundlage (esri|osm|opentopo); mit App-3D synchron. */
     defaultImagery: "esri",
   },
@@ -317,6 +317,10 @@ const state = {
   pinLayers: L.layerGroup().addTo(map),
   layers: L.layerGroup().addTo(map),
   overlayLayers: L.layerGroup().addTo(map), // importierte Flugspuren
+  /** @type {Map<string, { run: object, layer: object, bounds: object|null }>} */
+  runMapTracks: new Map(),
+  /** @type {Set<string>} */
+  hiddenRunKeys: new Set(),
   pinRuns: new Map(), // Höhe(m) -> berechneter Run, damit Pins beim Scrubben nicht neu rechnen
   pinKey: "",         // Satz der aktuell gezeichneten Pin-Höhen (für „nur bei Änderung neu zeichnen")
   startMarker: null,
@@ -2184,6 +2188,8 @@ function dropRunsForHeight(m) {
     // Letzte Höhe entfernt — es gibt nichts mehr zu zeigen.
     state.layers.clearLayers();
     state.pinLayers.clearLayers();
+    state.runMapTracks.clear();
+    state.hiddenRunKeys.clear();
     state.lastRuns = null;
     state.xsec = null;
     resetRunSelection();
@@ -2193,6 +2199,7 @@ function dropRunsForHeight(m) {
     el("view3dbtn").disabled = true;
     showCrossSection(false);
     if (view3dMod && !el("view3d").hidden) hide3D();
+    refreshMapTracklist();
     return;
   }
 
@@ -2214,18 +2221,34 @@ function repaintRuns() {
   const { runs, mode } = state.lastRuns;
   state.layers.clearLayers();
   state.pinLayers.clearLayers();
+  state.runMapTracks.clear();
   restoreStartMarkerVisibility();
   const pickable = mode === "agl";
-  for (const run of runs) drawCasing(run.r, state.layers);
-  for (const run of runs) {
-    drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
-      onSelect: trackSelectHandler(run, pickable),
-    });
-  }
+  paintRunsAsMapTracks(runs, state.layers, pickable);
   el("results").innerHTML = "";
   for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
   highlightSelectedRun();
+  refreshMapTracklist();
   void direction;
+}
+
+/**
+ * Zeichnet Läufe als einzeln schaltbare LayerGroups in `parent`.
+ * `state.runMapTracks` wird ergänzt (nicht geleert — Caller leert bei Bedarf).
+ */
+function paintRunsAsMapTracks(runs, parent, pickable) {
+  for (const run of runs) {
+    const key = runKey(run);
+    const g = L.layerGroup();
+    drawCasing(run.r, g);
+    drawTrajectory(run.r, run.color, run.label, run.dash, g, {
+      onSelect: trackSelectHandler(run, pickable),
+    });
+    const latlngs = (run.r?.points || []).map((p) => [p.lat, p.lon]);
+    const bounds = latlngs.length >= 2 ? L.latLngBounds(latlngs) : null;
+    state.runMapTracks.set(key, { run, layer: g, bounds, parent });
+    if (!state.hiddenRunKeys.has(key)) g.addTo(parent);
+  }
 }
 
 // --- Höhenbalken: Skala, Umrechnung Pixel<->Höhe, Rendern -------------------
@@ -3302,6 +3325,7 @@ async function runTrajectoriesViaApi({
   state.pinLayers.clearLayers();
   state.pinRuns.clear();
   state.pinKey = "";
+  state.runMapTracks.clear();
   if (!keepSiblings) {
     state.dimLayers.clearLayers();
     el("results").innerHTML = "";
@@ -3424,12 +3448,8 @@ async function runTrajectoriesViaApi({
         `Kandidat: ${runs[0].label} — Marken anklicken zum Ändern`;
     } else {
       const pickable = mode === "agl";
-      for (const run of runs) drawCasing(run.r, state.layers);
-      for (const run of runs) {
-        drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
-          onSelect: trackSelectHandler(run, pickable),
-        });
-      }
+      state.runMapTracks.clear();
+      paintRunsAsMapTracks(runs, state.layers, pickable);
       for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
       state.lastRuns = { runs, modelKey, mode, t0Ms, duration: forecastHours, direction };
       state.xsec = {
@@ -3441,6 +3461,10 @@ async function runTrajectoriesViaApi({
         direction,
         overlay: compareMode,
       };
+      for (const k of [...state.hiddenRunKeys]) {
+        if (!runs.some((r) => runKey(r) === k)) state.hiddenRunKeys.delete(k);
+      }
+      refreshMapTracklist();
     }
 
     const g0 = (keepSiblings ? runs[0] : runs[0])?.terrain?.find((g) => Number.isFinite(g));
@@ -3564,6 +3588,7 @@ async function runTrajectories() {
     state.pinLayers.clearLayers();
     state.pinRuns.clear();
     state.pinKey = "";
+    state.runMapTracks.clear();
   }
   setDownloadEnabled(false);
   el("xsecbtn").disabled = true;
@@ -3573,6 +3598,7 @@ async function runTrajectories() {
   state.lastRuns = null;
   state.xsec = null;
   resetRunSelection();
+  refreshMapTracklist();
   setStatus("Berechne …");
   const t0 = performance.now();
 
@@ -3666,30 +3692,28 @@ async function runTrajectories() {
     }
 
     // Zeichnen. Pins nur neu, wenn sich ihr Satz geändert hat — reines Ziehen
-    // der aktiven Höhe lässt die Pins unangetastet (kein Flackern). Je Layer
-    // zwei Durchgänge (erst alle weißen Unterlagen, dann alle Farblinien),
-    // sonst übermalt die Unterlage einer Linie die Nachbarlinie, wo Pfade
-    // (fast) übereinanderliegen, und in Strichlücken erschiene Weiß.
+    // der aktiven Höhe lässt die Pins unangetastet (kein Flackern). Läufe als
+    // einzeln schaltbare LayerGroups (Tracks-Panel).
     const pinKey = pinHeights.join(",");
     const pickable = mode === "agl" && !compareMode;
-    if (!scrub || pinKey !== state.pinKey) {
+    const redrawPins = !scrub || pinKey !== state.pinKey;
+    if (redrawPins) {
       state.pinLayers.clearLayers();
-      for (const run of pinRunList) drawCasing(run.r, state.pinLayers);
-      for (const run of pinRunList) {
-        drawTrajectory(run.r, run.color, run.label, run.dash, state.pinLayers, {
-          onSelect: trackSelectHandler(run, pickable),
-        });
-      }
       state.pinKey = pinKey;
     }
     state.dimLayers.clearLayers();
     restoreStartMarkerVisibility();
-    for (const run of activeRuns) drawCasing(run.r, state.layers);
-    for (const run of activeRuns) {
-      drawTrajectory(run.r, run.color, run.label, run.dash, state.layers, {
-        onSelect: trackSelectHandler(run, pickable),
-      });
+    state.layers.clearLayers();
+    // runMapTracks: aktive immer neu; Pins nur mitzeichnen/ersetzen wenn neu.
+    if (redrawPins) {
+      for (const key of [...state.runMapTracks.keys()]) {
+        if (!activeRuns.some((r) => runKey(r) === key)) state.runMapTracks.delete(key);
+      }
+    } else {
+      for (const run of activeRuns) state.runMapTracks.delete(runKey(run));
     }
+    if (redrawPins) paintRunsAsMapTracks(pinRunList, state.pinLayers, pickable);
+    paintRunsAsMapTracks(activeRuns, state.layers, pickable);
 
     // Alle sichtbaren Läufe (aktiv + Pins) nach Höhe sortiert — Ergebnisliste,
     // Querschnitt und 3D-Ansicht spiegeln so das gesamte Bild.
@@ -3697,6 +3721,11 @@ async function runTrajectories() {
     for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
     state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
     setDownloadEnabled(runs.length > 0);
+    // Verwaiste hidden-Keys aufräumen; Tracklist aktualisieren.
+    for (const k of [...state.hiddenRunKeys]) {
+      if (!runs.some((r) => runKey(r) === k)) state.hiddenRunKeys.delete(k);
+    }
+    refreshMapTracklist();
 
     // Querschnitt: Modellgelände entlang jedes Pfades aus dem Punkt-Cache.
     // Im Vergleichsmodus als Overlay (ein Streifen, Gelände der Referenz).
@@ -4263,17 +4292,182 @@ const OVERLAY_COLORS = [
 ];
 let overlayIdSeq = 0;
 
+/** @type {import("leaflet").Control | null} */
+let mapTracklistCtl = null;
+/** @type {HTMLElement | null} */
+let mapTracklistBody = null;
+
 function nextOverlayColor() {
   const used = new Set(state.overlays.map((o) => o.color));
   return OVERLAY_COLORS.find((c) => !used.has(c))
     || OVERLAY_COLORS[state.overlays.length % OVERLAY_COLORS.length];
 }
 
+/** Schwebendes Tracks-Panel (topright), analog HTML-Export. */
+function ensureMapTracklistPanel() {
+  if (mapTracklistCtl) return;
+  mapTracklistBody = document.createElement("div");
+  const Ctl = L.Control.extend({
+    onAdd() {
+      const d = L.DomUtil.create("div", "map-tracks-panel");
+      const head = L.DomUtil.create("div", "gv-panel-head", d);
+      head.textContent = "Tracks";
+      const wrap = L.DomUtil.create("div", "gv-panel-body", d);
+      wrap.appendChild(mapTracklistBody);
+      L.DomEvent.disableClickPropagation(d);
+      L.DomEvent.disableScrollPropagation(d);
+      head.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        d.classList.toggle("collapsed");
+      });
+      let drag = null;
+      head.addEventListener("pointerdown", (e) => {
+        const r = d.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        head.setPointerCapture(e.pointerId);
+        d.style.position = "fixed";
+        d.style.margin = "0";
+      });
+      head.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        d.style.left = `${e.clientX - drag.dx}px`;
+        d.style.top = `${e.clientY - drag.dy}px`;
+        d.style.right = "auto";
+        d.style.bottom = "auto";
+      });
+      head.addEventListener("pointerup", (e) => {
+        drag = null;
+        try { head.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      });
+      return d;
+    },
+  });
+  mapTracklistCtl = new Ctl({ position: "topright" });
+  map.addControl(mapTracklistCtl);
+}
+
+function setMapTracklistVisible(on) {
+  const elPanel = document.querySelector(".map-tracks-panel");
+  if (elPanel) elPanel.style.display = on ? "" : "none";
+}
+
+/** Tracks-Panel aus Trajektorien + Flugspuren neu füllen. */
+function refreshMapTracklist() {
+  const runs = state.lastRuns?.runs || [];
+  const overlays = state.overlays.filter((o) => o.coords?.length >= 2);
+  if (!runs.length && !overlays.length) {
+    setMapTracklistVisible(false);
+    return;
+  }
+  ensureMapTracklistPanel();
+  setMapTracklistVisible(true);
+  const body = mapTracklistBody;
+  body.innerHTML = "";
+
+  for (const run of runs) {
+    const key = runKey(run);
+    const entry = state.runMapTracks.get(key);
+    const row = document.createElement("div");
+    row.className = "gv-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !state.hiddenRunKeys.has(key);
+    cb.addEventListener("change", () => {
+      if (cb.checked) {
+        state.hiddenRunKeys.delete(key);
+        if (entry) entry.layer.addTo(entry.parent || state.layers);
+      } else {
+        state.hiddenRunKeys.add(key);
+        if (entry) (entry.parent || state.layers).removeLayer(entry.layer);
+      }
+    });
+
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = run.color;
+
+    const name = document.createElement("span");
+    name.className = "gv-name";
+    name.textContent = run.label;
+    name.title = run.label;
+
+    const zoom = document.createElement("button");
+    zoom.type = "button";
+    zoom.className = "gv-zoom";
+    zoom.textContent = "⤢";
+    zoom.title = "Auf diesen Track zoomen";
+    zoom.addEventListener("click", () => {
+      const b = entry?.bounds;
+      if (b?.isValid?.()) map.fitBounds(b, { padding: [40, 40], maxZoom: 14 });
+    });
+
+    row.append(cb, chip, name, zoom);
+    body.appendChild(row);
+  }
+
+  if (overlays.length) {
+    const head = document.createElement("div");
+    head.className = "gv-section";
+    head.textContent = "Flugspuren";
+    body.appendChild(head);
+
+    for (const o of overlays) {
+      const row = document.createElement("div");
+      row.className = "gv-row";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = o.visible !== false;
+      cb.addEventListener("change", () => {
+        o.visible = cb.checked;
+        if (o._mapLayer) {
+          if (cb.checked) o._mapLayer.addTo(state.overlayLayers);
+          else state.overlayLayers.removeLayer(o._mapLayer);
+        } else {
+          redrawOverlayMap();
+        }
+        // Side-Panel-Checkbox mitziehen
+        const side = el("overlays-list")?.querySelector(`.overlay-card[data-id="${o.id}"] input[type="checkbox"]`);
+        if (side && side.checked !== cb.checked) side.checked = cb.checked;
+        refreshOverlays3d();
+        updateView3dButton();
+      });
+
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.background = o.color;
+
+      const name = document.createElement("span");
+      name.className = "gv-name";
+      name.textContent = o.name;
+      if (o.note) name.title = o.note;
+
+      const zoom = document.createElement("button");
+      zoom.type = "button";
+      zoom.className = "gv-zoom";
+      zoom.textContent = "⤢";
+      zoom.title = "Auf diese Flugspur zoomen";
+      zoom.addEventListener("click", () => {
+        const b = o._bounds;
+        if (b?.isValid?.()) map.fitBounds(b, { padding: [40, 40], maxZoom: 14 });
+      });
+
+      row.append(cb, chip, name, zoom);
+      body.appendChild(row);
+    }
+  }
+}
+
 function redrawOverlayMap() {
   state.overlayLayers.clearLayers();
   for (const o of state.overlays) {
-    if (o.visible === false || o.coords.length < 2) continue;
+    o._mapLayer = null;
+    o._bounds = null;
+    if (o.coords.length < 2) continue;
     const latlngs = o.coords.map((c) => [c.lat, c.lon]);
+    const bounds = L.latLngBounds(latlngs);
+    const group = L.layerGroup();
     const line = L.polyline(latlngs, {
       color: o.color,
       weight: 3.5,
@@ -4286,8 +4480,12 @@ function redrawOverlayMap() {
       line.bindPopup(`<strong>${esc(o.name)}</strong>` +
         `<div style="margin-top:4px;white-space:pre-wrap">${esc(o.note)}</div>`);
     }
-    line.addTo(state.overlayLayers);
+    line.addTo(group);
+    o._mapLayer = group;
+    o._bounds = bounds;
+    if (o.visible !== false) group.addTo(state.overlayLayers);
   }
+  refreshMapTracklist();
 }
 
 function renderOverlaysList() {

@@ -277,14 +277,19 @@
           <div class="label">Teilen (GitHub Pages) <span class="hint">HTML → öffentlicher Link</span></div>
           <label class="row">
             <span class="label">PAT</span>
-            <input type="password" id="ex-share-token" autocomplete="off" placeholder="github_pat_…" />
+            <input type="text" id="ex-share-token" class="ex-share-token"
+                   autocomplete="off" autocapitalize="off" autocorrect="off"
+                   spellcheck="false" inputmode="text"
+                   data-1p-ignore="true" data-lpignore="true" data-form-type="other"
+                   placeholder="github_pat_…" />
           </label>
           <div class="grid2">
             <label>Owner
-              <input type="text" id="ex-share-owner" spellcheck="false" />
+              <input type="text" id="ex-share-owner" autocomplete="off" spellcheck="false"
+                     data-1p-ignore="true" data-lpignore="true" />
             </label>
             <label>Repo
-              <input type="text" id="ex-share-repo" spellcheck="false" />
+              <input type="text" id="ex-share-repo" autocomplete="off" spellcheck="false" />
             </label>
             <label>Branch
               <input type="text" id="ex-share-branch" spellcheck="false" />

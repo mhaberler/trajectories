@@ -101,7 +101,7 @@ export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
   tracklist: true,
   legendHtml: "",
   defaultView: "2d",
-  exaggeration: 3,
+  exaggeration: 1.5,
   defaultImagery: "esri",
 };
 
@@ -307,7 +307,7 @@ ${p.viewerCss}
   <div class="gv-3d-chrome">
     <label class="gv-exagg">Überhöhung
       <input type="range" id="ex-globe-exagg" min="1" max="10" step="0.5" />
-      <span id="ex-globe-exagg-label">×3</span>
+      <span id="ex-globe-exagg-label">×1.5</span>
     </label>
     <label class="gv-exagg">Karte
       <select id="ex-globe-imagery">

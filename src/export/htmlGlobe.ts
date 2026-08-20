@@ -328,7 +328,7 @@ export async function initGlobe(data: Payload): Promise<void> {
   currentImagery = resolveImagery(url.imagery, data.opts.defaultImagery);
   const inp = document.getElementById("ex-globe-exagg") as HTMLInputElement | null;
   if (inp && !viewer) {
-    const ex = url.exagg ?? data.opts.exaggeration ?? 3;
+    const ex = url.exagg ?? data.opts.exaggeration ?? 1.5;
     inp.value = String(ex);
     const label = document.getElementById("ex-globe-exagg-label");
     if (label) label.textContent = `×${inp.value}`;

@@ -112,7 +112,13 @@ unter **Export-Einstellungen (⚙)** und liegen nur in `localStorage`.
 2. **Settings → Pages**: Quelle `gh-pages` / Root.
 3. Fine-grained PAT mit **Contents: Read and write** nur für dieses Repo.
 4. In der App PAT + Owner/Repo/Branch eintragen; Teilen → Link
-   `https://{owner}.github.io/{repo}/trajektorien_….html` (Clipboard).
+   `https://{owner}.github.io/{repo}/….html` (Clipboard).
+
+Dateinamen (Download und Share) folgen einem editierbaren Muster unter
+**Export-Einstellungen**, Vorgabe
+`{ymd}_{hm}Z_{place}_{duration}_{model}` (z. B.
+`20260820_0900Z_Innsbruck_12h-fwd_ICON-D2.html`). Bei Share-Kollisionen
+wird `-2`, `-3`, … angehängt.
 
 Die Branch-Startseite (`index.html`, Vorlage
 [`share/gh-pages-index.html`](share/gh-pages-index.html)) listet vorhandene
@@ -156,6 +162,7 @@ Pages braucht nach dem ersten Upload oft 30–60 s. Cesium kommt weiter vom CD
 | `src/config.js` | Server, Modellgitter/BBoxen, feste Höhen-Farbzuordnung |
 | `src/app.js` | Leaflet-UI |
 | `src/export/shareGithub.ts` | HTML-Share via GitHub Contents API / Pages |
+| `src/export/filename.ts` | Export-Dateinamen aus Muster/Tokens |
 | `src/view3d.js` | 3D-Ansicht (CesiumJS lazy; Re:Earth / Ion / flat; Esri / OSM) |
 | `test/` | Offline-Tests (Kreisschluss, Umkehrbarkeit) + Live-Smoke-Test |
 

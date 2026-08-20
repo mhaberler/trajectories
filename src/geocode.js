@@ -2,12 +2,37 @@
 
 const PHOTON = "https://photon.komoot.io";
 
+/** OSM-Werte, die selbst ein Ort sind (nicht Straße/Haus). */
+const LOCALITY_OSM = new Set([
+  "city", "town", "village", "hamlet", "municipality", "suburb", "neighbourhood",
+  "locality", "county", "state", "district",
+]);
+
 function featureLabel(props) {
   const name = props.name || props.street || props.city || "Ort";
   const crumbs = [props.city, props.county, props.state, props.country]
     .filter(Boolean)
     .filter((c, i, a) => a.indexOf(c) === i && c !== name);
   return { name, sub: crumbs.join(", ") };
+}
+
+/**
+ * Ortsname für Dateinamen: Stadt/Gemeinde/Dorf, nicht Straße.
+ * Photon liefert bei Reverse oft `name=Flurgasse` plus `city=Lieboch`.
+ */
+export function localityName(props) {
+  const p = props || {};
+  const cityish = p.city || p.town || p.village || p.municipality
+    || p.district || p.county;
+  if (cityish) return String(cityish);
+  const kind = String(p.osm_value || p.type || "");
+  if (p.name && LOCALITY_OSM.has(kind)) return String(p.name);
+  // Kein Straßenname als Ort
+  if (p.name && kind !== "street" && kind !== "highway" && kind !== "house"
+      && !p.street) {
+    return String(p.name);
+  }
+  return cityish ? String(cityish) : null;
 }
 
 function textEl(tag, text, className) {
@@ -25,7 +50,7 @@ async function photonSearch(q) {
   return Array.isArray(data.features) ? data.features : [];
 }
 
-async function photonReverse(lat, lon) {
+export async function photonReverse(lat, lon) {
   const url = `${PHOTON}/reverse?${new URLSearchParams({
     lat: String(lat), lon: String(lon), limit: "1", lang: "de",
   })}`;
@@ -38,8 +63,21 @@ async function photonReverse(lat, lon) {
   return sub ? `${name} — ${sub}` : name;
 }
 
+/** Kurzer Ortsname für Dateinamen (Stadt/Gemeinde, nicht Straße). */
+export async function reversePlaceName(lat, lon) {
+  const url = `${PHOTON}/reverse?${new URLSearchParams({
+    lat: String(lat), lon: String(lon), limit: "1", lang: "de",
+  })}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Photon ${resp.status}`);
+  const data = await resp.json();
+  const f = data.features?.[0];
+  if (!f) return null;
+  return localityName(f.properties || {}) || null;
+}
+
 /**
- * @param {{ map: L.Map, setStart: (lat: number, lon: number) => void, debounce: Function, el: (id: string) => HTMLElement }} opts
+ * @param {{ map: L.Map, setStart: (lat: number, lon: number, opts?: { placeName?: string|null }) => void, debounce: Function, el: (id: string) => HTMLElement }} opts
  */
 export function initGeocode({ map, setStart, debounce, el }) {
   const input = el("geocode");
@@ -82,10 +120,12 @@ export function initGeocode({ map, setStart, debounce, el }) {
     const f = hits[i];
     if (!f?.geometry?.coordinates) return;
     const [lon, lat] = f.geometry.coordinates;
-    const { name, sub } = featureLabel(f.properties || {});
+    const props = f.properties || {};
+    const { name, sub } = featureLabel(props);
     input.value = sub ? `${name}, ${sub}` : name;
     hide();
-    setStart(lat, lon);
+    const place = localityName(props) || name;
+    setStart(lat, lon, { placeName: place });
     map.setView([lat, lon], Math.max(map.getZoom(), 11));
   }
 

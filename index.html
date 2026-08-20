@@ -273,6 +273,14 @@
           </label>
         </div>
 
+        <div class="ex-filename-block">
+          <label class="label" for="ex-filename-pattern">Dateiname <span class="hint">(alle Formate)</span></label>
+          <input type="text" id="ex-filename-pattern" spellcheck="false"
+                 placeholder="{ymd}_{hm}Z_{place}_{duration}_{model}" />
+          <p class="hint">Tokens: <code>{ymd}</code> <code>{hm}</code> <code>{place}</code> <code>{duration}</code> <code>{model}</code> · Trenner <code>_</code></p>
+          <p id="ex-filename-preview" class="hint mono" aria-live="polite"></p>
+        </div>
+
         <div class="ex-share-block">
           <div class="label">Teilen (GitHub Pages) <span class="hint">HTML → öffentlicher Link</span></div>
           <label class="row">

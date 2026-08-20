@@ -53,6 +53,7 @@ function persist() {
     activeHeight,
     barMax,
     start: state.start,
+    startPlace: state.startPlace || null,
     view: { center: map.getCenter(), zoom: map.getZoom() },
     baseLayer: activeBaseLayer,
     units: { ...unitState },
@@ -85,6 +86,7 @@ function persist() {
     downloadFmt: el("downloadfmt").value,
     exportOpts,
     exportOptsRev: EXPORT_OPTS_REV,
+    filenamePattern,
     shareGithub: { ...shareGithub },
     fpDemIntervalMin: clampDemIntervalMin(+el("fp-dem-interval")?.value),
     fpInheritMode: profileInheritMode(),
@@ -217,6 +219,12 @@ let xsecRight = Number.isFinite(saved.xsecRight) ? saved.xsecRight : null;
 // worden sein muss — über das DOM ginge der Wert vorher verloren.
 const exportOpts = mergeExportOpts(saved.exportOpts, saved.exportOptsRev || 0);
 
+/** Dateinamen-Muster für alle Exportformate (Download + Share). */
+const DEFAULT_FILENAME_PATTERN = "{ymd}_{hm}Z_{place}_{duration}_{model}";
+let filenamePattern = typeof saved.filenamePattern === "string" && saved.filenamePattern.trim()
+  ? saved.filenamePattern.trim()
+  : DEFAULT_FILENAME_PATTERN;
+
 /** 3D-Kartenwahl der App → Default für HTML-Export-3D. */
 const IMAGERY_KINDS = ["esri", "osm", "opentopo"];
 try {
@@ -335,6 +343,8 @@ const state = {
   pressureLevelProbe: null,
   // Importierte Flugspuren (Session): { id, name, color, note, sourceName, visible, coords }
   overlays: [],
+  /** Ortsname von Geocode-Auswahl (kurz); null = Kartenklick / unbekannt. */
+  startPlace: null,
 };
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
@@ -2808,7 +2818,9 @@ async function updateWDetection() {
 
 updateWDetection();
 if (saved.start && Number.isFinite(saved.start.lat) && Number.isFinite(saved.start.lon)) {
-  setStart(saved.start.lat, saved.start.lon);
+  setStart(saved.start.lat, saved.start.lon, {
+    placeName: saved.startPlace || null,
+  });
 }
 
 // Einheiten-Auswahl: Balken (samt Editierfeld) und, falls offen, Querschnitt
@@ -2902,8 +2914,15 @@ settingsReady = true;
 // --- Startpunkt per Klick / Marker ziehen -----------------------------------
 map.on("click", (e) => setStart(e.latlng.lat, e.latlng.lng));
 
-function setStart(lat, lon) {
+function setStart(lat, lon, opts = {}) {
   state.start = { lat, lon };
+  if (Object.prototype.hasOwnProperty.call(opts, "placeName")) {
+    state.startPlace = opts.placeName ? String(opts.placeName).trim() || null : null;
+  } else {
+    // Kartenklick / Marker ziehen: kein Geocode-Text mehr gültig.
+    state.startPlace = null;
+    reversePlaceKey = null;
+  }
   el("startpos").textContent = `${lat.toFixed(3)}°N ${lon.toFixed(3)}°E`;
   if (!state.startMarker) {
     state.startMarker = L.marker([lat, lon], { draggable: true }).addTo(map);
@@ -2917,6 +2936,7 @@ function setStart(lat, lon) {
   updateRunButton();
   persist();
   fetchStartElevation();
+  updateFilenamePreview();
 }
 
 initGeocode({ map, setStart, debounce, el });
@@ -4800,11 +4820,105 @@ function showExportSection(fmt) {
 
 function openExportModal() {
   showExportSection(el("downloadfmt").value);
+  applyFilenamePatternUI();
+  updateFilenamePreview();
   el("ex-modal").hidden = false;
 }
 
 function closeExportModal() {
   el("ex-modal").hidden = true;
+}
+
+function applyFilenamePatternUI() {
+  const inp = el("ex-filename-pattern");
+  if (inp) inp.value = filenamePattern;
+}
+
+function readFilenamePatternUI() {
+  const inp = el("ex-filename-pattern");
+  if (!inp) return;
+  filenamePattern = inp.value.trim() || DEFAULT_FILENAME_PATTERN;
+  if (inp.value.trim() !== filenamePattern) inp.value = filenamePattern;
+}
+
+function filenameCtxSync() {
+  const modelKey = el("model")?.value || state.lastRuns?.modelKey || "icon_d2";
+  const model = MODELS[modelKey];
+  const sliderH = +el("timeslider")?.value;
+  const fromSlider = Number.isFinite(sliderH) ? sliderH * 3600e3 : NaN;
+  const t0Ms = state.lastRuns?.t0Ms ?? fromSlider;
+  return {
+    t0Ms: Number.isFinite(t0Ms) ? t0Ms : Date.now(),
+    place: state.startPlace,
+    lat: state.start?.lat,
+    lon: state.start?.lon,
+    durationH: state.lastRuns?.duration ?? (+el("duration")?.value || 12),
+    direction: state.lastRuns?.direction ?? (+el("direction")?.value || 1),
+    modelLabel: model?.label || modelKey,
+  };
+}
+
+async function updateFilenamePreview() {
+  const preview = el("ex-filename-preview");
+  if (!preview) return;
+  if (typeof DOWNLOAD_FORMATS === "undefined") return;
+  // Vorschau: fehlenden Ortsnamen per Reverse-Geocode nachziehen (nicht nur beim Download).
+  if (!state.startPlace && state.start) scheduleReversePlaceForFilename();
+  try {
+    const { buildExportFilename } = await import("./export/filename.ts");
+    const key = DOWNLOAD_FORMATS[el("downloadfmt")?.value] ? el("downloadfmt").value : "html";
+    const ext = DOWNLOAD_FORMATS[key]?.ext || "html";
+    const name = buildExportFilename(filenamePattern, filenameCtxSync(), ext);
+    preview.textContent = `Vorschau: ${name}`;
+  } catch {
+    preview.textContent = "";
+  }
+}
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let reversePlaceTimer = null;
+/** Letzter Versuch: „lat,lon“ (4 Nachkommastellen). */
+let reversePlaceKey = null;
+
+function scheduleReversePlaceForFilename() {
+  if (!state.start || state.startPlace) return;
+  const key = `${state.start.lat.toFixed(4)},${state.start.lon.toFixed(4)}`;
+  if (reversePlaceKey === key) return; // schon versucht / läuft
+  clearTimeout(reversePlaceTimer);
+  reversePlaceTimer = setTimeout(() => {
+    void (async () => {
+      if (!state.start || state.startPlace) return;
+      const k = `${state.start.lat.toFixed(4)},${state.start.lon.toFixed(4)}`;
+      reversePlaceKey = k;
+      await resolveExportPlaceName();
+      if (state.startPlace) updateFilenamePreview();
+    })();
+  }, 350);
+}
+
+/** Ort auflösen: Geocode-Text → Reverse → Koordinaten im Builder. */
+async function resolveExportPlaceName() {
+  if (state.startPlace) return state.startPlace;
+  if (!state.start) return null;
+  try {
+    const { reversePlaceName } = await import("./geocode.js");
+    const name = await reversePlaceName(state.start.lat, state.start.lon);
+    if (name) {
+      state.startPlace = name;
+      persist();
+      return name;
+    }
+  } catch {
+    /* Fallback über lat/lon im Filename-Builder */
+  }
+  return null;
+}
+
+async function buildDownloadFilename(ext) {
+  readFilenamePatternUI();
+  await resolveExportPlaceName();
+  const { buildExportFilename } = await import("./export/filename.ts");
+  return buildExportFilename(filenamePattern, filenameCtxSync(), ext);
 }
 
 el("exportcfg").addEventListener("click", openExportModal);
@@ -4817,6 +4931,12 @@ document.addEventListener("keydown", (e) => {
 });
 el("ex-modal").addEventListener("input", (e) => {
   const id = e.target?.id || "";
+  if (id === "ex-filename-pattern") {
+    readFilenamePatternUI();
+    persist();
+    updateFilenamePreview();
+    return;
+  }
   if (id.startsWith("ex-share-")) {
     // Owner/Repo: abgeleitete Pages-Basis mitziehen, solange nicht custom.
     if ((id === "ex-share-owner" || id === "ex-share-repo") && !shareGithub.pagesBaseCustom) {
@@ -4839,7 +4959,14 @@ el("ex-modal").addEventListener("input", (e) => {
   persist();
 });
 el("ex-modal").addEventListener("change", (e) => {
-  if (String(e.target?.id || "").startsWith("ex-share-")) {
+  const id = String(e.target?.id || "");
+  if (id === "ex-filename-pattern") {
+    readFilenamePatternUI();
+    persist();
+    updateFilenamePreview();
+    return;
+  }
+  if (id.startsWith("ex-share-")) {
     readShareGithubUI();
     persist();
     return;
@@ -4850,11 +4977,15 @@ el("ex-modal").addEventListener("change", (e) => {
 el("ex-reset").addEventListener("click", () => {
   const fmt = el("downloadfmt").value;
   exportOpts[fmt] = { ...EXPORT_DEFAULTS[fmt] };
+  filenamePattern = DEFAULT_FILENAME_PATTERN;
   applyExportOptsUI();
+  applyFilenamePatternUI();
+  updateFilenamePreview();
   persist();
 });
 el("downloadfmt").addEventListener("change", () => {
   showExportSection(el("downloadfmt").value);
+  updateFilenamePreview();
   persist();
 });
 
@@ -4878,7 +5009,13 @@ const DOWNLOAD_FORMATS = {
 if (DOWNLOAD_FORMATS[saved.downloadFmt]) el("downloadfmt").value = saved.downloadFmt;
 applyExportOptsUI();
 applyShareGithubUI();
+applyFilenamePatternUI();
 showExportSection(el("downloadfmt").value);
+updateFilenamePreview();
+for (const id of ["duration", "direction", "model", "timeslider"]) {
+  el(id)?.addEventListener("change", updateFilenamePreview);
+  el(id)?.addEventListener("input", updateFilenamePreview);
+}
 
 /** @type {typeof import("./export/html.ts") | null} */
 let htmlExportMod = null;
@@ -4930,9 +5067,7 @@ el("download").addEventListener("click", async () => {
   const blob = new Blob([text], { type: fmt.type });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  const stamp = new Date(state.lastRuns.t0Ms).toISOString().slice(0, 16)
-    .replace(/[-:]/g, "").replace("T", "_");
-  a.download = `trajektorien_${state.lastRuns.modelKey}_${stamp}Z.${fmt.ext}`;
+  a.download = await buildDownloadFilename(fmt.ext);
   a.click();
   URL.revokeObjectURL(a.href);
 });
@@ -4940,6 +5075,7 @@ el("download").addEventListener("click", async () => {
 el("sharehtml").addEventListener("click", async () => {
   if (!state.lastRuns) return;
   readShareGithubUI();
+  readFilenamePatternUI();
   if (!shareGithub.token.trim()) {
     setStatus("Teilen: GitHub-PAT in den Export-Einstellungen setzen.", true);
     openExportModal();
@@ -4955,9 +5091,9 @@ el("sharehtml").addEventListener("click", async () => {
   setStatus("Baue HTML und lade zu GitHub hoch …");
   try {
     htmlExportMod ??= await import("./export/html.ts");
-    const { shareHtml, buildShareFilename, waitForPagesUrl } = await import("./export/shareGithub.ts");
+    const { shareHtml, waitForPagesUrl } = await import("./export/shareGithub.ts");
     const html = htmlExportMod.buildHTML(state.lastRuns, exportCtx("html"));
-    const filename = buildShareFilename(state.lastRuns.modelKey, state.lastRuns.t0Ms);
+    const filename = await buildDownloadFilename("html");
     const pagesBase = shareGithub.pagesBaseCustom && shareGithub.pagesBase
       ? shareGithub.pagesBase
       : defaultSharePagesBase(shareGithub.owner, shareGithub.repo);
@@ -4969,6 +5105,7 @@ el("sharehtml").addEventListener("click", async () => {
       repo: shareGithub.repo,
       branch: shareGithub.branch,
       pagesBase,
+      unique: true,
     });
     try {
       await navigator.clipboard.writeText(pagesUrl);

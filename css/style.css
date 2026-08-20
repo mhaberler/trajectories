@@ -633,6 +633,21 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
   box-sizing: border-box;
 }
 #ex-reset { width: 100%; margin-top: 10px; }
+.ex-filename-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e8e7e3;
+}
+.ex-filename-block input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.ex-filename-block .hint { margin: 4px 0 0; }
+#ex-filename-preview { word-break: break-all; color: #1c5cab; }
+
 .ex-share-block {
   margin-top: 14px;
   padding-top: 12px;

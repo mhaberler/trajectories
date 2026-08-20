@@ -2,6 +2,8 @@
  * HTML-Export auf GitHub Pages teilen (Contents API, Browser-PAT).
  */
 
+import { allocateUniqueFilename, sanitizeFilenamePart } from "./filename";
+
 export interface ShareGithubOpts {
   html: string;
   filename: string;
@@ -11,6 +13,8 @@ export interface ShareGithubOpts {
   branch: string;
   /** Überschreibt die abgeleitete github.io-Basis (Custom Domain). */
   pagesBase?: string;
+  /** Bei Namenskollision `stem-2.html`, `stem-3.html`, … (Default true). */
+  unique?: boolean;
 }
 
 export interface ShareGithubResult {
@@ -44,20 +48,17 @@ export function pagesUrl(file: string, owner: string, repo: string, pagesBase?: 
   return `${b}${name}`;
 }
 
-/** Sichere Dateinamen-Komponente (ASCII). */
+/** @deprecated use sanitizeFilenamePart from ./filename */
 export function sanitizeShareName(s: string): string {
-  return String(s || "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 80) || "export";
+  return sanitizeFilenamePart(s, 80);
 }
 
-/** `trajektorien_{model}_{stamp}_{id}.html` */
+/** @deprecated Prefer buildExportFilename from ./filename */
 export function buildShareFilename(modelKey: string, t0Ms: number, id?: string): string {
   const stamp = new Date(t0Ms).toISOString().slice(0, 16)
     .replace(/[-:]/g, "").replace("T", "_");
   const short = id || Math.random().toString(36).slice(2, 8);
-  return `trajektorien_${sanitizeShareName(modelKey)}_${stamp}_${short}.html`;
+  return `trajektorien_${sanitizeFilenamePart(modelKey)}_${stamp}_${short}.html`;
 }
 
 function utf8ToBase64(text: string): string {
@@ -83,20 +84,49 @@ function apiErrorMessage(status: number, body: string): string {
   return `GitHub-API ${status}: ${msg || "unbekannter Fehler"}`;
 }
 
+async function contentsExists(
+  owner: string,
+  repo: string,
+  path: string,
+  branch: string,
+  token: string,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}?ref=${encodeURIComponent(branch)}`;
+  const res = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (res.status === 404) return false;
+  if (res.ok) return true;
+  const text = await res.text();
+  throw new Error(apiErrorMessage(res.status, text));
+}
+
 /**
  * Lädt HTML als neue Datei auf den gewählten Branch (Contents API).
- * Erzeugt immer einen neuen Pfad — kein SHA/Overwrite nötig.
+ * Mit `unique` (Default true) bei Kollision `stem-2.html` usw.
  */
 export async function shareHtml(opts: ShareGithubOpts, fetchImpl: typeof fetch = fetch): Promise<ShareGithubResult> {
   const token = opts.token?.trim();
   const owner = opts.owner?.trim();
   const repo = opts.repo?.trim();
   const branch = opts.branch?.trim() || "gh-pages";
-  const filename = sanitizeShareName(opts.filename).replace(/\.html$/i, "") + ".html";
+  let filename = sanitizeFilenamePart(String(opts.filename || "").replace(/\.html$/i, ""), 120) + ".html";
 
   if (!token) throw new Error("GitHub-PAT fehlt.");
   if (!owner || !repo) throw new Error("GitHub owner/repo fehlen.");
   if (!opts.html) throw new Error("Kein HTML zum Teilen.");
+
+  if (opts.unique !== false) {
+    const stem = filename.replace(/\.html$/i, "");
+    filename = await allocateUniqueFilename(stem, "html", (name) =>
+      contentsExists(owner, repo, name, branch, token, fetchImpl));
+  }
 
   const path = filename;
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}`;
@@ -152,7 +182,6 @@ export async function waitForPagesUrl(
     try {
       let res = await fetchImpl(url, { method: "HEAD", cache: "no-store" });
       if (res.ok) return true;
-      // Manche CDNs/Proxies blockieren HEAD — GET als Fallback
       if (res.status === 404 || res.status === 405 || res.status === 403) {
         res = await fetchImpl(url, { method: "GET", cache: "no-store" });
         if (res.ok) return true;

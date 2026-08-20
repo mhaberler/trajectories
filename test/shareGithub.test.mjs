@@ -43,7 +43,10 @@ function check(name, cond, detail) {
 {
   const calls = [];
   const fakeFetch = async (url, init) => {
-    calls.push({ url, init });
+    calls.push({ url, init: init || { method: "GET" } });
+    if (!init || init.method === "GET" || !init.method) {
+      return { ok: false, status: 404, async text() { return ""; } };
+    }
     return {
       ok: true,
       status: 201,
@@ -65,9 +68,43 @@ function check(name, cond, detail) {
   r.pagesUrl);
   check("share path", r.path.endsWith(".html"));
   check("share commit", r.commitSha === "deadbeef");
-  check("PUT once", calls.length === 1);
-  check("PUT branch", JSON.parse(calls[0].init.body).branch === "gh-pages");
-  check("Auth bearer", calls[0].init.headers.Authorization === "Bearer ghp_test");
+  check("GET then PUT", calls.length === 2, String(calls.length));
+  check("PUT branch", JSON.parse(calls[1].init.body).branch === "gh-pages");
+  check("Auth bearer", calls[1].init.headers.Authorization === "Bearer ghp_test");
+}
+
+{
+  const calls = [];
+  const fakeFetch = async (url, init) => {
+    calls.push({ url, method: init?.method || "GET" });
+    const path = String(url).split("/contents/")[1]?.split("?")[0] || "";
+    if (!init || init.method === "GET" || !init.method) {
+      // first name exists, -2 free
+      const exists = decodeURIComponent(path) === "demo.html";
+      return { ok: exists, status: exists ? 200 : 404, async text() { return "{}"; } };
+    }
+    return {
+      ok: true,
+      status: 201,
+      async text() {
+        return JSON.stringify({
+          commit: { sha: "abc" },
+          content: { html_url: "https://github.com/x" },
+        });
+      },
+    };
+  };
+  const r = await shareHtml({
+    html: "<html></html>",
+    filename: "demo.html",
+    token: "t",
+    owner: "o",
+    repo: "r",
+    branch: "gh-pages",
+    unique: true,
+  }, fakeFetch);
+  check("bump path", r.path === "demo-2.html", r.path);
+  check("bump pages url", r.pagesUrl.endsWith("/demo-2.html"), r.pagesUrl);
 }
 
 {

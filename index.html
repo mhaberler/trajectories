@@ -11,10 +11,10 @@
 </head>
 <body>
   <div id="map"></div>
-  <div id="ensemble-scrub" hidden>
+  <div id="launch-scrub" hidden>
     <span class="label">Startzeit</span>
-    <input type="range" id="ensemble-scrub-range" min="0" max="0" step="1" />
-    <span id="ensemble-scrub-label" class="mono">–</span>
+    <input type="range" id="launch-scrub-range" min="0" max="0" step="1" />
+    <span id="launch-scrub-label" class="mono">–</span>
   </div>
 
   <div id="panel">
@@ -63,12 +63,12 @@
       </label>
     </div>
     <div class="grid2">
-      <label>Takeoff-Zeitfenster (h)
-        <input type="number" id="takeoffwindow" min="0" max="72" step="0.25" value="0"
-               title="0 = einzelne Startzeit; &gt;0 = Ensemble [T0, T0+Fenster]" />
+      <label>Launch-Fenster (h)
+        <input type="number" id="launchwindow" min="0" max="72" step="0.25" value="0"
+               title="0 = einzelne Startzeit; &gt;0 = Launch-Fenster [T0, T0+Fenster]" />
       </label>
-      <label>Ensemble-Schritt (min)
-        <input type="number" id="ensemblestep" min="5" max="180" step="5" value="15" />
+      <label>Launch-Schritt (min)
+        <input type="number" id="launchstep" min="5" max="180" step="5" value="15" />
       </label>
     </div>
     <div id="reachhint" class="hint mono"></div>

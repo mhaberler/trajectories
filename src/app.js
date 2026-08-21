@@ -48,8 +48,8 @@ function persist() {
     refmode: el("refmode").value,
     markerIntervalSec: +el("markerint").value || 600,
     duration: +el("duration").value || 12,
-    takeoffWindowH: Math.max(0, +el("takeoffwindow").value || 0),
-    ensembleStepMin: Math.max(5, +el("ensemblestep").value || 15),
+    launchWindowH: Math.max(0, +el("launchwindow").value || 0),
+    launchStepMin: Math.max(5, +el("launchstep").value || 15),
     direction: el("direction").value,
     heights: [...heightColors].map(([m, color]) => ({ m, color })),
     activeHeight,
@@ -339,9 +339,9 @@ const state = {
   running: false,
   profileEdit: null, // { active, candidateKey, siblingRuns, t0Ms }
   profileRedrawGen: 0,
-  ensembleGen: 0,
+  launchWindowGen: 0,
   /** @type {null | { tStartMs: number, tEndMs: number, stepMs: number, samples: { t0Ms: number, runs: object[] }[] }} */
-  ensemble: null,
+  launchWindow: null,
   selectedRunKey: null, // ausgewählter Lauf für den Querschnitt (runKey)
   startElevation: null, // Modellorographie am Start (m NN)
   // ICON-Modelllevel (geometrisch) am Start: { …, levels: [{ n, hAgl }] }
@@ -2797,10 +2797,18 @@ if (MODELS[saved.model]) el("model").value = saved.model;
 if (["agl", "amsl"].includes(saved.refmode)) el("refmode").value = saved.refmode;
 if (["1", "-1"].includes(saved.direction)) el("direction").value = saved.direction;
 if (Number.isFinite(saved.duration)) el("duration").value = saved.duration;
-if (Number.isFinite(saved.takeoffWindowH)) el("takeoffwindow").value = saved.takeoffWindowH;
-if (Number.isFinite(saved.ensembleStepMin)) el("ensemblestep").value = saved.ensembleStepMin;
+if (Number.isFinite(saved.launchWindowH) || Number.isFinite(saved.takeoffWindowH)) {
+  el("launchwindow").value = Number.isFinite(saved.launchWindowH)
+    ? saved.launchWindowH
+    : saved.takeoffWindowH;
+}
+if (Number.isFinite(saved.launchStepMin) || Number.isFinite(saved.ensembleStepMin)) {
+  el("launchstep").value = Number.isFinite(saved.launchStepMin)
+    ? saved.launchStepMin
+    : saved.ensembleStepMin;
+}
 updateDirectionLabels();
-for (const id of ["markerint", "direction", "duration", "takeoffwindow", "ensemblestep"]) {
+for (const id of ["markerint", "direction", "duration", "launchwindow", "launchstep"]) {
   el(id).addEventListener("change", persist);
 }
 
@@ -3253,16 +3261,16 @@ function updateRunButton() {
 // --- Berechnung -------------------------------------------------------------
 el("run").addEventListener("click", runTrajectories);
 
-el("ensemble-scrub-range")?.addEventListener("input", () => {
-  const ens = state.ensemble;
-  if (!ens) return;
-  const tMs = ens.tStartMs + (+el("ensemble-scrub-range").value || 0);
+el("launch-scrub-range")?.addEventListener("input", () => {
+  const lw = state.launchWindow;
+  if (!lw) return;
+  const tMs = lw.tStartMs + (+el("launch-scrub-range").value || 0);
   morphAtStartMs(tMs);
 });
-const ensembleScrubEl = el("ensemble-scrub");
-if (ensembleScrubEl && typeof L !== "undefined") {
-  L.DomEvent.disableClickPropagation(ensembleScrubEl);
-  L.DomEvent.disableScrollPropagation(ensembleScrubEl);
+const launchScrubEl = el("launch-scrub");
+if (launchScrubEl && typeof L !== "undefined") {
+  L.DomEvent.disableClickPropagation(launchScrubEl);
+  L.DomEvent.disableScrollPropagation(launchScrubEl);
 }
 
 /** Convert Trajectories-API GeoJSON back into the app's run objects. */
@@ -3352,14 +3360,14 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
   return runs.sort((a, b) => a.heightM - b.heightM);
 }
 
-// --- Takeoff-window ensemble (throwaway 2D scrub) ---------------------------
-const ENSEMBLE_RESAMPLE_N = 64;
+// --- Launch window (throwaway 2D scrub) -------------------------------------
+const LAUNCH_RESAMPLE_N = 64;
 
 function morphKey(run) {
   return `${run.heightM}|${run.method}`;
 }
 
-function buildEnsembleT0List(tStartMs, windowH, stepMin) {
+function buildLaunchT0List(tStartMs, windowH, stepMin) {
   const tEndMs = tStartMs + windowH * 3600e3;
   const stepMs = Math.max(5, stepMin) * 60e3;
   const list = [];
@@ -3368,32 +3376,32 @@ function buildEnsembleT0List(tStartMs, windowH, stepMin) {
   return list;
 }
 
-function clearEnsemble() {
-  state.ensembleGen += 1;
-  state.ensemble = null;
-  const bar = el("ensemble-scrub");
+function clearLaunchWindow() {
+  state.launchWindowGen += 1;
+  state.launchWindow = null;
+  const bar = el("launch-scrub");
   if (bar) bar.hidden = true;
 }
 
-function showEnsembleScrub() {
-  const ens = state.ensemble;
-  const bar = el("ensemble-scrub");
-  const range = el("ensemble-scrub-range");
-  if (!ens || !bar || !range || ens.samples.length < 2) {
-    clearEnsemble();
+function showLaunchScrub() {
+  const lw = state.launchWindow;
+  const bar = el("launch-scrub");
+  const range = el("launch-scrub-range");
+  if (!lw || !bar || !range || lw.samples.length < 2) {
+    clearLaunchWindow();
     return;
   }
   bar.hidden = false;
   range.min = "0";
-  range.max = String(ens.tEndMs - ens.tStartMs);
+  range.max = String(lw.tEndMs - lw.tStartMs);
   range.step = "1000";
   range.value = "0";
-  el("ensemble-scrub-label").textContent = fmtTime(ens.tStartMs);
-  morphAtStartMs(ens.tStartMs);
+  el("launch-scrub-label").textContent = fmtTime(lw.tStartMs);
+  morphAtStartMs(lw.tStartMs);
 }
 
 /** Resample track points by relative elapsed time (hold end if short). */
-function resampleTrack(points, n = ENSEMBLE_RESAMPLE_N) {
+function resampleTrack(points, n = LAUNCH_RESAMPLE_N) {
   if (!points?.length) return [];
   if (points.length === 1) {
     return Array.from({ length: n }, () => ({ ...points[0] }));
@@ -3567,9 +3575,9 @@ function paintMorphRuns(runs) {
 }
 
 function morphAtStartMs(tMs) {
-  const ens = state.ensemble;
-  if (!ens?.samples?.length) return;
-  const samples = ens.samples;
+  const lw = state.launchWindow;
+  if (!lw?.samples?.length) return;
+  const samples = lw.samples;
   let i = 0;
   while (i < samples.length - 2 && samples[i + 1].t0Ms <= tMs) i++;
   const a = samples[i];
@@ -3587,7 +3595,7 @@ function morphAtStartMs(tMs) {
     }))
     : lerpRuns(a.runs, b.runs, alpha);
   paintMorphRuns(runs);
-  const label = el("ensemble-scrub-label");
+  const label = el("launch-scrub-label");
   if (label) label.textContent = fmtTime(tMs);
 }
 
@@ -3638,16 +3646,16 @@ async function fetchTrajectoryApi(params) {
   return data;
 }
 
-async function runEnsembleViaApi({
+async function runLaunchWindowViaApi({
   modelKey, lat, lon, methods, compareMode,
   activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
   windowH, stepMin,
 }) {
-  const gen = ++state.ensembleGen;
-  const t0List = buildEnsembleT0List(t0Ms, windowH, stepMin);
+  const gen = ++state.launchWindowGen;
+  const t0List = buildLaunchT0List(t0Ms, windowH, stepMin);
   const n = t0List.length;
   if (n > 40) {
-    setStatus(`Ensemble: ${n} Starts (groß) — Start …`);
+    setStatus(`Launch-Fenster: ${n} Starts (groß) — Start …`);
   }
 
   state.running = true;
@@ -3667,10 +3675,10 @@ async function runEnsembleViaApi({
   showCrossSection(false);
   state.lastRuns = null;
   state.xsec = null;
-  state.ensemble = null;
+  state.launchWindow = null;
   resetRunSelection();
   state.live = null;
-  const bar = el("ensemble-scrub");
+  const bar = el("launch-scrub");
   if (bar) bar.hidden = true;
 
   const forecastHours = duration;
@@ -3679,15 +3687,15 @@ async function runEnsembleViaApi({
 
   try {
     for (let i = 0; i < n; i++) {
-      if (gen !== state.ensembleGen) return;
+      if (gen !== state.launchWindowGen) return;
       const tSample = t0List[i];
-      setStatus(`Ensemble ${i + 1}/${n} · ${fmtTime(tSample)}`);
+      setStatus(`Launch-Fenster ${i + 1}/${n} · ${fmtTime(tSample)}`);
       const params = buildTrajectoryApiParams({
         lat, lon, modelKey, t0Ms: tSample, forecastHours, methods, direction,
         markerIntervalSec, mode, activeHeights, profile: null,
       });
       const data = await fetchTrajectoryApi(params);
-      if (gen !== state.ensembleGen) return;
+      if (gen !== state.launchWindowGen) return;
       const runs = runsFromApiGeoJSON(data, {
         mode, modelKey, direction, duration: forecastHours, t0Ms: tSample,
       });
@@ -3705,10 +3713,10 @@ async function runEnsembleViaApi({
     }
 
     if (samples.length < 2) {
-      throw new Error("Ensemble braucht mindestens 2 Starts");
+      throw new Error("Launch-Fenster braucht mindestens 2 Starts");
     }
 
-    state.ensemble = {
+    state.launchWindow = {
       tStartMs: t0List[0],
       tEndMs: t0List[t0List.length - 1],
       stepMs: Math.max(5, stepMin) * 60e3,
@@ -3738,13 +3746,13 @@ async function runEnsembleViaApi({
     setDownloadEnabled(true);
     el("xsecbtn").disabled = false;
     el("view3dbtn").disabled = false;
-    showEnsembleScrub();
+    showLaunchScrub();
     const ms = performance.now() - wall0;
-    setStatus(`Ensemble: ${samples.length} Starts · ${fmtMs(ms)}`);
+    setStatus(`Launch-Fenster: ${samples.length} Starts · ${fmtMs(ms)}`);
   } catch (err) {
-    if (gen !== state.ensembleGen) return;
+    if (gen !== state.launchWindowGen) return;
     if (samples.length >= 2) {
-      state.ensemble = {
+      state.launchWindow = {
         tStartMs: samples[0].t0Ms,
         tEndMs: samples[samples.length - 1].t0Ms,
         stepMs: Math.max(5, stepMin) * 60e3,
@@ -3759,14 +3767,14 @@ async function runEnsembleViaApi({
       setDownloadEnabled(true);
       el("xsecbtn").disabled = false;
       el("view3dbtn").disabled = false;
-      showEnsembleScrub();
-      setStatus(`Ensemble teilweise (${samples.length}/${n}): ${err.message}`, true);
+      showLaunchScrub();
+      setStatus(`Launch-Fenster teilweise (${samples.length}/${n}): ${err.message}`, true);
     } else {
-      clearEnsemble();
+      clearLaunchWindow();
       setStatus(`API-Fehler: ${err.message}`, true);
     }
   } finally {
-    if (gen === state.ensembleGen) {
+    if (gen === state.launchWindowGen) {
       state.running = false;
       updateRunButton();
     }
@@ -3780,7 +3788,7 @@ async function runTrajectoriesViaApi({
   profileRedraw = false,
   profileGen = null,
 }) {
-  clearEnsemble();
+  clearLaunchWindow();
   const keepSiblings = profileRedraw && state.profileEdit?.active;
   state.running = true;
   updateRunButton();
@@ -3931,18 +3939,18 @@ async function runTrajectories() {
   const { lat, lon } = state.start;
   const liveMode = el("livemode").checked;
   const profileOn = el("flightprofile").checked;
-  const takeoffWindowH = Math.max(0, +el("takeoffwindow").value || 0);
-  const ensembleStepMin = Math.max(5, +el("ensemblestep").value || 15);
+  const launchWindowH = Math.max(0, +el("launchwindow").value || 0);
+  const launchStepMin = Math.max(5, +el("launchstep").value || 15);
 
-  if (takeoffWindowH > 0) {
+  if (launchWindowH > 0) {
     if (!el("useapi").checked) {
-      return setStatus("Takeoff-Zeitfenster braucht „API abrufen“.", true);
+      return setStatus("Launch-Fenster braucht „API abrufen“.", true);
     }
     if (liveMode) {
-      return setStatus("Takeoff-Zeitfenster: Live-Modus ausschalten.", true);
+      return setStatus("Launch-Fenster: Live-Modus ausschalten.", true);
     }
     if (profileOn) {
-      return setStatus("Takeoff-Zeitfenster: Flugprofil ausschalten.", true);
+      return setStatus("Launch-Fenster: Flugprofil ausschalten.", true);
     }
   }
 
@@ -3994,12 +4002,12 @@ async function runTrajectories() {
 
   // Optional: Trajectories-HTTP-API statt Browser-Windfeld/Integrator.
   if (el("useapi").checked) {
-    if (takeoffWindowH > 0) {
+    if (launchWindowH > 0) {
       state.dimLayers.clearLayers();
-      return runEnsembleViaApi({
+      return runLaunchWindowViaApi({
         modelKey, lat, lon, methods, compareMode,
         activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
-        windowH: takeoffWindowH, stepMin: ensembleStepMin,
+        windowH: launchWindowH, stepMin: launchStepMin,
       });
     }
     let heightProfile = null;
@@ -4018,7 +4026,7 @@ async function runTrajectories() {
     });
   }
 
-  clearEnsemble();
+  clearLaunchWindow();
 
   // Signatur der Nicht-Höhen-Parameter (zugleich der Windfeld-Cache-Schlüssel:
   // Modell, Vertikaloption, Zeitfenster, Richtung, Startregion). Bleibt sie

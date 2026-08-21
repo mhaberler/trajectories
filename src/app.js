@@ -48,6 +48,8 @@ function persist() {
     refmode: el("refmode").value,
     markerIntervalSec: +el("markerint").value || 600,
     duration: +el("duration").value || 12,
+    takeoffWindowH: Math.max(0, +el("takeoffwindow").value || 0),
+    ensembleStepMin: Math.max(5, +el("ensemblestep").value || 15),
     direction: el("direction").value,
     heights: [...heightColors].map(([m, color]) => ({ m, color })),
     activeHeight,
@@ -337,6 +339,9 @@ const state = {
   running: false,
   profileEdit: null, // { active, candidateKey, siblingRuns, t0Ms }
   profileRedrawGen: 0,
+  ensembleGen: 0,
+  /** @type {null | { tStartMs: number, tEndMs: number, stepMs: number, samples: { t0Ms: number, runs: object[] }[] }} */
+  ensemble: null,
   selectedRunKey: null, // ausgewählter Lauf für den Querschnitt (runKey)
   startElevation: null, // Modellorographie am Start (m NN)
   // ICON-Modelllevel (geometrisch) am Start: { …, levels: [{ n, hAgl }] }
@@ -2792,8 +2797,10 @@ if (MODELS[saved.model]) el("model").value = saved.model;
 if (["agl", "amsl"].includes(saved.refmode)) el("refmode").value = saved.refmode;
 if (["1", "-1"].includes(saved.direction)) el("direction").value = saved.direction;
 if (Number.isFinite(saved.duration)) el("duration").value = saved.duration;
+if (Number.isFinite(saved.takeoffWindowH)) el("takeoffwindow").value = saved.takeoffWindowH;
+if (Number.isFinite(saved.ensembleStepMin)) el("ensemblestep").value = saved.ensembleStepMin;
 updateDirectionLabels();
-for (const id of ["markerint", "direction", "duration"]) {
+for (const id of ["markerint", "direction", "duration", "takeoffwindow", "ensemblestep"]) {
   el(id).addEventListener("change", persist);
 }
 
@@ -3246,6 +3253,18 @@ function updateRunButton() {
 // --- Berechnung -------------------------------------------------------------
 el("run").addEventListener("click", runTrajectories);
 
+el("ensemble-scrub-range")?.addEventListener("input", () => {
+  const ens = state.ensemble;
+  if (!ens) return;
+  const tMs = ens.tStartMs + (+el("ensemble-scrub-range").value || 0);
+  morphAtStartMs(tMs);
+});
+const ensembleScrubEl = el("ensemble-scrub");
+if (ensembleScrubEl && typeof L !== "undefined") {
+  L.DomEvent.disableClickPropagation(ensembleScrubEl);
+  L.DomEvent.disableScrollPropagation(ensembleScrubEl);
+}
+
 /** Convert Trajectories-API GeoJSON back into the app's run objects. */
 function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
   const lines = (gj.features || []).filter(
@@ -3333,6 +3352,329 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
   return runs.sort((a, b) => a.heightM - b.heightM);
 }
 
+// --- Takeoff-window ensemble (throwaway 2D scrub) ---------------------------
+const ENSEMBLE_RESAMPLE_N = 64;
+
+function morphKey(run) {
+  return `${run.heightM}|${run.method}`;
+}
+
+function buildEnsembleT0List(tStartMs, windowH, stepMin) {
+  const tEndMs = tStartMs + windowH * 3600e3;
+  const stepMs = Math.max(5, stepMin) * 60e3;
+  const list = [];
+  for (let t = tStartMs; t < tEndMs - 0.5; t += stepMs) list.push(t);
+  if (!list.length || Math.abs(list[list.length - 1] - tEndMs) > 0.5) list.push(tEndMs);
+  return list;
+}
+
+function clearEnsemble() {
+  state.ensembleGen += 1;
+  state.ensemble = null;
+  const bar = el("ensemble-scrub");
+  if (bar) bar.hidden = true;
+}
+
+function showEnsembleScrub() {
+  const ens = state.ensemble;
+  const bar = el("ensemble-scrub");
+  const range = el("ensemble-scrub-range");
+  if (!ens || !bar || !range || ens.samples.length < 2) {
+    clearEnsemble();
+    return;
+  }
+  bar.hidden = false;
+  range.min = "0";
+  range.max = String(ens.tEndMs - ens.tStartMs);
+  range.step = "1000";
+  range.value = "0";
+  el("ensemble-scrub-label").textContent = fmtTime(ens.tStartMs);
+  morphAtStartMs(ens.tStartMs);
+}
+
+/** Resample track points by relative elapsed time (hold end if short). */
+function resampleTrack(points, n = ENSEMBLE_RESAMPLE_N) {
+  if (!points?.length) return [];
+  if (points.length === 1) {
+    return Array.from({ length: n }, () => ({ ...points[0] }));
+  }
+  const t0 = points[0].tMs;
+  const t1 = points[points.length - 1].tMs;
+  const span = Math.abs(t1 - t0) || 1;
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    const frac = k / (n - 1);
+    const target = t0 + Math.sign(t1 - t0 || 1) * frac * span;
+    // Find bracketing segment along absolute tMs
+    let i = 0;
+    if (t1 >= t0) {
+      while (i < points.length - 2 && points[i + 1].tMs < target) i++;
+    } else {
+      while (i < points.length - 2 && points[i + 1].tMs > target) i++;
+    }
+    const a = points[i];
+    const b = points[i + 1] || a;
+    const den = (b.tMs - a.tMs) || 1;
+    const w = Math.min(1, Math.max(0, (target - a.tMs) / den));
+    out.push({
+      lat: a.lat + w * (b.lat - a.lat),
+      lon: a.lon + w * (b.lon - a.lon),
+      z: Number.isFinite(a.z) && Number.isFinite(b.z) ? a.z + w * (b.z - a.z) : (a.z ?? b.z ?? null),
+      tMs: target,
+    });
+  }
+  return out;
+}
+
+function lerpRuns(runsA, runsB, alpha) {
+  const mapB = new Map(runsB.map((r) => [morphKey(r), r]));
+  const out = [];
+  for (const a of runsA) {
+    const b = mapB.get(morphKey(a));
+    if (!b) continue;
+    const pa = resampleTrack(a.r.points);
+    const pb = resampleTrack(b.r.points);
+    const points = pa.map((p, i) => {
+      const q = pb[i] || pb[pb.length - 1];
+      return {
+        lat: p.lat + alpha * (q.lat - p.lat),
+        lon: p.lon + alpha * (q.lon - p.lon),
+        z: Number.isFinite(p.z) && Number.isFinite(q.z)
+          ? p.z + alpha * (q.z - p.z)
+          : (p.z ?? q.z ?? null),
+        tMs: p.tMs + alpha * (q.tMs - p.tMs),
+      };
+    });
+    out.push({
+      ...a,
+      r: { points, markers: [], status: a.r.status, reason: a.r.reason },
+    });
+  }
+  return out;
+}
+
+function paintMorphRuns(runs) {
+  state.layers.clearLayers();
+  state.pinLayers.clearLayers();
+  state.runMapTracks.clear();
+  for (const run of runs) {
+    if ((run.r?.points || []).length < 2) continue;
+    const g = L.layerGroup();
+    drawCasing(run.r, g);
+    // No markers during ensemble scrub (throwaway).
+    const line = L.polyline(run.r.points.map((p) => [p.lat, p.lon]), {
+      color: run.color, weight: 3, opacity: 1, dashArray: run.dash || null,
+    }).addTo(g).bindTooltip(run.label, { sticky: true });
+    void line;
+    g.addTo(state.layers);
+    const key = runKey(run);
+    const latlngs = run.r.points.map((p) => [p.lat, p.lon]);
+    state.runMapTracks.set(key, {
+      run,
+      layer: g,
+      bounds: latlngs.length >= 2 ? L.latLngBounds(latlngs) : null,
+      parent: state.layers,
+    });
+  }
+}
+
+function morphAtStartMs(tMs) {
+  const ens = state.ensemble;
+  if (!ens?.samples?.length) return;
+  const samples = ens.samples;
+  let i = 0;
+  while (i < samples.length - 2 && samples[i + 1].t0Ms <= tMs) i++;
+  const a = samples[i];
+  const b = samples[Math.min(i + 1, samples.length - 1)];
+  const den = (b.t0Ms - a.t0Ms) || 1;
+  const alpha = Math.min(1, Math.max(0, (tMs - a.t0Ms) / den));
+  const runs = a === b ? a.runs.map((r) => ({
+    ...r,
+    r: { ...r.r, points: resampleTrack(r.r.points), markers: [] },
+  })) : lerpRuns(a.runs, b.runs, alpha);
+  paintMorphRuns(runs);
+  const label = el("ensemble-scrub-label");
+  if (label) label.textContent = fmtTime(tMs);
+}
+
+function buildTrajectoryApiParams({
+  lat, lon, modelKey, t0Ms, forecastHours, methods, direction,
+  markerIntervalSec, mode, activeHeights, profile,
+}) {
+  const params = new URLSearchParams({
+    latitude: String(lat),
+    longitude: String(lon),
+    models: modelKey,
+    time: new Date(t0Ms).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    timeformat: "iso8601",
+    forecast_hours: String(forecastHours),
+    vertical_motion: profile ? "height" : methods.join(","),
+    direction: direction > 0 ? "forward" : "backward",
+    marker_interval: String(markerIntervalSec / 60),
+    met_extras: String(el("metextras").checked),
+    format: "geojson",
+    backend: "auto",
+  });
+  if (profile) {
+    params.set("profile_time", profile.map((w) => w.tSec).join(","));
+    params.set("profile_height", profile.map((w) => w.hAgl).join(","));
+    params.set("marker_interval_climbing", "10");
+  } else if (mode === "amsl") {
+    params.set("height_amsl", activeHeights.join(","));
+  } else {
+    params.set("height_agl", activeHeights.join(","));
+  }
+  return params;
+}
+
+async function fetchTrajectoryApi(params) {
+  const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
+  if (DEBUG) console.debug("[traj] API", url);
+  const resp = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  const body = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(`Serverfehler ${resp.status}: ${body.slice(0, 180)}`);
+  }
+  if (!resp.ok || data?.error) {
+    throw new Error(data?.reason || `HTTP ${resp.status}`);
+  }
+  return data;
+}
+
+async function runEnsembleViaApi({
+  modelKey, lat, lon, methods, compareMode,
+  activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
+  windowH, stepMin,
+}) {
+  const gen = ++state.ensembleGen;
+  const t0List = buildEnsembleT0List(t0Ms, windowH, stepMin);
+  const n = t0List.length;
+  if (n > 40) {
+    setStatus(`Ensemble: ${n} Starts (groß) — Start …`);
+  }
+
+  state.running = true;
+  updateRunButton();
+  state.layers.clearLayers();
+  state.pinLayers.clearLayers();
+  state.dimLayers.clearLayers();
+  state.pinRuns.clear();
+  state.pinKey = "";
+  state.runMapTracks.clear();
+  el("results").innerHTML = "";
+  state.profileEdit = null;
+  restoreStartMarkerVisibility();
+  setDownloadEnabled(false);
+  el("xsecbtn").disabled = true;
+  el("view3dbtn").disabled = true;
+  showCrossSection(false);
+  state.lastRuns = null;
+  state.xsec = null;
+  state.ensemble = null;
+  resetRunSelection();
+  state.live = null;
+  const bar = el("ensemble-scrub");
+  if (bar) bar.hidden = true;
+
+  const forecastHours = duration;
+  const samples = [];
+  const wall0 = performance.now();
+
+  try {
+    for (let i = 0; i < n; i++) {
+      if (gen !== state.ensembleGen) return;
+      const tSample = t0List[i];
+      setStatus(`Ensemble ${i + 1}/${n} · ${fmtTime(tSample)}`);
+      const params = buildTrajectoryApiParams({
+        lat, lon, modelKey, t0Ms: tSample, forecastHours, methods, direction,
+        markerIntervalSec, mode, activeHeights, profile: null,
+      });
+      const data = await fetchTrajectoryApi(params);
+      if (gen !== state.ensembleGen) return;
+      const runs = runsFromApiGeoJSON(data, {
+        mode, modelKey, direction, duration: forecastHours, t0Ms: tSample,
+      });
+      if (!runs.length) throw new Error(`API lieferte keine Trajektorien (${fmtTime(tSample)})`);
+      samples.push({ t0Ms: tSample, runs });
+      // Live preview: show latest sample while computing
+      paintMorphRuns(runs.map((r) => ({
+        ...r,
+        r: { ...r.r, points: resampleTrack(r.r.points), markers: [] },
+      })));
+    }
+
+    if (samples.length < 2) {
+      throw new Error("Ensemble braucht mindestens 2 Starts");
+    }
+
+    state.ensemble = {
+      tStartMs: t0List[0],
+      tEndMs: t0List[t0List.length - 1],
+      stepMs: Math.max(5, stepMin) * 60e3,
+      samples,
+    };
+    const first = samples[0];
+    state.lastRuns = {
+      runs: first.runs, modelKey, mode, t0Ms: first.t0Ms, duration: forecastHours, direction,
+    };
+    state.xsec = {
+      runs: first.runs.map((run) => ({
+        ...run,
+        terrain: run.terrain || run.r.points.map(() => null),
+      })),
+      t0Ms: first.t0Ms,
+      direction,
+      overlay: compareMode,
+    };
+    el("results").innerHTML = "";
+    for (const run of first.runs) reportResult(run.r, run.heightM, run.color, run.label, run);
+    for (const k of [...state.hiddenRunKeys]) {
+      if (!first.runs.some((r) => runKey(r) === k)) state.hiddenRunKeys.delete(k);
+    }
+    refreshMapTracklist();
+    const g0 = first.runs[0]?.terrain?.find((g) => Number.isFinite(g));
+    if (Number.isFinite(g0)) state.startElevation = g0;
+    setDownloadEnabled(true);
+    el("xsecbtn").disabled = false;
+    el("view3dbtn").disabled = false;
+    showEnsembleScrub();
+    const ms = performance.now() - wall0;
+    setStatus(`Ensemble: ${samples.length} Starts · ${fmtMs(ms)}`);
+  } catch (err) {
+    if (gen !== state.ensembleGen) return;
+    if (samples.length >= 2) {
+      state.ensemble = {
+        tStartMs: samples[0].t0Ms,
+        tEndMs: samples[samples.length - 1].t0Ms,
+        stepMs: Math.max(5, stepMin) * 60e3,
+        samples,
+      };
+      const first = samples[0];
+      state.lastRuns = {
+        runs: first.runs, modelKey, mode, t0Ms: first.t0Ms, duration: forecastHours, direction,
+      };
+      el("results").innerHTML = "";
+      for (const run of first.runs) reportResult(run.r, run.heightM, run.color, run.label, run);
+      setDownloadEnabled(true);
+      el("xsecbtn").disabled = false;
+      el("view3dbtn").disabled = false;
+      showEnsembleScrub();
+      setStatus(`Ensemble teilweise (${samples.length}/${n}): ${err.message}`, true);
+    } else {
+      clearEnsemble();
+      setStatus(`API-Fehler: ${err.message}`, true);
+    }
+  } finally {
+    if (gen === state.ensembleGen) {
+      state.running = false;
+      updateRunButton();
+    }
+  }
+}
+
 async function runTrajectoriesViaApi({
   modelKey, lat, lon, methods, compareMode,
   activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
@@ -3340,6 +3682,7 @@ async function runTrajectoriesViaApi({
   profileRedraw = false,
   profileGen = null,
 }) {
+  clearEnsemble();
   const keepSiblings = profileRedraw && state.profileEdit?.active;
   state.running = true;
   updateRunButton();
@@ -3373,46 +3716,15 @@ async function runTrajectoriesViaApi({
     ? Math.min(duration, Math.max(1, Math.ceil(profile[profile.length - 1].tSec / 3600)))
     : duration;
 
-  const params = new URLSearchParams({
-    latitude: String(lat),
-    longitude: String(lon),
-    models: modelKey,
-    time: new Date(t0Ms).toISOString().replace(/\.\d{3}Z$/, "Z"),
-    timeformat: "iso8601",
-    forecast_hours: String(forecastHours),
-    vertical_motion: profile ? "height" : methods.join(","),
-    direction: direction > 0 ? "forward" : "backward",
-    marker_interval: String(markerIntervalSec / 60),
-    met_extras: String(el("metextras").checked),
-    format: "geojson",
-    backend: "auto",
+  const params = buildTrajectoryApiParams({
+    lat, lon, modelKey, t0Ms, forecastHours, methods, direction,
+    markerIntervalSec, mode, activeHeights, profile,
   });
-  if (profile) {
-    params.set("profile_time", profile.map((w) => w.tSec).join(","));
-    params.set("profile_height", profile.map((w) => w.hAgl).join(","));
-    params.set("marker_interval_climbing", "10");
-  } else if (mode === "amsl") {
-    params.set("height_amsl", activeHeights.join(","));
-  } else {
-    params.set("height_agl", activeHeights.join(","));
-  }
 
   const t0 = performance.now();
   try {
-    const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
-    if (DEBUG) console.debug("[traj] API", url);
-    const resp = await fetch(url, { signal: AbortSignal.timeout(120000) });
-    const body = await resp.text();
-    let data;
-    try {
-      data = JSON.parse(body);
-    } catch {
-      throw new Error(`Serverfehler ${resp.status}: ${body.slice(0, 180)}`);
-    }
+    const data = await fetchTrajectoryApi(params);
     const ms = performance.now() - t0;
-    if (!resp.ok || data?.error) {
-      throw new Error(data?.reason || `HTTP ${resp.status}`);
-    }
     if (profileGen != null && profileGen !== state.profileRedrawGen) return;
     const runs = runsFromApiGeoJSON(data, {
       mode: profile ? "agl" : mode, modelKey, direction, duration: forecastHours, t0Ms,
@@ -3521,6 +3833,21 @@ async function runTrajectories() {
   const { lat, lon } = state.start;
   const liveMode = el("livemode").checked;
   const profileOn = el("flightprofile").checked;
+  const takeoffWindowH = Math.max(0, +el("takeoffwindow").value || 0);
+  const ensembleStepMin = Math.max(5, +el("ensemblestep").value || 15);
+
+  if (takeoffWindowH > 0) {
+    if (!el("useapi").checked) {
+      return setStatus("Takeoff-Zeitfenster braucht „API abrufen“.", true);
+    }
+    if (liveMode) {
+      return setStatus("Takeoff-Zeitfenster: Live-Modus ausschalten.", true);
+    }
+    if (profileOn) {
+      return setStatus("Takeoff-Zeitfenster: Flugprofil ausschalten.", true);
+    }
+  }
+
   if (profileOn) {
     readProfileTable();
     const perr = validateProfileTargets(profileTargets);
@@ -3569,6 +3896,14 @@ async function runTrajectories() {
 
   // Optional: Trajectories-HTTP-API statt Browser-Windfeld/Integrator.
   if (el("useapi").checked) {
+    if (takeoffWindowH > 0) {
+      state.dimLayers.clearLayers();
+      return runEnsembleViaApi({
+        modelKey, lat, lon, methods, compareMode,
+        activeHeights, markerIntervalSec, mode, direction, duration, t0Ms,
+        windowH: takeoffWindowH, stepMin: ensembleStepMin,
+      });
+    }
     let heightProfile = null;
     if (profileOn) {
       try {
@@ -3584,6 +3919,8 @@ async function runTrajectories() {
       heightProfile,
     });
   }
+
+  clearEnsemble();
 
   // Signatur der Nicht-Höhen-Parameter (zugleich der Windfeld-Cache-Schlüssel:
   // Modell, Vertikaloption, Zeitfenster, Richtung, Startregion). Bleibt sie

@@ -400,6 +400,28 @@ function wireImagery() {
 }
 
 /**
+ * Ersetzt Läufe/Overlays und zeichnet neu (ohne Kamera-Flug).
+ * Für Sichtbarkeitsfilter aus der 2D-Trackliste und Scrub-Updates.
+ */
+export function syncGlobe(data: Payload) {
+  if (!viewer) return;
+  lastData = data;
+  redraw();
+  try {
+    viewer.resize();
+    viewer.scene.requestRender();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Kamera auf die aktuell gezeichneten Entities (Tracks/Overlays). */
+export function flyToTracks() {
+  if (!viewer || !viewer.entities.values.length) return;
+  void viewer.flyTo(viewer.entities);
+}
+
+/**
  * Erzeugt bzw. aktualisiert die Cesium-Ansicht. Cesium muss bereits geladen sein.
  */
 export async function initGlobe(data: Payload): Promise<void> {

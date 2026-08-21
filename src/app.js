@@ -5522,7 +5522,7 @@ el("sharehtml").addEventListener("click", async () => {
     }
     setStatus(`Geteilt — Link kopiert. Warte auf GitHub Pages … ${pagesUrl}`);
     const ready = await waitForPagesUrl(pagesUrl, { timeoutMs: 90_000, intervalMs: 3_000 });
-    if (ready) setStatus(`Pages bereit — Link kopiert: ${pagesUrl}`);
+    if (ready) setStatusWithLink("Pages bereit — Link kopiert: ", pagesUrl);
     else {
       setStatus(
         `Hochgeladen; Pages noch nicht erreichbar (oft 1–2 min). Link: ${pagesUrl}`,
@@ -5822,6 +5822,21 @@ function fmtTime(ms) {
 function setStatus(msg, isError = false) {
   el("status").textContent = msg;
   el("status").className = isError ? "error" : "";
+}
+
+/** Status line with a clickable URL (new tab). */
+function setStatusWithLink(prefix, url, { isError = false } = {}) {
+  const box = el("status");
+  box.className = isError ? "error" : "";
+  box.replaceChildren();
+  if (prefix) box.append(document.createTextNode(prefix));
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = url;
+  a.className = "status-link";
+  box.appendChild(a);
 }
 
 loadMeta();

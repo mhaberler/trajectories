@@ -3,7 +3,7 @@
  */
 
 import { initViewer, type ViewerApi } from "./htmlViewer";
-import { initGlobe, morphRuns as globeMorphRuns, resizeGlobe } from "./htmlGlobe";
+import { initGlobe, morphRuns as globeMorphRuns, resizeGlobe, syncGlobe, flyToTracks } from "./htmlGlobe";
 import { CESIUM_CDN_BASE, type Payload, type PayloadRun } from "./htmlPayload";
 import { hasCamera, readViewState, writeViewState } from "./htmlUrl";
 import {
@@ -17,6 +17,36 @@ let globeLoading: Promise<void> | null = null;
 let payload: Payload | null = null;
 let playMs = 0;
 let lastMorphRuns: PayloadRun[] | null = null;
+
+function runKey(run: PayloadRun) {
+  return `${run.heightM}|${run.method}`;
+}
+
+function filterRunsByMap(runs: PayloadRun[]): PayloadRun[] {
+  const vis = mapApi?.getVisibility();
+  if (!vis) return runs;
+  const runSet = new Set(vis.runKeys);
+  return runs.filter((r) => runSet.has(runKey(r)));
+}
+
+/** Payload for Cesium: current morph pose + only tracks/overlays visible in 2D. */
+function payloadForGlobe(): Payload {
+  if (!payload) throw new Error("no payload");
+  const runs = lastMorphRuns ?? payload.runs;
+  const vis = mapApi?.getVisibility();
+  if (!vis) return { ...payload, runs };
+  const overlaySet = new Set(vis.overlayNames);
+  return {
+    ...payload,
+    runs: filterRunsByMap(runs),
+    overlays: (payload.overlays || []).filter((o) => overlaySet.has(o.name)),
+  };
+}
+
+function pushGlobeFromMap() {
+  if (!globeReady) return;
+  syncGlobe(payloadForGlobe());
+}
 
 function loadCesium(): Promise<void> {
   if ((window as any).Cesium) return Promise.resolve();
@@ -53,7 +83,8 @@ function applyMorphAt(tMs: number) {
   if (!runs) return;
   lastMorphRuns = runs;
   mapApi?.morphRuns(runs);
-  if (globeReady) globeMorphRuns(runs);
+  // Position-only morph while 3D is open — full syncGlobe would cancel the camera.
+  if (globeReady) globeMorphRuns(filterRunsByMap(runs));
 
   const ni = nearestSampleIndex(lw.samples, playMs);
   if (ni >= 0) mapApi?.setProfileXsec(lw.samples[ni].xsec);
@@ -102,12 +133,6 @@ function wireScrub() {
   applyMorphAt(playMs);
 }
 
-function payloadForGlobe(): Payload {
-  if (!payload) throw new Error("no payload");
-  if (lastMorphRuns) return { ...payload, runs: lastMorphRuns };
-  return payload;
-}
-
 async function showView(view: "2d" | "3d") {
   const pane2d = document.getElementById("view-2d");
   const pane3d = document.getElementById("view-3d");
@@ -142,8 +167,11 @@ async function showView(view: "2d" | "3d") {
         });
       }
       await globeLoading;
+      // Do not syncGlobe here: initGlobe already used payloadForGlobe and started
+      // flyTo — a redraw would cancel the camera at globe scale.
     } else {
-      if (lastMorphRuns) globeMorphRuns(lastMorphRuns);
+      pushGlobeFromMap();
+      flyToTracks();
       resizeGlobe();
     }
   } catch (err: any) {

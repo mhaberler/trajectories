@@ -1017,6 +1017,11 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 
 #status { margin: 8px 0 0; min-height: 1em; color: #52514e; }
 #status.error { color: #b3261e; }
+#status .status-link {
+  color: #1c5cab;
+  word-break: break-all;
+}
+#status.error .status-link { color: #8b1e18; }
 
 #results { margin-top: 4px; }
 .result-line {

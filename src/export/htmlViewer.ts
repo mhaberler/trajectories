@@ -35,10 +35,13 @@ export interface ViewerApi {
   invalidateSize: () => void;
   morphRuns: (runs: PayloadRun[]) => void;
   setProfileXsec: (xsec: XsecData) => void;
+  /** Run keys (`heightM|method`) and overlay names currently shown on the map. */
+  getVisibility: () => { runKeys: string[]; overlayNames: string[] };
 }
 
 let viewerMap: any = null;
 let viewerTracks: Track[] = [];
+let viewerOverlays: OverlayTrack[] = [];
 let viewerPayload: Payload | null = null;
 let profileXsec: XsecData | null = null;
 let altitudeKey: string | null = null;
@@ -427,9 +430,9 @@ function initViewer(data: Payload): ViewerApi {
   buildOpacityControl(map, () => active, data.opts.baseOpacity);
 
   viewerTracks = buildTracks(map, data, data.runs);
-  const overlays = buildOverlays(map, data);
+  viewerOverlays = buildOverlays(map, data);
   let bounds = viewerTracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
-  for (const o of overlays) {
+  for (const o of viewerOverlays) {
     if (o.visible === false || !o.bounds?.isValid?.()) continue;
     bounds = bounds ? bounds.extend(o.bounds) : o.bounds;
   }
@@ -438,8 +441,8 @@ function initViewer(data: Payload): ViewerApi {
   const urlProfile = readViewState().profile;
   const profileOn = urlProfile !== undefined ? urlProfile : !!data.opts.profile;
   const toggleProfile = buildProfile(map, data, profileOn);
-  if (data.opts.tracklist && (viewerTracks.length || overlays.length)) {
-    buildTracklist(map, viewerTracks, overlays, toggleProfile, profileOn);
+  if (data.opts.tracklist && (viewerTracks.length || viewerOverlays.length)) {
+    buildTracklist(map, viewerTracks, viewerOverlays, toggleProfile, profileOn);
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
 
@@ -472,6 +475,15 @@ function initViewer(data: Payload): ViewerApi {
     setProfileXsec(xsec: XsecData) {
       profileXsec = xsec;
       profileRedraw?.();
+    },
+    getVisibility() {
+      const runKeys = viewerTracks
+        .filter((t) => viewerMap?.hasLayer(t.layer))
+        .map((t) => trackKey(t.run));
+      const overlayNames = viewerOverlays
+        .filter((o) => viewerMap?.hasLayer(o.layer))
+        .map((o) => o.name);
+      return { runKeys, overlayNames };
     },
   };
 }

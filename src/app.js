@@ -13,6 +13,7 @@ import {
 import { initGeocode, reversePlaceName } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
+import { createTimebar } from "./timebar.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -21,6 +22,11 @@ const DEBUG = new URLSearchParams(location.search).has("debug") ||
 /* global L */
 
 const el = (id) => document.getElementById(id);
+
+/** @type {ReturnType<typeof createTimebar> | null} */
+let timebar = null;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let bandCommitTimer = null;
 
 // --- Einstellungen in localStorage ------------------------------------------
 const STORAGE_KEY = "trajectories.settings.v1";
@@ -50,6 +56,8 @@ function persist() {
     duration: +el("duration").value || 12,
     launchWindowH: Math.max(0, +el("launchwindow").value || 0),
     launchStepMin: Math.max(5, +el("launchstep").value || 15),
+    tStartMs: timebar?.startMs?.() ?? null,
+    playMs: timebar?.playMs?.() ?? null,
     direction: el("direction").value,
     heights: [...heightColors].map(([m, color]) => ({ m, color })),
     activeHeight,
@@ -2138,7 +2146,7 @@ async function runProfileRedraw() {
   }
   const direction = +el("direction").value;
   const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
-  const t0Ms = state.profileEdit?.t0Ms ?? (+el("timeslider").value * 3600e3);
+  const t0Ms = state.profileEdit?.t0Ms ?? timebarStartMs();
   const markerIntervalSec = +el("markerint").value;
   const gen = ++state.profileRedrawGen;
   await runTrajectoriesViaApi({
@@ -2811,6 +2819,15 @@ updateDirectionLabels();
 for (const id of ["markerint", "direction", "duration", "launchwindow", "launchstep"]) {
   el(id).addEventListener("change", persist);
 }
+el("launchwindow").addEventListener("input", () => {
+  timebar?.onLaunchWindowInput();
+  if (Math.max(0, +el("launchwindow").value || 0) <= 0) {
+    clearLaunchWindow();
+  }
+});
+el("launchstep").addEventListener("input", () => {
+  timebar?.render();
+});
 
 // Modell-Vertikalgeschwindigkeit: je Modell prüfen, ob der Server die
 // Variable anbietet, und die 3D-Option entsprechend schalten. Läuft beim
@@ -2999,7 +3016,7 @@ async function fetchStartElevation({ soft = false } = {}) {
   }
   const modelKey = el("model").value;
   const model = MODELS[modelKey];
-  const timeKey = el("timeslider").value;
+  const timeKey = String(Math.round(timebarPlayMs() / 3600e3));
   const gen = ++modelLevelProbeGen;
   if (!soft) {
     state.startElevation = null;
@@ -3126,6 +3143,73 @@ function updateHeightContext() {
   }
 }
 
+function timebarStartMs() {
+  return timebar?.startMs() ?? (Number.isFinite(saved.tStartMs) ? saved.tStartMs : Date.now());
+}
+
+function timebarPlayMs() {
+  return timebar?.playMs() ?? timebarStartMs();
+}
+
+function initTimebar() {
+  timebar = createTimebar({
+    el,
+    launchWindowH: () => Math.max(0, +el("launchwindow").value || 0),
+    setLaunchWindowH: (h) => {
+      el("launchwindow").value = String(h);
+    },
+    launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
+    fmtTime,
+    onPlay: () => {
+      updateTimeLabel();
+      updateReachHint();
+      fetchModelLevelsDebounced();
+      if (state.launchWindow?.samples?.length >= 2) {
+        morphAtStartMs(timebarPlayMs());
+      }
+      persist();
+    },
+    onBandCommit: () => {
+      clearTimeout(bandCommitTimer);
+      bandCommitTimer = setTimeout(() => {
+        const w = Math.max(0, +el("launchwindow").value || 0);
+        if (w <= 0) {
+          persist();
+          return;
+        }
+        if (!el("useapi").checked || !state.start || !state.meta) {
+          persist();
+          return;
+        }
+        if (el("livemode").checked || el("flightprofile").checked) {
+          persist();
+          return;
+        }
+        const lw = state.launchWindow;
+        const t0 = timebarStartMs();
+        const t1 = timebar?.endMs?.() ?? t0;
+        const stepMs = Math.max(5, +el("launchstep").value || 15) * 60e3;
+        const mismatch = !lw?.samples?.length
+          || Math.abs(lw.tStartMs - t0) > 500
+          || Math.abs(lw.tEndMs - t1) > 500
+          || Math.abs((lw.stepMs || 0) - stepMs) > 500;
+        if (!mismatch) {
+          persist();
+          return;
+        }
+        clearLaunchWindow();
+        void runTrajectories();
+      }, 300);
+    },
+    onChange: () => {
+      updateTimeLabel();
+      updateReachHint();
+      persist();
+    },
+  });
+  timebar.bind();
+}
+
 // --- Zeitschieber aus meta.json des gewählten Modells -----------------------
 async function loadMeta() {
   const model = MODELS[el("model").value];
@@ -3140,15 +3224,14 @@ async function loadMeta() {
     const t0 = meta.last_run_initialisation_time - PAST_HOURS * 3600;
     const t1 = meta.data_end_time;
     state.meta = { t0, t1 };
-    const slider = el("timeslider");
-    const prev = +slider.value || null;
-    slider.min = Math.ceil(t0 / 3600);
-    slider.max = Math.floor(t1 / 3600);
-    // Beim ersten Laden auf die aktuelle Uhrzeit (auf volle Stunde gerundet)
-    // stellen, bei Modellwechsel die gewählte Zeit behalten — jeweils auf den
-    // verfügbaren Zeitraum begrenzt.
-    const want = prev ?? Math.round(Date.now() / 3600e3);
-    slider.value = Math.min(Math.max(want, +slider.min), +slider.max);
+    if (!timebar) initTimebar();
+    timebar.setMeta(t0, t1, {
+      tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : undefined,
+      playMs: Number.isFinite(saved.playMs) ? saved.playMs : undefined,
+    });
+    // Clear one-shot restore so model switches keep the current playhead
+    saved.tStartMs = timebar.startMs();
+    saved.playMs = timebar.playMs();
     el("runinfo").textContent =
       ` · Lauf ${fmtTime(meta.last_run_initialisation_time * 1000)}, Daten bis ${fmtTime(t1 * 1000)}`;
     updateTimeLabel();
@@ -3164,7 +3247,7 @@ async function loadMeta() {
 }
 
 function updateTimeLabel() {
-  el("timelabel").textContent = fmtTime(+el("timeslider").value * 3600e3);
+  el("timelabel").textContent = fmtTime(timebarPlayMs());
 }
 
 // Vergangenheits-Horizont für den Zeitschieber (der Server hält mehrere Tage
@@ -3185,7 +3268,7 @@ function updateReachHint() {
   if (!state.meta) { box.textContent = ""; box.classList.remove("error"); return; }
   const dir = +el("direction").value;
   const dur = Math.min(72, Math.max(1, +el("duration").value || 12));
-  const t0Ms = +el("timeslider").value * 3600e3;
+  const t0Ms = timebarStartMs();
   const back = dir === -1;
   const edgeMs = (back ? state.meta.t0 : state.meta.t1) * 1000;
   const availH = Math.max(0, (back ? t0Ms - edgeMs : edgeMs - t0Ms) / 3600e3);
@@ -3199,12 +3282,6 @@ function updateReachHint() {
   }
 }
 
-el("timeslider").addEventListener("input", () => {
-  updateTimeLabel();
-  updateReachHint();
-  fetchModelLevelsDebounced();
-});
-el("timeslider").addEventListener("change", persist);
 el("duration").addEventListener("input", updateReachHint);
 el("direction").addEventListener("change", () => {
   updateDirectionLabels();
@@ -3260,18 +3337,6 @@ function updateRunButton() {
 
 // --- Berechnung -------------------------------------------------------------
 el("run").addEventListener("click", runTrajectories);
-
-el("launch-scrub-range")?.addEventListener("input", () => {
-  const lw = state.launchWindow;
-  if (!lw) return;
-  const tMs = lw.tStartMs + (+el("launch-scrub-range").value || 0);
-  morphAtStartMs(tMs);
-});
-const launchScrubEl = el("launch-scrub");
-if (launchScrubEl && typeof L !== "undefined") {
-  L.DomEvent.disableClickPropagation(launchScrubEl);
-  L.DomEvent.disableScrollPropagation(launchScrubEl);
-}
 
 /** Convert Trajectories-API GeoJSON back into the app's run objects. */
 function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
@@ -3402,24 +3467,17 @@ function buildLaunchT0List(tStartMs, windowH, stepMin) {
 function clearLaunchWindow() {
   state.launchWindowGen += 1;
   state.launchWindow = null;
-  const bar = el("launch-scrub");
-  if (bar) bar.hidden = true;
 }
 
-function showLaunchScrub() {
+/** After a successful launch-window compute: align band + playhead to samples. */
+function syncTimebarToLaunchWindow() {
   const lw = state.launchWindow;
-  const bar = el("launch-scrub");
-  const range = el("launch-scrub-range");
-  if (!lw || !bar || !range || lw.samples.length < 2) {
+  if (!lw || !timebar || lw.samples.length < 2) {
     clearLaunchWindow();
     return;
   }
-  bar.hidden = false;
-  range.min = "0";
-  range.max = String(lw.tEndMs - lw.tStartMs);
-  range.step = "1000";
-  range.value = "0";
-  el("launch-scrub-label").textContent = fmtTime(lw.tStartMs);
+  timebar.setBand(lw.tStartMs, lw.tEndMs, { syncField: true });
+  timebar.setPlayMs(lw.tStartMs, { silent: true });
   morphAtStartMs(lw.tStartMs);
 }
 
@@ -3618,8 +3676,6 @@ function morphAtStartMs(tMs) {
     }))
     : lerpRuns(a.runs, b.runs, alpha);
   paintMorphRuns(runs);
-  const label = el("launch-scrub-label");
-  if (label) label.textContent = fmtTime(tMs);
 }
 
 function buildTrajectoryApiParams({
@@ -3708,8 +3764,6 @@ async function runLaunchWindowViaApi({
   state.launchWindow = null;
   resetRunSelection();
   state.live = null;
-  const bar = el("launch-scrub");
-  if (bar) bar.hidden = true;
 
   const forecastHours = duration;
   const wall0 = performance.now();
@@ -3765,7 +3819,7 @@ async function runLaunchWindowViaApi({
     setDownloadEnabled(true);
     el("xsecbtn").disabled = false;
     el("view3dbtn").disabled = false;
-    showLaunchScrub();
+    syncTimebarToLaunchWindow();
     const ms = performance.now() - wall0;
     setStatus(`Launch-Fenster: ${samples.length} Starts · ${fmtMs(ms)}`);
   } catch (err) {
@@ -3987,7 +4041,7 @@ async function runTrajectories() {
   }
   const direction = +el("direction").value;
   const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
-  const t0Ms = +el("timeslider").value * 3600e3;
+  const t0Ms = timebarStartMs();
 
   if (!profileOn && !activeHeights.length) {
     return setStatus(compareMode
@@ -5288,9 +5342,7 @@ function readFilenamePatternUI() {
 function filenameCtxSync() {
   const modelKey = el("model")?.value || state.lastRuns?.modelKey || "icon_d2";
   const model = MODELS[modelKey];
-  const sliderH = +el("timeslider")?.value;
-  const fromSlider = Number.isFinite(sliderH) ? sliderH * 3600e3 : NaN;
-  const t0Ms = state.lastRuns?.t0Ms ?? fromSlider;
+  const t0Ms = state.lastRuns?.t0Ms ?? timebarStartMs();
   return {
     t0Ms: Number.isFinite(t0Ms) ? t0Ms : Date.now(),
     place: state.startPlace,
@@ -5455,7 +5507,7 @@ applyShareGithubUI();
 applyFilenamePatternUI();
 showExportSection(el("downloadfmt").value);
 updateFilenamePreview();
-for (const id of ["duration", "direction", "model", "timeslider"]) {
+for (const id of ["duration", "direction", "model"]) {
   el(id)?.addEventListener("change", updateFilenamePreview);
   el(id)?.addEventListener("input", updateFilenamePreview);
 }

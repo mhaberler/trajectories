@@ -11,11 +11,6 @@
 </head>
 <body>
   <div id="map"></div>
-  <div id="launch-scrub" hidden>
-    <span class="label">Startzeit</span>
-    <input type="range" id="launch-scrub-range" min="0" max="0" step="1" />
-    <span id="launch-scrub-label" class="mono">–</span>
-  </div>
 
   <div id="panel">
     <div id="panel-resize" role="separator" aria-orientation="vertical"
@@ -49,7 +44,20 @@
       <span class="label" id="timeheadlabel">Startzeit <span class="hint">(UTC)</span></span>
       <span id="timelabel" class="mono">–</span>
     </div>
-    <input type="range" id="timeslider" min="0" max="0" step="1" />
+    <div id="timebar" class="timebar" aria-label="Zeitfenster">
+      <div id="timebar-callouts" class="timebar-callouts" hidden>
+        <div id="timebar-callout-start" class="timebar-callout">–</div>
+        <div id="timebar-callout-end" class="timebar-callout">–</div>
+      </div>
+      <div id="timebar-track" class="timebar-track">
+        <div id="timebar-ticks" class="timebar-ticks"></div>
+        <div id="timebar-band" class="timebar-band" hidden>
+          <div class="timebar-edge timebar-edge-l" data-edge="l"></div>
+          <div class="timebar-edge timebar-edge-r" data-edge="r"></div>
+        </div>
+        <div id="timebar-playhead" class="timebar-playhead"></div>
+      </div>
+    </div>
 
     <div class="grid2">
       <label>Dauer (h)

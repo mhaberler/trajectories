@@ -353,6 +353,18 @@ select, input[type="number"], input[type="search"] {
 #geocode-results li:hover,
 #geocode-results li.active { background: #eef4fb; }
 #geocode-results .geo-sub { display: block; color: #52514e; font-size: 11px; }
+#geocode-results .geo-history-head {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #7a7970;
+  cursor: default;
+  border-bottom: none;
+  background: #f7f7f5;
+}
+#geocode-results .geo-history-head:hover { background: #f7f7f5; }
 
 input[type="range"] { width: 100%; margin: 4px 0 8px; }
 

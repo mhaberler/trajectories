@@ -1,6 +1,8 @@
 /* global L */
 
 const PHOTON = "https://photon.komoot.io";
+const HISTORY_KEY = "trajektorien.geocodeHistory";
+const HISTORY_MAX = 5;
 
 /** OSM-Werte, die selbst ein Ort sind (nicht Straße/Haus). */
 const LOCALITY_OSM = new Set([
@@ -40,6 +42,48 @@ function textEl(tag, text, className) {
   if (className) n.className = className;
   n.textContent = text;
   return n;
+}
+
+function loadHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((h) => Number.isFinite(h?.lat) && Number.isFinite(h?.lon) && h?.name)
+      .slice(0, HISTORY_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entries) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_MAX)));
+  } catch { /* quota / private mode */ }
+}
+
+/** @param {{ lat: number, lon: number, name: string, sub?: string, placeName?: string }} entry */
+function pushHistory(entry) {
+  const key = `${entry.lat.toFixed(4)},${entry.lon.toFixed(4)}`;
+  const next = [
+    entry,
+    ...loadHistory().filter((h) => `${h.lat.toFixed(4)},${h.lon.toFixed(4)}` !== key),
+  ].slice(0, HISTORY_MAX);
+  saveHistory(next);
+}
+
+/** History row → GeoJSON-like feature for the shared picker. */
+function historyAsFeature(h) {
+  return {
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [h.lon, h.lat] },
+    properties: {
+      name: h.name,
+      city: h.sub || undefined,
+      _placeName: h.placeName || h.name,
+      _fromHistory: true,
+    },
+  };
 }
 
 async function photonSearch(q) {
@@ -86,12 +130,27 @@ export function initGeocode({ map, setStart, debounce, el }) {
 
   let hits = [];
   let active = -1;
+  /** @type {"search" | "history"} */
+  let mode = "search";
 
   function hide() {
     list.hidden = true;
     list.innerHTML = "";
     hits = [];
     active = -1;
+    mode = "search";
+  }
+
+  function showHistory() {
+    const hist = loadHistory();
+    if (!hist.length) {
+      hide();
+      return;
+    }
+    mode = "history";
+    hits = hist.map(historyAsFeature);
+    active = hits.length ? 0 : -1;
+    render();
   }
 
   function render() {
@@ -100,11 +159,21 @@ export function initGeocode({ map, setStart, debounce, el }) {
       list.hidden = true;
       return;
     }
+    if (mode === "history") {
+      const head = document.createElement("li");
+      head.className = "geo-history-head";
+      head.textContent = "Zuletzt gesucht";
+      head.setAttribute("aria-hidden", "true");
+      list.appendChild(head);
+    }
     hits.forEach((f, i) => {
-      const { name, sub } = featureLabel(f.properties || {});
+      const props = f.properties || {};
+      const { name, sub } = featureLabel(props);
       const li = document.createElement("li");
       li.dataset.i = String(i);
+      li.setAttribute("role", "option");
       if (i === active) li.classList.add("active");
+      if (props._fromHistory) li.classList.add("geo-history");
       li.appendChild(document.createTextNode(name));
       if (sub) li.appendChild(textEl("span", sub, "geo-sub"));
       li.addEventListener("mousedown", (e) => {
@@ -123,8 +192,11 @@ export function initGeocode({ map, setStart, debounce, el }) {
     const props = f.properties || {};
     const { name, sub } = featureLabel(props);
     input.value = sub ? `${name}, ${sub}` : name;
+    const place = props._placeName || localityName(props) || name;
+    pushHistory({
+      lat, lon, name, sub: sub || "", placeName: place,
+    });
     hide();
-    const place = localityName(props) || name;
     setStart(lat, lon, { placeName: place });
     map.setView([lat, lon], Math.max(map.getZoom(), 11));
   }
@@ -132,9 +204,11 @@ export function initGeocode({ map, setStart, debounce, el }) {
   const runSearch = debounce(async () => {
     const q = input.value.trim();
     if (q.length < 2) {
-      hide();
+      if (document.activeElement === input) showHistory();
+      else hide();
       return;
     }
+    mode = "search";
     try {
       hits = await photonSearch(q);
       active = hits.length ? 0 : -1;
@@ -145,6 +219,10 @@ export function initGeocode({ map, setStart, debounce, el }) {
   }, 300);
 
   input.addEventListener("input", runSearch);
+  input.addEventListener("focus", () => {
+    const q = input.value.trim();
+    if (q.length < 2) showHistory();
+  });
   input.addEventListener("keydown", (e) => {
     if (list.hidden || !hits.length) {
       if (e.key === "Escape") hide();

@@ -3426,6 +3426,90 @@ function resampleTrack(points, n = ENSEMBLE_RESAMPLE_N) {
   return out;
 }
 
+function lerpNum(a, b, alpha) {
+  if (Number.isFinite(a) && Number.isFinite(b)) return a + alpha * (b - a);
+  return Number.isFinite(a) ? a : (Number.isFinite(b) ? b : null);
+}
+
+/** Markers keyed by elapsed ms from track start, sorted. */
+function markersByRel(marks, t0) {
+  return (marks || [])
+    .filter((m) => Number.isFinite(m?.tMs) && Number.isFinite(m.lat) && Number.isFinite(m.lon))
+    .map((m) => ({
+      rel: m.tMs - t0,
+      lat: m.lat,
+      lon: m.lon,
+      z: m.z,
+      u: m.u,
+      v: m.v,
+      met: m.met || null,
+    }))
+    .sort((a, b) => a.rel - b.rel);
+}
+
+/** Sample marker list at a relative elapsed time (hold ends; lerp between). */
+function sampleMarkerAtRel(sorted, rel) {
+  if (!sorted.length) return null;
+  if (rel <= sorted[0].rel) return sorted[0];
+  const last = sorted[sorted.length - 1];
+  if (rel >= last.rel) return last;
+  let i = 0;
+  while (i < sorted.length - 2 && sorted[i + 1].rel < rel) i++;
+  const a = sorted[i];
+  const b = sorted[i + 1];
+  const w = (rel - a.rel) / ((b.rel - a.rel) || 1);
+  return {
+    rel,
+    lat: a.lat + w * (b.lat - a.lat),
+    lon: a.lon + w * (b.lon - a.lon),
+    z: lerpNum(a.z, b.z, w),
+    u: lerpNum(a.u, b.u, w),
+    v: lerpNum(a.v, b.v, w),
+    met: lerpMet(a.met, b.met, w),
+  };
+}
+
+function lerpMet(ma, mb, alpha) {
+  if (!ma && !mb) return null;
+  if (!ma) return mb;
+  if (!mb) return ma;
+  return {
+    t: lerpNum(ma.t, mb.t, alpha),
+    td: lerpNum(ma.td, mb.td, alpha),
+    rh: lerpNum(ma.rh, mb.rh, alpha),
+    p: lerpNum(ma.p, mb.p, alpha),
+  };
+}
+
+/**
+ * Morph markers between two tracks: grid = A's relative times; sample B at
+ * the same elapsed offset; lerp fields. `outT0` is absolute start for tooltips.
+ */
+function lerpMarkers(marksA, marksB, t0A, t0B, alpha, outT0) {
+  const A = markersByRel(marksA, t0A);
+  const B = markersByRel(marksB, t0B);
+  if (!A.length) return [];
+  return A.map((a) => {
+    const b = B.length ? (sampleMarkerAtRel(B, a.rel) || a) : a;
+    return {
+      lat: a.lat + alpha * (b.lat - a.lat),
+      lon: a.lon + alpha * (b.lon - a.lon),
+      z: lerpNum(a.z, b.z, alpha),
+      tMs: outT0 + a.rel,
+      u: lerpNum(a.u, b.u, alpha),
+      v: lerpNum(a.v, b.v, alpha),
+      met: lerpMet(a.met, b.met, alpha),
+    };
+  });
+}
+
+function trackStartMs(run) {
+  const p0 = run?.r?.points?.[0]?.tMs;
+  if (Number.isFinite(p0)) return p0;
+  const m0 = run?.r?.markers?.[0]?.tMs;
+  return Number.isFinite(m0) ? m0 : 0;
+}
+
 function lerpRuns(runsA, runsB, alpha) {
   const mapB = new Map(runsB.map((r) => [morphKey(r), r]));
   const out = [];
@@ -3445,9 +3529,13 @@ function lerpRuns(runsA, runsB, alpha) {
         tMs: p.tMs + alpha * (q.tMs - p.tMs),
       };
     });
+    const t0A = trackStartMs(a);
+    const t0B = trackStartMs(b);
+    const outT0 = t0A + alpha * (t0B - t0A);
+    const markers = lerpMarkers(a.r.markers, b.r.markers, t0A, t0B, alpha, outT0);
     out.push({
       ...a,
-      r: { points, markers: [], status: a.r.status, reason: a.r.reason },
+      r: { points, markers, status: a.r.status, reason: a.r.reason },
     });
   }
   return out;
@@ -3461,11 +3549,11 @@ function paintMorphRuns(runs) {
     if ((run.r?.points || []).length < 2) continue;
     const g = L.layerGroup();
     drawCasing(run.r, g);
-    // No markers during ensemble scrub (throwaway).
-    const line = L.polyline(run.r.points.map((p) => [p.lat, p.lon]), {
-      color: run.color, weight: 3, opacity: 1, dashArray: run.dash || null,
-    }).addTo(g).bindTooltip(run.label, { sticky: true });
-    void line;
+    // Markers need interactivity for met popups; onSelect stops line clicks from
+    // bubbling to map.setStart (same as normal track select handler).
+    drawTrajectory(run.r, run.color, run.label, run.dash, g, {
+      onSelect: () => {},
+    });
     g.addTo(state.layers);
     const key = runKey(run);
     const latlngs = run.r.points.map((p) => [p.lat, p.lon]);
@@ -3488,10 +3576,16 @@ function morphAtStartMs(tMs) {
   const b = samples[Math.min(i + 1, samples.length - 1)];
   const den = (b.t0Ms - a.t0Ms) || 1;
   const alpha = Math.min(1, Math.max(0, (tMs - a.t0Ms) / den));
-  const runs = a === b ? a.runs.map((r) => ({
-    ...r,
-    r: { ...r.r, points: resampleTrack(r.r.points), markers: [] },
-  })) : lerpRuns(a.runs, b.runs, alpha);
+  const runs = a === b
+    ? a.runs.map((r) => ({
+      ...r,
+      r: {
+        ...r.r,
+        points: resampleTrack(r.r.points),
+        markers: (r.r.markers || []).map((m) => ({ ...m })),
+      },
+    }))
+    : lerpRuns(a.runs, b.runs, alpha);
   paintMorphRuns(runs);
   const label = el("ensemble-scrub-label");
   if (label) label.textContent = fmtTime(tMs);
@@ -3602,7 +3696,11 @@ async function runEnsembleViaApi({
       // Live preview: show latest sample while computing
       paintMorphRuns(runs.map((r) => ({
         ...r,
-        r: { ...r.r, points: resampleTrack(r.r.points), markers: [] },
+        r: {
+          ...r.r,
+          points: resampleTrack(r.r.points),
+          markers: (r.r.markers || []).map((m) => ({ ...m })),
+        },
       })));
     }
 

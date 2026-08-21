@@ -27,6 +27,8 @@ const el = (id) => document.getElementById(id);
 let timebar = null;
 /** @type {ReturnType<typeof setTimeout> | null} */
 let bandCommitTimer = null;
+/** Bumps to cancel in-flight start elevation / model-level probes. */
+let modelLevelProbeGen = 0;
 
 // --- Einstellungen in localStorage ------------------------------------------
 const STORAGE_KEY = "trajectories.settings.v1";
@@ -2857,11 +2859,6 @@ async function updateWDetection() {
 }
 
 updateWDetection();
-if (saved.start && Number.isFinite(saved.start.lat) && Number.isFinite(saved.start.lon)) {
-  setStart(saved.start.lat, saved.start.lon, {
-    placeName: saved.startPlace || null,
-  });
-}
 
 // Einheiten-Auswahl: Balken (samt Editierfeld) und, falls offen, Querschnitt
 // in der neuen Einheit neu beschriften.
@@ -2983,8 +2980,6 @@ initGeocode({ map, setStart, debounce, el });
 
 // Modell-Geländehöhe + ICON-Levelhöhen am Start (privater OM-Host) und
 // Isobaren-Geopotential von api.open-meteo.com (dort verfügbar).
-let modelLevelProbeGen = 0;
-
 function firstFiniteHourly(arr) {
   if (!arr) return null;
   if (!Array.isArray(arr)) return Number.isFinite(arr) ? arr : null;
@@ -3459,7 +3454,7 @@ function samplesFromLaunchGeoJSON(gj, ctx) {
   return samples;
 }
 
-// --- Launch window (throwaway 2D scrub) -------------------------------------
+// --- Launch window (throwaway 2D + 3D scrub) --------------------------------
 const LAUNCH_RESAMPLE_N = 64;
 
 function morphKey(run) {
@@ -3666,9 +3661,10 @@ function paintMorphRuns(runs) {
   }
 }
 
-function morphAtStartMs(tMs) {
+/** Lerp launch-window samples at tMs; does not touch lastRuns. */
+function computeMorphRuns(tMs) {
   const lw = state.launchWindow;
-  if (!lw?.samples?.length) return;
+  if (!lw?.samples?.length) return null;
   const samples = lw.samples;
   let i = 0;
   while (i < samples.length - 2 && samples[i + 1].t0Ms <= tMs) i++;
@@ -3676,17 +3672,24 @@ function morphAtStartMs(tMs) {
   const b = samples[Math.min(i + 1, samples.length - 1)];
   const den = (b.t0Ms - a.t0Ms) || 1;
   const alpha = Math.min(1, Math.max(0, (tMs - a.t0Ms) / den));
-  const runs = a === b
-    ? a.runs.map((r) => ({
+  if (a === b) {
+    return a.runs.map((r) => ({
       ...r,
       r: {
         ...r.r,
         points: resampleTrack(r.r.points),
         markers: (r.r.markers || []).map((m) => ({ ...m })),
       },
-    }))
-    : lerpRuns(a.runs, b.runs, alpha);
+    }));
+  }
+  return lerpRuns(a.runs, b.runs, alpha);
+}
+
+function morphAtStartMs(tMs) {
+  const runs = computeMorphRuns(tMs);
+  if (!runs) return;
   paintMorphRuns(runs);
+  if (view3dMod && !el("view3d").hidden) view3dMod.morphRuns(runs);
 }
 
 function buildTrajectoryApiParams({
@@ -5255,6 +5258,16 @@ function view3dData() {
   };
 }
 
+/** Prefer current launch-window morph for open/show; lastRuns otherwise. */
+function view3dDisplayData() {
+  const base = view3dData();
+  if (state.launchWindow?.samples?.length >= 2) {
+    const runs = computeMorphRuns(timebarPlayMs());
+    if (runs?.length) return { ...base, runs };
+  }
+  return base;
+}
+
 function canOpen3d() {
   return (state.lastRuns?.runs?.length > 0) || state.overlays.some((o) => o.visible !== false);
 }
@@ -5279,7 +5292,7 @@ async function openOrRefresh3d({ flyToOverlayIds } = {}) {
     view3dMod ??= await import("./view3d.js");
     el("view3d").hidden = false;
     layoutView3d();
-    await view3dMod.show(view3dData(), { flyToOverlayIds });
+    await view3dMod.show(view3dDisplayData(), { flyToOverlayIds });
     el("view3dbtn").textContent = "3D-Ansicht schließen";
     setStatus("");
   } catch (err) {
@@ -5368,7 +5381,6 @@ function filenameCtxSync() {
 async function updateFilenamePreview() {
   const preview = el("ex-filename-preview");
   if (!preview) return;
-  if (typeof DOWNLOAD_FORMATS === "undefined") return;
   // Vorschau: fehlenden Ortsnamen per Reverse-Geocode nachziehen (nicht nur beim Download).
   if (!state.startPlace && state.start) scheduleReversePlaceForFilename();
   try {
@@ -5517,6 +5529,11 @@ applyExportOptsUI();
 applyShareGithubUI();
 applyFilenamePatternUI();
 showExportSection(el("downloadfmt").value);
+if (saved.start && Number.isFinite(saved.start.lat) && Number.isFinite(saved.start.lon)) {
+  setStart(saved.start.lat, saved.start.lon, {
+    placeName: saved.startPlace || null,
+  });
+}
 updateFilenamePreview();
 for (const id of ["duration", "direction", "model"]) {
   el(id)?.addEventListener("change", updateFilenamePreview);

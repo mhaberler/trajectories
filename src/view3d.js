@@ -35,6 +35,8 @@ let terrainKind = "flat"; // tatsächlich aktive Quelle (nach evtl. Fallback)
 let calKey = null;     // wofür zOffset gilt: Startpunkt + Geländequelle
 let wired = false;
 let overlayEntities = []; // Flugspur-Entities für flyTo
+/** @type {Map<string, { polyline: object, wall: object, markers: object[], nPts: number, nMarkers: number }>} */
+let runEntityGroups = new Map();
 
 const prefs = loadPrefs();
 
@@ -175,6 +177,61 @@ export async function update(data) {
   redraw();
 }
 
+/**
+ * Throwaway launch-window morph: rewrite polyline/wall/marker positions in place.
+ * Full redraw if run/marker topology no longer matches.
+ */
+export function morphRuns(runs) {
+  if (!viewer || !lastData || !runs?.length) return;
+  lastData = { ...lastData, runs };
+  if (!topologyMatches(runs)) {
+    redraw();
+    return;
+  }
+  const f = exaggeration();
+  const H = (z) => (z + zOffset) * f;
+  for (const run of runs) {
+    const pts = (run.r?.points || []).filter((p) => Number.isFinite(p.z));
+    if (pts.length < 2) continue;
+    const g = runEntityGroups.get(runMorphKey(run));
+    if (!g) continue;
+    const positions = pts.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, H(p.z)));
+    g.polyline.polyline.positions = positions;
+    g.wall.wall.positions = positions;
+    g.wall.wall.minimumHeights = pts.map(() => 0);
+    const markers = (run.r.markers || []).filter((m) => Number.isFinite(m.z));
+    for (let i = 0; i < markers.length; i++) {
+      const m = markers[i];
+      const ent = g.markers[i];
+      if (!ent) continue;
+      ent.position = Cesium.Cartesian3.fromDegrees(m.lon, m.lat, H(m.z));
+      ent.name = `${fmtTime(m.tMs)} — ${run.label}`;
+      ent.description = markerHtml(m, run.label);
+    }
+  }
+  viewer.scene.requestRender();
+}
+
+function runMorphKey(run) {
+  return `${run.heightM}|${run.method}`;
+}
+
+function topologyMatches(runs) {
+  const usable = [];
+  for (const run of runs) {
+    const pts = (run.r?.points || []).filter((p) => Number.isFinite(p.z));
+    if (pts.length < 2) continue;
+    const markers = (run.r.markers || []).filter((m) => Number.isFinite(m.z));
+    usable.push({ key: runMorphKey(run), nPts: pts.length, nMarkers: markers.length });
+  }
+  if (usable.length !== runEntityGroups.size) return false;
+  for (const u of usable) {
+    const g = runEntityGroups.get(u.key);
+    if (!g || g.nPts !== u.nPts || g.nMarkers !== u.nMarkers) return false;
+  }
+  return true;
+}
+
 /** Kamera auf eine oder mehrere Flugspuren. */
 export function flyToOverlays(ids) {
   if (!viewer) return;
@@ -238,6 +295,7 @@ function redraw() {
   viewer.scene.verticalExaggeration = f;
   viewer.entities.removeAll();
   overlayEntities = [];
+  runEntityGroups = new Map();
   const H = (z) => (z + zOffset) * f;
   const runs = lastData.runs || [];
 
@@ -255,20 +313,21 @@ function redraw() {
         });
     // Polyline/wall ignored by LEFT_CLICK drillPick (Entity has no
     // allowPicking); only markers carry description → infoBox.
-    viewer.entities.add({
+    const polyline = viewer.entities.add({
       name: run.label,
       polyline: { positions, width: 5, material },
     });
-    viewer.entities.add({
+    const wall = viewer.entities.add({
       wall: {
         positions,
         minimumHeights: pts.map(() => 0),
         material: color.withAlpha(0.12),
       },
     });
-    for (const m of run.r.markers) {
+    const markerEnts = [];
+    for (const m of run.r.markers || []) {
       if (!Number.isFinite(m.z)) continue;
-      viewer.entities.add({
+      markerEnts.push(viewer.entities.add({
         name: `${fmtTime(m.tMs)} — ${run.label}`,
         position: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, H(m.z)),
         point: {
@@ -279,8 +338,15 @@ function redraw() {
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         description: markerHtml(m, run.label),
-      });
+      }));
     }
+    runEntityGroups.set(runMorphKey(run), {
+      polyline,
+      wall,
+      markers: markerEnts,
+      nPts: pts.length,
+      nMarkers: markerEnts.length,
+    });
   }
 
   drawOverlays(H);

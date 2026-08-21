@@ -113,23 +113,32 @@ html, body {
   position: absolute;
   top: -2px;
   bottom: -2px;
-  width: 10px;
-  cursor: ew-resize;
+  width: 12px;
+  cursor: grab;
   z-index: 2;
 }
-.timebar-edge-l { left: -4px; }
-.timebar-edge-r { right: -4px; }
-.timebar-edge::after {
+.timebar-edge:active { cursor: grabbing; }
+.timebar-edge-l { left: -5px; }
+.timebar-edge-l::after {
   content: "";
   position: absolute;
   top: 2px;
   bottom: 2px;
-  left: 3px;
-  width: 3px;
+  left: 4px;
+  width: 4px;
   border-radius: 1px;
   background: #c45c26;
 }
-.timebar-edge-r::after { background: #8b4513; left: 4px; }
+.timebar-band-end {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  right: 0;
+  width: 2px;
+  background: #8b4513;
+  opacity: 0.55;
+  pointer-events: none;
+}
 .timebar-needle {
   position: absolute;
   top: 1px;

@@ -132,34 +132,6 @@ export function createTimebar(opts) {
     suppressBandCommit = false;
   }
 
-  function snapBandInPlace() {
-    if (launchWindowH() <= 0 || windowMs() < HOUR_MS * 0.5) {
-      m.tStart = clampHour(m.tStart);
-      m.tEnd = m.tStart;
-      m.playMs = m.tStart;
-      return;
-    }
-    const wHours = Math.min(
-      MAX_LAUNCH_WINDOW_H,
-      Math.max(1, Math.round(windowMs() / HOUR_MS)),
-    );
-    m.tStart = clampHour(m.tStart);
-    let end = m.tStart + wHours * HOUR_MS;
-    const hi = hourHi();
-    if (end > hi) {
-      end = hi;
-      m.tStart = clampHour(end - wHours * HOUR_MS);
-      end = m.tStart + Math.max(1, Math.round((Math.min(hi, m.tStart + wHours * HOUR_MS) - m.tStart) / HOUR_MS)) * HOUR_MS;
-      if (end > hi) end = hi;
-      if (end - m.tStart < HOUR_MS) {
-        m.tStart = clampHour(hi - HOUR_MS);
-        end = m.tStart + HOUR_MS;
-      }
-    }
-    m.tEnd = end;
-    m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
-  }
-
   function fmtShort(ms) {
     const d = new Date(ms);
     const wd = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"][d.getUTCDay()];
@@ -331,16 +303,10 @@ export function createTimebar(opts) {
     }
   }
 
-  function setBand(tStart, tEnd, { syncField = true } = {}) {
+  function setBand(tStart, _tEnd, { syncField = true } = {}) {
+    // Duration always from Launch-Fenster; start is repositioned.
     m.tStart = clampHour(tStart);
-    let end = clamp(snapHour(tEnd), m.tStart, hourHi());
-    const maxEnd = m.tStart + MAX_LAUNCH_WINDOW_H * HOUR_MS;
-    if (end > maxEnd) end = Math.min(hourHi(), maxEnd);
-    m.tEnd = end;
-    if (m.tEnd > m.tStart && m.tEnd - m.tStart < minBandMs()) {
-      m.tEnd = Math.min(hourHi(), m.tStart + minBandMs());
-    }
-    m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
+    moveWindowToStart(m.tStart);
     if (syncField) writeLaunchWindowField();
     ensureVisibleBand();
     render();
@@ -356,7 +322,29 @@ export function createTimebar(opts) {
     emitChange();
   }
 
-  /** Track hits only: band / edges / pan (playhead is under-scrub). */
+  /** Fixed window width from Launch-Fenster (hours), clamped. */
+  function fixedWindowMs() {
+    const h = Math.min(MAX_LAUNCH_WINDOW_H, Math.max(0, Math.round(launchWindowH())));
+    return h > 0 ? h * HOUR_MS : 0;
+  }
+
+  /** Move band by start time; duration stays Launch-Fenster. */
+  function moveWindowToStart(tStart) {
+    const w = fixedWindowMs();
+    if (w <= 0) {
+      m.tStart = clampHour(tStart);
+      m.tEnd = m.tStart;
+      m.playMs = m.tStart;
+      return;
+    }
+    let ns = clampHour(tStart);
+    ns = clamp(ns, hourLo(), hourHi() - w);
+    m.tStart = ns;
+    m.tEnd = ns + w;
+    m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
+  }
+
+  /** Track hits: start handle / band body / pan. End is not grabbable. */
   function hitTestTrack(clientX) {
     const tr = track();
     if (!tr) return "track";
@@ -366,8 +354,7 @@ export function createTimebar(opts) {
     if (launchWindowH() > 0 && windowMs() > 0) {
       const left = msToFrac(m.tStart) * w;
       const right = msToFrac(m.tEnd) * w;
-      if (Math.abs(x - left) <= EDGE_HIT_PX) return "edge-l";
-      if (Math.abs(x - right) <= EDGE_HIT_PX) return "edge-r";
+      if (Math.abs(x - left) <= EDGE_HIT_PX + 2) return "edge-l";
       if (x >= left && x <= right) return "band";
     }
     return "track";
@@ -388,7 +375,6 @@ export function createTimebar(opts) {
       v0: m.v0,
       v1: m.v1,
     };
-    // Do not preventDefault here — it suppresses click/dblclick in browsers.
   }
 
   function onPlayPointerDown(e) {
@@ -428,13 +414,12 @@ export function createTimebar(opts) {
 
   function onTrackPointerDown(e) {
     if (!ready || e.button !== 0) return;
-    // Second click of a double-click: reset viewport instead of starting a drag.
     if (e.detail >= 2) {
       resetViewport();
       return;
     }
+    // Right edge is not interactive; ignore data-edge=r if present.
     const mode = e.target?.dataset?.edge === "l" ? "edge-l"
-      : e.target?.dataset?.edge === "r" ? "edge-r"
       : hitTestTrack(e.clientX);
     beginDrag(e, mode);
     if (!drag) return;
@@ -462,10 +447,8 @@ export function createTimebar(opts) {
 
     if (drag.mode === "play") {
       if (launchWindowH() > 0) {
-        // Continuous morph scrub within band
         m.playMs = clamp(drag.play0 + dMs, m.tStart, m.tEnd);
       } else {
-        // Single start: snap to forecast hours while dragging
         const snapped = clampHour(drag.play0 + dMs);
         m.playMs = snapped;
         m.tStart = snapped;
@@ -473,30 +456,9 @@ export function createTimebar(opts) {
       }
       render();
       onPlay?.();
-    } else if (drag.mode === "band") {
-      const w = Math.min(drag.tEnd0 - drag.tStart0, MAX_LAUNCH_WINDOW_H * HOUR_MS);
-      let ns = snapHour(drag.tStart0 + dMs);
-      ns = clamp(ns, hourLo(), hourHi() - w);
-      m.tStart = ns;
-      m.tEnd = ns + w;
-      m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
-      writeLaunchWindowField();
-      render();
-    } else if (drag.mode === "edge-l") {
-      const minStart = Math.max(hourLo(), drag.tEnd0 - MAX_LAUNCH_WINDOW_H * HOUR_MS);
-      let ns = snapHour(drag.tStart0 + dMs);
-      ns = clamp(ns, minStart, drag.tEnd0 - minBandMs());
-      m.tStart = ns;
-      m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
-      writeLaunchWindowField();
-      render();
-    } else if (drag.mode === "edge-r") {
-      const maxEnd = Math.min(hourHi(), drag.tStart0 + MAX_LAUNCH_WINDOW_H * HOUR_MS);
-      let ne = snapHour(drag.tEnd0 + dMs);
-      ne = clamp(ne, drag.tStart0 + minBandMs(), maxEnd);
-      m.tEnd = ne;
-      m.playMs = clamp(m.playMs, m.tStart, m.tEnd);
-      writeLaunchWindowField();
+    } else if (drag.mode === "band" || drag.mode === "edge-l") {
+      // Start handle and band body: slide window, duration from Launch-Fenster only.
+      moveWindowToStart(drag.tStart0 + dMs);
       render();
     } else if (drag.mode === "pan") {
       const span = drag.v1 - drag.v0;
@@ -515,9 +477,9 @@ export function createTimebar(opts) {
     try {
       track()?.releasePointerCapture?.(e.pointerId);
     } catch { /* ignore */ }
-    if (mode === "band" || mode === "edge-l" || mode === "edge-r") {
-      snapBandInPlace();
-      writeLaunchWindowField();
+    if (mode === "band" || mode === "edge-l") {
+      // Final hour snap with fixed duration from field
+      moveWindowToStart(m.tStart);
       ensureVisibleBand();
       render();
       onBandCommit?.();

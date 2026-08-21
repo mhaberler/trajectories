@@ -114,6 +114,134 @@ def test_trajectory_happy_path(mock_compute):
     assert kwargs["methods"] == ["height"]
     assert kwargs["height_ref"] == "agl"
     assert kwargs["backend"] == "http"
+    assert kwargs.get("times") is None
+    assert kwargs["time"] == "2026-08-02T11:00:00Z"
+
+
+@patch("trajectories.api.compute_trajectories", return_value=TINY_GJ)
+def test_trajectory_times_batch(mock_compute):
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "times": "2026-08-02T11:00:00Z,2026-08-02T11:15:00Z",
+            "forecast_hours": 2,
+            "height_agl": "500",
+            "vertical_motion": "height",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["type"] == "FeatureCollection"
+    mock_compute.assert_called_once()
+    kwargs = mock_compute.call_args.kwargs
+    assert kwargs.get("time") is None
+    assert kwargs["times"] == [
+        "2026-08-02T11:00:00Z",
+        "2026-08-02T11:15:00Z",
+    ]
+
+
+def test_trajectory_time_and_times_rejected():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+            "times": "2026-08-02T11:00:00Z,2026-08-02T12:00:00Z",
+        },
+    )
+    assert r.status_code == 400
+    assert "exactly one" in r.json()["reason"]
+
+
+def test_trajectory_neither_time_nor_times():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+        },
+    )
+    assert r.status_code == 400
+    assert "exactly one" in r.json()["reason"]
+
+
+def test_trajectory_times_with_profile_rejected():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "times": "2026-08-02T11:00:00Z,2026-08-02T12:00:00Z",
+            "profile_time": "0,3600",
+            "profile_height": "500,500",
+        },
+    )
+    assert r.status_code == 400
+    assert "incompatible with times" in r.json()["reason"]
+
+
+def test_trajectory_times_over_cap():
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
+    starts = ",".join(
+        (t0 + timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(50)
+    )
+    assert starts.count(",") + 1 == 50
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "times": starts,
+            "height_agl": "500",
+        },
+    )
+    assert r.status_code == 400
+    assert "at most" in r.json()["reason"]
+
+
+def test_build_geojson_marker_start_time():
+    from trajectories.geojson_export import build_geojson
+
+    gj = build_geojson(
+        runs=[{
+            "r": {
+                "points": [
+                    {"lat": 47.0, "lon": 15.0, "z": 500, "tMs": 1_000_000.0},
+                    {"lat": 47.1, "lon": 15.1, "z": 500, "tMs": 1_003_600_000.0},
+                ],
+                "markers": [{
+                    "lat": 47.05, "lon": 15.05, "z": 500,
+                    "tMs": 1_001_800_000.0, "u": 1.0, "v": 0.0,
+                }],
+                "status": "ok",
+                "reason": None,
+            },
+            "color": "#000",
+            "label": "500 m AGL",
+            "heightM": 500,
+            "method": "height",
+            "terrain": [100, 100],
+        }],
+        model_key="icon_d2",
+        mode="agl",
+        t0_ms=1_000_000.0,
+        duration=1.0,
+        direction=1,
+    )
+    markers = [f for f in gj["features"] if f["properties"]["kind"] == "marker"]
+    assert len(markers) == 1
+    assert "start_time" in markers[0]["properties"]
+    assert markers[0]["properties"]["start_time"].endswith("Z")
 
 
 @patch("trajectories.api.compute_trajectories", return_value=TINY_GJ)

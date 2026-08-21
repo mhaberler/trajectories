@@ -127,7 +127,8 @@ Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection 
 |-------|------|
 | `latitude`, `longitude` | start point |
 | `models` | `icon_d2` \| `icon_eu` |
-| `time` + `timeformat` | ISO-8601 (default) or `unixtime` |
+| `time` + `timeformat` | single start: ISO-8601 (default) or `unixtime` |
+| `times` | CSV of starts (same `timeformat`); mutually exclusive with `time`; max 49; one shared wind init |
 | `forecast_hours` | duration 1–72 h |
 | `height_agl` / `height_amsl` | comma-separated metres |
 | `vertical_motion` | comma-list of methods |

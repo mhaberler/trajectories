@@ -73,7 +73,8 @@ def cache_key(
     model: str,
     lat: float,
     lon: float,
-    time: str | float,
+    time: str | float | None = None,
+    times: list[str | float] | tuple[str | float, ...] | None = None,
     duration: float,
     heights: list[float] | None,
     methods: list[str] | None,
@@ -92,11 +93,16 @@ def cache_key(
         p = ";".join(f"{t}:{ht}" for t, ht in profile)
     else:
         p = ""
+    if times is not None and len(times) > 0:
+        # Stable multi-start key; single-time callers keep using `time=`.
+        time_part = "times:" + ",".join(str(t) for t in times)
+    else:
+        time_part = str(time)
     return "|".join([
         model,
         f"{round(lat, 3):.3f}",
         f"{round(lon, 3):.3f}",
-        str(time),
+        time_part,
         str(duration),
         h,
         m,

@@ -3360,6 +3360,29 @@ function runsFromApiGeoJSON(gj, { mode, modelKey, direction, duration, t0Ms }) {
   return runs.sort((a, b) => a.heightM - b.heightM);
 }
 
+/** Split a multi-start FeatureCollection into launch-window samples by start_time. */
+function samplesFromLaunchGeoJSON(gj, ctx) {
+  const byStart = new Map();
+  for (const f of gj.features || []) {
+    const st = f.properties?.start_time;
+    if (!st) continue;
+    if (!byStart.has(st)) byStart.set(st, []);
+    byStart.get(st).push(f);
+  }
+  const keys = [...byStart.keys()].sort((a, b) => Date.parse(a) - Date.parse(b));
+  const samples = [];
+  for (const st of keys) {
+    const t0Ms = Date.parse(st);
+    if (!Number.isFinite(t0Ms)) continue;
+    const runs = runsFromApiGeoJSON(
+      { type: "FeatureCollection", features: byStart.get(st) },
+      { ...ctx, t0Ms },
+    );
+    if (runs.length) samples.push({ t0Ms, runs });
+  }
+  return samples;
+}
+
 // --- Launch window (throwaway 2D scrub) -------------------------------------
 const LAUNCH_RESAMPLE_N = 64;
 
@@ -3600,14 +3623,13 @@ function morphAtStartMs(tMs) {
 }
 
 function buildTrajectoryApiParams({
-  lat, lon, modelKey, t0Ms, forecastHours, methods, direction,
+  lat, lon, modelKey, t0Ms, t0ListMs, forecastHours, methods, direction,
   markerIntervalSec, mode, activeHeights, profile,
 }) {
   const params = new URLSearchParams({
     latitude: String(lat),
     longitude: String(lon),
     models: modelKey,
-    time: new Date(t0Ms).toISOString().replace(/\.\d{3}Z$/, "Z"),
     timeformat: "iso8601",
     forecast_hours: String(forecastHours),
     vertical_motion: profile ? "height" : methods.join(","),
@@ -3617,6 +3639,12 @@ function buildTrajectoryApiParams({
     format: "geojson",
     backend: "auto",
   });
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  if (t0ListMs?.length) {
+    params.set("times", t0ListMs.map(iso).join(","));
+  } else {
+    params.set("time", iso(t0Ms));
+  }
   if (profile) {
     params.set("profile_time", profile.map((w) => w.tSec).join(","));
     params.set("profile_height", profile.map((w) => w.hAgl).join(","));
@@ -3629,10 +3657,10 @@ function buildTrajectoryApiParams({
   return params;
 }
 
-async function fetchTrajectoryApi(params) {
+async function fetchTrajectoryApi(params, { timeoutMs = 120000 } = {}) {
   const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
   if (DEBUG) console.debug("[traj] API", url);
-  const resp = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   const body = await resp.text();
   let data;
   try {
@@ -3656,6 +3684,8 @@ async function runLaunchWindowViaApi({
   const n = t0List.length;
   if (n > 40) {
     setStatus(`Launch-Fenster: ${n} Starts (groß) — Start …`);
+  } else {
+    setStatus(`Launch-Fenster: lade ${n} Starts …`);
   }
 
   state.running = true;
@@ -3682,43 +3712,32 @@ async function runLaunchWindowViaApi({
   if (bar) bar.hidden = true;
 
   const forecastHours = duration;
-  const samples = [];
   const wall0 = performance.now();
+  // Multi-start batch can take a while; scale timeout with sample count.
+  const timeoutMs = Math.min(600_000, 60_000 + n * 15_000);
 
   try {
-    for (let i = 0; i < n; i++) {
-      if (gen !== state.launchWindowGen) return;
-      const tSample = t0List[i];
-      setStatus(`Launch-Fenster ${i + 1}/${n} · ${fmtTime(tSample)}`);
-      const params = buildTrajectoryApiParams({
-        lat, lon, modelKey, t0Ms: tSample, forecastHours, methods, direction,
-        markerIntervalSec, mode, activeHeights, profile: null,
-      });
-      const data = await fetchTrajectoryApi(params);
-      if (gen !== state.launchWindowGen) return;
-      const runs = runsFromApiGeoJSON(data, {
-        mode, modelKey, direction, duration: forecastHours, t0Ms: tSample,
-      });
-      if (!runs.length) throw new Error(`API lieferte keine Trajektorien (${fmtTime(tSample)})`);
-      samples.push({ t0Ms: tSample, runs });
-      // Live preview: show latest sample while computing
-      paintMorphRuns(runs.map((r) => ({
-        ...r,
-        r: {
-          ...r.r,
-          points: resampleTrack(r.r.points),
-          markers: (r.r.markers || []).map((m) => ({ ...m })),
-        },
-      })));
-    }
+    const params = buildTrajectoryApiParams({
+      lat, lon, modelKey, t0ListMs: t0List, forecastHours, methods, direction,
+      markerIntervalSec, mode, activeHeights, profile: null,
+    });
+    const data = await fetchTrajectoryApi(params, { timeoutMs });
+    if (gen !== state.launchWindowGen) return;
 
+    const samples = samplesFromLaunchGeoJSON(data, {
+      mode, modelKey, direction, duration: forecastHours,
+    });
     if (samples.length < 2) {
-      throw new Error("Launch-Fenster braucht mindestens 2 Starts");
+      throw new Error(
+        samples.length
+          ? "Launch-Fenster: API lieferte zu wenige Startzeiten"
+          : "Launch-Fenster braucht mindestens 2 Starts",
+      );
     }
 
     state.launchWindow = {
-      tStartMs: t0List[0],
-      tEndMs: t0List[t0List.length - 1],
+      tStartMs: samples[0].t0Ms,
+      tEndMs: samples[samples.length - 1].t0Ms,
       stepMs: Math.max(5, stepMin) * 60e3,
       samples,
     };
@@ -3751,28 +3770,8 @@ async function runLaunchWindowViaApi({
     setStatus(`Launch-Fenster: ${samples.length} Starts · ${fmtMs(ms)}`);
   } catch (err) {
     if (gen !== state.launchWindowGen) return;
-    if (samples.length >= 2) {
-      state.launchWindow = {
-        tStartMs: samples[0].t0Ms,
-        tEndMs: samples[samples.length - 1].t0Ms,
-        stepMs: Math.max(5, stepMin) * 60e3,
-        samples,
-      };
-      const first = samples[0];
-      state.lastRuns = {
-        runs: first.runs, modelKey, mode, t0Ms: first.t0Ms, duration: forecastHours, direction,
-      };
-      el("results").innerHTML = "";
-      for (const run of first.runs) reportResult(run.r, run.heightM, run.color, run.label, run);
-      setDownloadEnabled(true);
-      el("xsecbtn").disabled = false;
-      el("view3dbtn").disabled = false;
-      showLaunchScrub();
-      setStatus(`Launch-Fenster teilweise (${samples.length}/${n}): ${err.message}`, true);
-    } else {
-      clearLaunchWindow();
-      setStatus(`API-Fehler: ${err.message}`, true);
-    }
+    clearLaunchWindow();
+    setStatus(`API-Fehler: ${err.message}`, true);
   } finally {
     if (gen === state.launchWindowGen) {
       state.running = false;

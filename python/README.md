@@ -95,7 +95,19 @@ curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
   --data-urlencode 'height_agl=500,1500,3000' \
   --data-urlencode 'vertical_motion=height' \
   --data-urlencode 'backend=http'
+
+# Launch-window batch (mutually exclusive with `time`; max 49 starts):
+curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
+  --data-urlencode 'latitude=47.23' \
+  --data-urlencode 'longitude=15.82' \
+  --data-urlencode 'models=icon_d2' \
+  --data-urlencode 'times=2026-08-02T11:00:00Z,2026-08-02T11:15:00Z,2026-08-02T11:30:00Z' \
+  --data-urlencode 'forecast_hours=2' \
+  --data-urlencode 'height_agl=500' \
+  --data-urlencode 'vertical_motion=height'
 ```
+
+Exactly one of `time` or `times` is required. Multi-start responses are still one GeoJSON FeatureCollection; group features by `properties.start_time` (present on trajectories and markers).
 
 Client example (server must be running):
 

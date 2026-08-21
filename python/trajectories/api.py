@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
-from .compute import compute_point_wind, compute_trajectories, parse_flight_profile
+from .compute import (
+    MAX_START_TIMES,
+    compute_point_wind,
+    compute_trajectories,
+    parse_flight_profile,
+)
 from .response_cache import cache_key, get_response_cache, wind_cache_key
 
 MODELS = Literal["icon_d2", "icon_eu", "icon_global"]
@@ -172,6 +177,28 @@ def _resolve_time(time: str | None, timeformat: str) -> str | float:
         raise ValueError(f"Invalid ISO8601 time: {raw!r}") from exc
 
 
+def _resolve_times_csv(raw: str | None, timeformat: str) -> list[str | float]:
+    if raw is None or not str(raw).strip():
+        raise ValueError("Parameter times is required")
+    out: list[str | float] = []
+    seen: set[str] = set()
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        resolved = _resolve_time(part, timeformat)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(resolved)
+    if not out:
+        raise ValueError("Parameter times must contain at least one start")
+    if len(out) > MAX_START_TIMES:
+        raise ValueError(f"times accepts at most {MAX_START_TIMES} starts")
+    return out
+
+
 @app.get(
     "/v1/trajectory",
     tags=["trajectory"],
@@ -206,13 +233,24 @@ def trajectory(
         "icon_eu",
         description="Open-Meteo model id (single model in v1)",
     ),
-    time: str = Query(
-        ...,
-        description="Start time: ISO-8601 (default) or unix seconds when timeformat=unixtime",
+    time: str | None = Query(
+        None,
+        description=(
+            "Single start time: ISO-8601 (default) or unix seconds when "
+            "timeformat=unixtime. Mutually exclusive with times."
+        ),
+    ),
+    times: str | None = Query(
+        None,
+        description=(
+            "CSV of start times (same timeformat as time). Launch-window batch; "
+            "max 49 starts. Mutually exclusive with time."
+        ),
+        examples=["2026-08-02T11:00:00Z,2026-08-02T11:15:00Z"],
     ),
     timeformat: TIMEFORMAT = Query(
         "iso8601",
-        description="How to interpret `time` (Open-Meteo-style)",
+        description="How to interpret `time` / `times` (Open-Meteo-style)",
     ),
     forecast_hours: float = Query(
         12,
@@ -249,7 +287,8 @@ def trajectory(
         None,
         description=(
             "Flight profile times in seconds from `time` (CSV). "
-            "Requires profile_height; exclusive with height_agl/height_amsl"
+            "Requires profile_height; exclusive with height_agl/height_amsl; "
+            "incompatible with times"
         ),
         examples=["0,1200,3600,5400,7200"],
     ),
@@ -282,6 +321,11 @@ def trajectory(
     if height_agl and height_amsl:
         return _om_error(400, "Specify only one of height_agl or height_amsl")
 
+    has_time = time is not None and str(time).strip() != ""
+    has_times = times is not None and str(times).strip() != ""
+    if has_time == has_times:
+        return _om_error(400, "Specify exactly one of time or times")
+
     has_profile_t = profile_time is not None and str(profile_time).strip() != ""
     has_profile_h = profile_height is not None and str(profile_height).strip() != ""
     if has_profile_t != has_profile_h:
@@ -291,16 +335,23 @@ def trajectory(
             400,
             "flight profile is mutually exclusive with height_agl and height_amsl",
         )
+    if has_times and has_profile_t:
+        return _om_error(400, "flight profile is incompatible with times")
 
     try:
-        t0 = _resolve_time(time, timeformat)
+        if has_times:
+            t0_list = _resolve_times_csv(times, timeformat)
+            t0_single: str | float | None = None
+        else:
+            t0_single = _resolve_time(time, timeformat)
+            t0_list = None
         profile = None
         if has_profile_t:
-            times = _parse_csv_floats(profile_time, name="profile_time")
+            profile_ts = _parse_csv_floats(profile_time, name="profile_time")
             heights_p = _parse_csv_floats(profile_height, name="profile_height")
-            if times is None or heights_p is None:
+            if profile_ts is None or heights_p is None:
                 raise ValueError("profile_time and profile_height are required")
-            profile = parse_flight_profile(times, heights_p)
+            profile = parse_flight_profile(profile_ts, heights_p)
             heights = None
             height_ref = "agl"
             methods = _parse_csv_methods(vertical_motion)
@@ -323,7 +374,8 @@ def trajectory(
         model=models,
         lat=latitude,
         lon=longitude,
-        time=t0,
+        time=t0_single,
+        times=t0_list,
         duration=forecast_hours,
         heights=heights,
         methods=methods,
@@ -342,23 +394,42 @@ def trajectory(
         return cached
 
     try:
-        result = compute_trajectories(
-            lat=latitude,
-            lon=longitude,
-            time=t0,
-            model=models,
-            duration_h=forecast_hours,
-            heights=heights,
-            methods=methods,
-            height_ref=height_ref,
-            direction=direction,
-            marker_interval_min=marker_interval,
-            met_extras=met_extras,
-            backend=backend,
-            height_profile=profile,
-            marker_interval_climbing_min=marker_interval_climbing,
-            clearance_m=clearance_m,
-        )
+        if t0_list is not None:
+            result = compute_trajectories(
+                lat=latitude,
+                lon=longitude,
+                times=t0_list,
+                model=models,
+                duration_h=forecast_hours,
+                heights=heights,
+                methods=methods,
+                height_ref=height_ref,
+                direction=direction,
+                marker_interval_min=marker_interval,
+                met_extras=met_extras,
+                backend=backend,
+                height_profile=profile,
+                marker_interval_climbing_min=marker_interval_climbing,
+                clearance_m=clearance_m,
+            )
+        else:
+            result = compute_trajectories(
+                lat=latitude,
+                lon=longitude,
+                time=t0_single,
+                model=models,
+                duration_h=forecast_hours,
+                heights=heights,
+                methods=methods,
+                height_ref=height_ref,
+                direction=direction,
+                marker_interval_min=marker_interval,
+                met_extras=met_extras,
+                backend=backend,
+                height_profile=profile,
+                marker_interval_climbing_min=marker_interval_climbing,
+                clearance_m=clearance_m,
+            )
     except ValueError as exc:
         return _om_error(400, str(exc))
     except RuntimeError as exc:

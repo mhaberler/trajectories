@@ -13,6 +13,7 @@ from .integrator import compute_trajectory
 from .windfield import WindField
 
 TRACK_WORKERS = 8
+MAX_START_TIMES = 49
 
 
 def _parse_time(time: str | datetime | float | int) -> float:
@@ -94,7 +95,8 @@ def compute_trajectories(
     *,
     lat: float,
     lon: float,
-    time: str | datetime | float | int,
+    time: str | datetime | float | int | None = None,
+    times: Sequence[str | datetime | float | int] | None = None,
     model: str = "icon_eu",
     duration_h: float = 12,
     heights: Sequence[float] | None = None,
@@ -117,8 +119,12 @@ def compute_trajectories(
     ``methods`` may list several vertical modes; ``heights`` several start heights.
     All combinations are run into one FeatureCollection.
 
+    Pass exactly one of ``time`` (single start) or ``times`` (launch-window batch).
+    Multiple starts share one WindField init spanning the full time range.
+
     When ``height_profile`` is set (list of ``(t_sec, h_agl)``), a single kinematic
-    AGL track is computed; ``heights`` / multi-method are not used.
+    AGL track is computed; ``heights`` / multi-method are not used. Profile is
+    incompatible with ``times`` (multi-start).
 
     Data source: ``backend`` ``auto`` (default) prefers local Open-Meteo OM files
     under ``om_root`` / ``TRAJECTORIES_OM_ROOT`` when available, else HTTP.
@@ -130,6 +136,22 @@ def compute_trajectories(
     if backend is not None:
         config.set_backend(backend)
 
+    has_time = time is not None and not (
+        isinstance(time, str) and not str(time).strip()
+    )
+    has_times = times is not None and len(list(times)) > 0
+    if has_time == has_times:
+        raise ValueError("Specify exactly one of time or times")
+
+    if has_times:
+        t0_list_ms = sorted({_parse_time(t) for t in times})  # type: ignore[arg-type]
+        if len(t0_list_ms) > MAX_START_TIMES:
+            raise ValueError(f"times accepts at most {MAX_START_TIMES} starts")
+        if not t0_list_ms:
+            raise ValueError("times must contain at least one start")
+    else:
+        t0_list_ms = [_parse_time(time)]  # type: ignore[arg-type]
+
     if model not in config.MODELS:
         raise ValueError(f"Unknown model: {model}")
     model_cfg = config.MODELS[model]
@@ -137,6 +159,8 @@ def compute_trajectories(
 
     profile: list[tuple[float, float]] | None = None
     if height_profile is not None:
+        if len(t0_list_ms) > 1:
+            raise ValueError("flight profile is incompatible with multiple times")
         profile = parse_flight_profile(
             [p[0] for p in height_profile],
             [p[1] for p in height_profile],
@@ -173,7 +197,6 @@ def compute_trajectories(
     else:
         direction_i = 1 if int(direction) >= 0 else -1
 
-    t0_ms = _parse_time(time)
     marker_interval_sec = float(marker_interval_min) * 60
     marker_climb_sec = float(marker_interval_climbing_min) * 60
 
@@ -193,83 +216,98 @@ def compute_trajectories(
         if not w_prefix:
             raise RuntimeError("Model vertical velocity (w) not available")
 
-    t_end = t0_ms + direction_i * duration * 3600e3
+    t_min = min(t0_list_ms)
+    t_max = max(t0_list_ms)
+    # Span covers earliest start through latest start + duration (either direction).
+    t_span_a = t_min + direction_i * duration * 3600e3
+    t_span_b = t_max + direction_i * duration * 3600e3
+    t_init_lo = min(t_min, t_max, t_span_a, t_span_b)
+    t_init_hi = max(t_min, t_max, t_span_a, t_span_b)
+
     max_h = max(heights)
     if profile is not None:
         max_h = max(max_h, max(h for _, h in profile))
 
+    all_features: list[dict] = []
+
     with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
-        wf.init(lat, lon, max_h, t0_ms, t_end, methods, met_extras=met_extras)
-        jobs: list[tuple[float, str, str, dict, str]] = []
-        for height_m in heights:
-            for method in methods:
-                style = next(m for m in config.METHODS if m["key"] == method)
-                color = style["color"] if compare_mode else height_colors[height_m]
-                if profile is not None:
-                    target = {"type": "height", "mode": "agl", "value": height_m}
-                    label = f"Profil {_fmt_height(height_m)} AGL"
-                else:
-                    target, label = make_target(
-                        wf, lat, lon, height_m, height_ref, method, t0_ms
-                    )
-                jobs.append((height_m, method, color, target, label))
+        wf.init(lat, lon, max_h, t_init_lo, t_init_hi, methods, met_extras=met_extras)
 
-        def _run_one(job: tuple[float, str, str, dict, str]) -> dict:
-            height_m, method, color, target, label = job
-            r = compute_trajectory(
-                wind_at=wf.wind_at,
-                lat0=lat,
-                lon0=lon,
-                target=target,
-                t0_ms=t0_ms,
-                duration_hours=duration,
-                direction=direction_i,
-                grid_meters=model_cfg["gridMeters"],
-                marker_interval_sec=marker_interval_sec,
-                height_profile=profile,
-                marker_interval_climb_sec=marker_climb_sec if profile else None,
-                clearance_m=float(clearance_m) if profile else 0.0,
-                elevation_at=wf.elevation_at if profile else None,
-            )
-            return {
-                "r": r,
-                "color": color,
-                "label": label,
-                "heightM": height_m,
-                "method": method,
-            }
+        for t0_ms in t0_list_ms:
+            jobs: list[tuple[float, str, str, dict, str]] = []
+            for height_m in heights:
+                for method in methods:
+                    style = next(m for m in config.METHODS if m["key"] == method)
+                    color = style["color"] if compare_mode else height_colors[height_m]
+                    if profile is not None:
+                        target = {"type": "height", "mode": "agl", "value": height_m}
+                        label = f"Profil {_fmt_height(height_m)} AGL"
+                    else:
+                        target, label = make_target(
+                            wf, lat, lon, height_m, height_ref, method, t0_ms
+                        )
+                    jobs.append((height_m, method, color, target, label))
 
-        runs: list[dict] = []
-        if len(jobs) == 1:
-            runs.append(_run_one(jobs[0]))
-        else:
-            workers = min(TRACK_WORKERS, len(jobs))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = {pool.submit(_run_one, j): i for i, j in enumerate(jobs)}
-                ordered: list[dict | None] = [None] * len(jobs)
-                for fut in as_completed(futs):
-                    ordered[futs[fut]] = fut.result()
-                runs = [r for r in ordered if r is not None]
-
-        # Model orography along each path (for Querschnitt / 3D after API fetch).
-        for run in runs:
-            pts = run["r"]["points"]
-            terrain: list[float | None] = []
-            for p in pts:
-                e = wf.elevation_at(p["lat"], p["lon"])
-                terrain.append(
-                    float(e) if e is not None and math.isfinite(e) else None
+            def _run_one(
+                job: tuple[float, str, str, dict, str], *, _t0: float = t0_ms
+            ) -> dict:
+                height_m, method, color, target, label = job
+                r = compute_trajectory(
+                    wind_at=wf.wind_at,
+                    lat0=lat,
+                    lon0=lon,
+                    target=target,
+                    t0_ms=_t0,
+                    duration_hours=duration,
+                    direction=direction_i,
+                    grid_meters=model_cfg["gridMeters"],
+                    marker_interval_sec=marker_interval_sec,
+                    height_profile=profile,
+                    marker_interval_climb_sec=marker_climb_sec if profile else None,
+                    clearance_m=float(clearance_m) if profile else 0.0,
+                    elevation_at=wf.elevation_at if profile else None,
                 )
-            run["terrain"] = terrain
+                return {
+                    "r": r,
+                    "color": color,
+                    "label": label,
+                    "heightM": height_m,
+                    "method": method,
+                }
 
-    return build_geojson(
-        runs=runs,
-        model_key=model,
-        mode=height_ref,
-        t0_ms=t0_ms,
-        duration=duration,
-        direction=direction_i,
-    )
+            runs: list[dict] = []
+            if len(jobs) == 1:
+                runs.append(_run_one(jobs[0]))
+            else:
+                workers = min(TRACK_WORKERS, len(jobs))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futs = {pool.submit(_run_one, j): i for i, j in enumerate(jobs)}
+                    ordered: list[dict | None] = [None] * len(jobs)
+                    for fut in as_completed(futs):
+                        ordered[futs[fut]] = fut.result()
+                    runs = [r for r in ordered if r is not None]
+
+            for run in runs:
+                pts = run["r"]["points"]
+                terrain: list[float | None] = []
+                for p in pts:
+                    e = wf.elevation_at(p["lat"], p["lon"])
+                    terrain.append(
+                        float(e) if e is not None and math.isfinite(e) else None
+                    )
+                run["terrain"] = terrain
+
+            gj = build_geojson(
+                runs=runs,
+                model_key=model,
+                mode=height_ref,
+                t0_ms=t0_ms,
+                duration=duration,
+                direction=direction_i,
+            )
+            all_features.extend(gj.get("features") or [])
+
+    return {"type": "FeatureCollection", "features": all_features}
 
 
 def _iso_ms(t_ms: float) -> str:

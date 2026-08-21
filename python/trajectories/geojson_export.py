@@ -78,6 +78,7 @@ def build_geojson(
             props: dict[str, Any] = {
                 "kind": "marker",
                 "label": label,
+                "start_time": iso(t0_ms),
                 "time": iso(m["tMs"]),
                 "wind_speed_kmh": round(spd),
                 "wind_direction_deg": round(direction_deg),

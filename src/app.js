@@ -54,7 +54,7 @@ function persist() {
     refmode: el("refmode").value,
     markerIntervalSec: +el("markerint").value || 600,
     duration: +el("duration").value || 12,
-    launchWindowH: Math.max(0, +el("launchwindow").value || 0),
+    launchWindowH: Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
     launchStepMin: Math.max(5, +el("launchstep").value || 15),
     tStartMs: timebar?.startMs?.() ?? null,
     playMs: timebar?.playMs?.() ?? null,
@@ -2806,9 +2806,10 @@ if (["agl", "amsl"].includes(saved.refmode)) el("refmode").value = saved.refmode
 if (["1", "-1"].includes(saved.direction)) el("direction").value = saved.direction;
 if (Number.isFinite(saved.duration)) el("duration").value = saved.duration;
 if (Number.isFinite(saved.launchWindowH) || Number.isFinite(saved.takeoffWindowH)) {
-  el("launchwindow").value = Number.isFinite(saved.launchWindowH)
+  const raw = Number.isFinite(saved.launchWindowH)
     ? saved.launchWindowH
     : saved.takeoffWindowH;
+  el("launchwindow").value = String(Math.min(12, Math.max(0, raw)));
 }
 if (Number.isFinite(saved.launchStepMin) || Number.isFinite(saved.ensembleStepMin)) {
   el("launchstep").value = Number.isFinite(saved.launchStepMin)
@@ -3154,9 +3155,9 @@ function timebarPlayMs() {
 function initTimebar() {
   timebar = createTimebar({
     el,
-    launchWindowH: () => Math.max(0, +el("launchwindow").value || 0),
+    launchWindowH: () => Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
     setLaunchWindowH: (h) => {
-      el("launchwindow").value = String(h);
+      el("launchwindow").value = String(Math.min(12, Math.max(0, h)));
     },
     launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
     fmtTime,
@@ -3172,7 +3173,7 @@ function initTimebar() {
     onBandCommit: () => {
       clearTimeout(bandCommitTimer);
       bandCommitTimer = setTimeout(() => {
-        const w = Math.max(0, +el("launchwindow").value || 0);
+        const w = Math.min(12, Math.max(0, +el("launchwindow").value || 0));
         if (w <= 0) {
           persist();
           return;
@@ -3992,7 +3993,7 @@ async function runTrajectories() {
   const { lat, lon } = state.start;
   const liveMode = el("livemode").checked;
   const profileOn = el("flightprofile").checked;
-  const launchWindowH = Math.max(0, +el("launchwindow").value || 0);
+  const launchWindowH = Math.min(12, Math.max(0, +el("launchwindow").value || 0));
   const launchStepMin = Math.max(5, +el("launchstep").value || 15);
 
   if (launchWindowH > 0) {

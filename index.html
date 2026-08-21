@@ -50,6 +50,8 @@
         <div id="timebar-callout-end" class="timebar-callout timebar-callout-end">–</div>
       </div>
       <div id="timebar-track" class="timebar-track">
+        <div id="timebar-meta-shade" class="timebar-meta-shade" title="Verfügbare Modelldaten"></div>
+        <div id="timebar-reach-shade" class="timebar-reach-shade" title="Flugdauer ab Fenster (bis Landung beim spätesten Start)" hidden></div>
         <div id="timebar-ticks" class="timebar-ticks"></div>
         <div id="timebar-band" class="timebar-band" hidden>
           <div class="timebar-edge timebar-edge-l" data-edge="l" title="Startzeit verschieben"></div>
@@ -61,9 +63,14 @@
         <div id="timebar-playhead" class="timebar-playhead" title="Zeit innerhalb des Fensters"></div>
       </div>
       <div class="timebar-zoomrow">
-        <span class="timebar-zoomhint hint">Mausrad zoomen · Doppelklick = ganzer Zeitraum</span>
+        <span class="timebar-zoomhint hint">
+          <span class="timebar-legend-meta">Modelldaten</span>
+          ·
+          <span class="timebar-legend-reach">Flugdauer</span>
+          · Mausrad zoomen · Doppelklick = ganzer Zeitraum / zurück
+        </span>
         <button type="button" id="timebar-reset" class="timebar-reset" hidden
-                title="Ansicht auf den gesamten Modellzeitraum zurücksetzen">Ganzer Zeitraum</button>
+                title="Zwischen ganzer Modellspanne und letzter Zoomstufe umschalten">Ganzer Zeitraum</button>
       </div>
     </div>
 

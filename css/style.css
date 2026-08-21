@@ -72,15 +72,41 @@ html, body {
   position: relative;
   height: 28px;
   border-radius: 4px;
-  background: #e4e4e1;
+  background: #ecece8;
   border: 1px solid #c8c8c4;
   cursor: pointer;
   overflow: hidden;
+}
+/* Model data availability [meta0 … meta1] */
+.timebar-meta-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(28, 92, 171, 0.22);
+  pointer-events: none;
+  z-index: 0;
+}
+/* Flight span: window start → landing of latest launch (Fenster + Dauer) */
+.timebar-reach-shade {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(196, 92, 38, 0.28),
+    rgba(196, 92, 38, 0.28) 4px,
+    rgba(232, 200, 74, 0.22) 4px,
+    rgba(232, 200, 74, 0.22) 8px
+  );
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 0;
 }
 .timebar-ticks {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 1;
 }
 .timebar-tick {
   position: absolute;
@@ -101,11 +127,11 @@ html, body {
   position: absolute;
   top: 3px;
   bottom: 3px;
-  background: #fcfcfb;
+  background: rgba(252, 252, 251, 0.92);
   border: 1px solid #b0b0aa;
   border-radius: 3px;
   cursor: grab;
-  z-index: 1;
+  z-index: 2;
   box-sizing: border-box;
 }
 .timebar-band:active { cursor: grabbing; }
@@ -183,6 +209,28 @@ html, body {
   font-size: 11px;
   flex: 1;
   min-width: 0;
+}
+.timebar-legend-meta::before,
+.timebar-legend-reach::before {
+  content: "";
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 3px;
+  vertical-align: -0.1em;
+  border-radius: 2px;
+}
+.timebar-legend-meta::before {
+  background: rgba(28, 92, 171, 0.45);
+}
+.timebar-legend-reach::before {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(196, 92, 38, 0.55),
+    rgba(196, 92, 38, 0.55) 2px,
+    rgba(232, 200, 74, 0.45) 2px,
+    rgba(232, 200, 74, 0.45) 4px
+  );
 }
 .timebar-reset {
   flex: none;

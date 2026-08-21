@@ -3160,6 +3160,8 @@ function initTimebar() {
       el("launchwindow").value = String(Math.min(12, Math.max(0, h)));
     },
     launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
+    durationH: () => Math.min(72, Math.max(1, +el("duration").value || 12)),
+    direction: () => (+el("direction").value === -1 ? -1 : 1),
     fmtTime,
     onPlay: () => {
       updateTimeLabel();
@@ -3283,11 +3285,15 @@ function updateReachHint() {
   }
 }
 
-el("duration").addEventListener("input", updateReachHint);
+el("duration").addEventListener("input", () => {
+  updateReachHint();
+  timebar?.render();
+});
 el("direction").addEventListener("change", () => {
   updateDirectionLabels();
   updateHeightContext(); // „am Startort"/„am Zielort" hängt an der Richtung
   updateReachHint();
+  timebar?.render();
 });
 el("model").addEventListener("change", () => {
   persist();

@@ -27,7 +27,8 @@ function snapHour(ms) {
  * @param {(id: string) => HTMLElement | null} opts.el
  * @param {() => number} opts.launchWindowH
  * @param {(h: number) => void} opts.setLaunchWindowH
- * @param {() => number} opts.launchStepMin
+ * @param {() => number} [opts.durationH] flight duration hours (Dauer)
+ * @param {() => number} [opts.direction] +1 forward / -1 backward
  * @param {(ms: number) => string} opts.fmtTime
  * @param {() => void} [opts.onPlay]
  * @param {() => void} [opts.onBandCommit]
@@ -36,6 +37,8 @@ function snapHour(ms) {
 export function createTimebar(opts) {
   const {
     el, launchWindowH, setLaunchWindowH, fmtTime,
+    durationH = () => 12,
+    direction = () => 1,
     onPlay, onBandCommit, onChange,
   } = opts;
 
@@ -54,6 +57,14 @@ export function createTimebar(opts) {
   /** @type {null | { mode: string, originX: number, tStart0: number, tEnd0: number, play0: number, v0: number, v1: number }} */
   let drag = null;
   let suppressBandCommit = false;
+  /** Last zoomed viewport before jumping to full meta (for dblclick toggle). */
+  /** @type {null | { v0: number, v1: number }} */
+  let savedZoom = null;
+  /** Manual double-click detection (native dblclick is unreliable after pan/capture). */
+  let lastTapTs = 0;
+  let lastTapX = 0;
+  const DRAG_THRESHOLD_PX = 5;
+  const DBLCLICK_MS = 450;
 
   const track = () => el("timebar-track");
   const band = () => el("timebar-band");
@@ -64,6 +75,8 @@ export function createTimebar(opts) {
   const callouts = () => el("timebar-callouts");
   const callStart = () => el("timebar-callout-start");
   const callEnd = () => el("timebar-callout-end");
+  const metaShade = () => el("timebar-meta-shade");
+  const reachShade = () => el("timebar-reach-shade");
 
   function windowMs() {
     return Math.max(0, m.tEnd - m.tStart);
@@ -105,6 +118,44 @@ export function createTimebar(opts) {
     const span = m.v1 - m.v0;
     if (span <= 0) return 0;
     return clamp((ms - m.v0) / span, 0, 1);
+  }
+
+  /** Place [a,b] on the track as left%/width%; hide if no viewport overlap. */
+  function placeShade(node, a, b) {
+    if (!node) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const vis0 = Math.max(lo, m.v0);
+    const vis1 = Math.min(hi, m.v1);
+    if (!(vis1 > vis0) || (m.v1 - m.v0) <= 0) {
+      node.hidden = true;
+      return;
+    }
+    node.hidden = false;
+    const left = msToFrac(vis0) * 100;
+    const right = msToFrac(vis1) * 100;
+    node.style.left = `${left}%`;
+    node.style.width = `${Math.max(0.15, right - left)}%`;
+  }
+
+  function renderShades() {
+    placeShade(metaShade(), m.meta0, m.meta1);
+
+    const durH = Math.min(72, Math.max(1, +durationH() || 12));
+    const dir = +direction() === -1 ? -1 : 1;
+    const durMs = durH * HOUR_MS;
+    const launchLo = m.tStart;
+    const launchHi = Math.max(m.tStart, m.tEnd);
+    // Forward: window start → landing of latest launch. Backward: earliest landing → window end.
+    const reach0 = dir > 0 ? launchLo : launchLo - durMs;
+    const reach1 = dir > 0 ? launchHi + durMs : launchHi;
+    const rs = reachShade();
+    placeShade(rs, reach0, reach1);
+    if (rs && !rs.hidden) {
+      rs.title = dir > 0
+        ? `Flugdauer: Fensterstart → Landung beim spätesten Start (+${durH} h)`
+        : `Flugdauer: Landung beim frühesten Start (−${durH} h) → Fensterende`;
+    }
   }
 
   function syncWindowFromInputs() {
@@ -202,9 +253,26 @@ export function createTimebar(opts) {
     ph.style.left = `${playFrac}%`;
     if (nd) nd.style.left = `${playFrac}%`;
     renderTicks();
+    renderShades();
 
     const resetBtn = el("timebar-reset");
-    if (resetBtn) resetBtn.hidden = !ready || isFullViewport();
+    if (resetBtn) {
+      const canRestore = !!(savedZoom && savedZoom.v1 > savedZoom.v0
+        && !(savedZoom.v0 <= m.meta0 + 1 && savedZoom.v1 >= m.meta1 - 1));
+      if (!ready) {
+        resetBtn.hidden = true;
+      } else if (!isFullViewport()) {
+        resetBtn.hidden = false;
+        resetBtn.textContent = "Ganzer Zeitraum";
+        resetBtn.title = "Ansicht auf den gesamten Modellzeitraum";
+      } else if (canRestore) {
+        resetBtn.hidden = false;
+        resetBtn.textContent = "Zurück zoomen";
+        resetBtn.title = "Letzte Zoomstufe wiederherstellen";
+      } else {
+        resetBtn.hidden = true;
+      }
+    }
 
     const root = el("timebar");
     if (root) {
@@ -248,9 +316,36 @@ export function createTimebar(opts) {
 
   /** Reset viewport to the full available forecast / archive span. */
   function resetViewport() {
+    if (!isFullViewport()) {
+      savedZoom = { v0: m.v0, v1: m.v1 };
+    }
     m.v0 = m.meta0;
     m.v1 = m.meta1;
     render();
+  }
+
+  /** Double-click: full meta ↔ previous zoomed view. */
+  function toggleViewportZoom() {
+    if (!ready) return;
+    if (!isFullViewport()) {
+      savedZoom = { v0: m.v0, v1: m.v1 };
+      m.v0 = m.meta0;
+      m.v1 = m.meta1;
+      render();
+      return;
+    }
+    if (savedZoom
+      && savedZoom.v1 > savedZoom.v0
+      && !(savedZoom.v0 <= m.meta0 + 1 && savedZoom.v1 >= m.meta1 - 1)) {
+      m.v0 = clamp(savedZoom.v0, m.meta0, m.meta1);
+      m.v1 = clamp(savedZoom.v1, m.meta0, m.meta1);
+      if (m.v1 - m.v0 < MIN_VIEWPORT_MS) {
+        const mid = (m.v0 + m.v1) / 2;
+        m.v0 = clamp(mid - MIN_VIEWPORT_MS / 2, m.meta0, m.meta1);
+        m.v1 = Math.min(m.meta1, m.v0 + MIN_VIEWPORT_MS);
+      }
+      render();
+    }
   }
 
   /**
@@ -264,6 +359,7 @@ export function createTimebar(opts) {
     if (m.meta1 <= m.meta0) m.meta1 = m.meta0 + HOUR_MS;
     m.v0 = m.meta0;
     m.v1 = m.meta1;
+    savedZoom = null;
 
     const prefer = Number.isFinite(restore.tStartMs) ? restore.tStartMs : m.tStart;
     const want = Number.isFinite(prefer) && prefer > 0
@@ -363,18 +459,39 @@ export function createTimebar(opts) {
   function beginDrag(e, mode) {
     const tr = track();
     if (!tr) return;
-    try {
-      tr.setPointerCapture?.(e.pointerId);
-    } catch { /* ignore */ }
     drag = {
       mode,
       originX: e.clientX,
+      originY: e.clientY,
       tStart0: m.tStart,
       tEnd0: m.tEnd,
       play0: m.playMs,
       v0: m.v0,
       v1: m.v1,
+      moved: false,
+      pointerId: e.pointerId,
     };
+    // Defer pointer capture until movement — pan capture was eating dblclicks outside the band.
+  }
+
+  function activateDrag() {
+    if (!drag || drag.moved) return;
+    drag.moved = true;
+    try {
+      track()?.setPointerCapture?.(drag.pointerId);
+    } catch { /* ignore */ }
+  }
+
+  function noteTapForDblClick(clientX) {
+    const now = performance.now();
+    if (now - lastTapTs < DBLCLICK_MS && Math.abs(clientX - lastTapX) < 24) {
+      lastTapTs = 0;
+      toggleViewportZoom();
+      return true;
+    }
+    lastTapTs = now;
+    lastTapX = clientX;
+    return false;
   }
 
   function onPlayPointerDown(e) {
@@ -395,51 +512,41 @@ export function createTimebar(opts) {
       if (drag) {
         drag.play0 = m.playMs;
         drag.originX = e.clientX;
+        drag.originY = e.clientY;
       }
     } else {
-      const snapped = clampHour(t);
-      m.tStart = snapped;
-      m.tEnd = snapped;
-      m.playMs = snapped;
-      render();
-      onPlay?.();
-      emitChange();
       beginDrag(e, "play");
-      if (drag) {
-        drag.play0 = m.playMs;
-        drag.originX = e.clientX;
-      }
+      if (drag) drag.clickSnap = clampHour(t);
     }
   }
 
   function onTrackPointerDown(e) {
     if (!ready || e.button !== 0) return;
-    if (e.detail >= 2) {
-      resetViewport();
-      return;
-    }
-    // Right edge is not interactive; ignore data-edge=r if present.
     const mode = e.target?.dataset?.edge === "l" ? "edge-l"
       : hitTestTrack(e.clientX);
     beginDrag(e, mode);
     if (!drag) return;
     if (mode === "track" && launchWindowH() <= 0) {
-      const snapped = clampHour(xToMs(e.clientX));
-      m.tStart = snapped;
-      m.tEnd = snapped;
-      m.playMs = snapped;
-      render();
-      onPlay?.();
-      emitChange();
       drag.mode = "play";
-      drag.play0 = m.playMs;
+      drag.clickSnap = clampHour(xToMs(e.clientX));
+      drag.play0 = drag.clickSnap;
     } else if (mode === "track") {
+      // Outside launch window: pan when dragged; click pairs for zoom toggle.
       drag.mode = "pan";
     }
   }
 
   function onPointerMove(e) {
     if (!drag) return;
+    const dist = Math.hypot(
+      e.clientX - drag.originX,
+      e.clientY - (drag.originY ?? drag.originX),
+    );
+    if (!drag.moved) {
+      if (dist < DRAG_THRESHOLD_PX) return;
+      activateDrag();
+      lastTapTs = 0;
+    }
     const dx = e.clientX - drag.originX;
     const tr = track();
     const width = tr?.getBoundingClientRect().width || 1;
@@ -449,7 +556,8 @@ export function createTimebar(opts) {
       if (launchWindowH() > 0) {
         m.playMs = clamp(drag.play0 + dMs, m.tStart, m.tEnd);
       } else {
-        const snapped = clampHour(drag.play0 + dMs);
+        const base = Number.isFinite(drag.clickSnap) ? drag.clickSnap : drag.play0;
+        const snapped = clampHour(base + dMs);
         m.playMs = snapped;
         m.tStart = snapped;
         m.tEnd = snapped;
@@ -457,7 +565,6 @@ export function createTimebar(opts) {
       render();
       onPlay?.();
     } else if (drag.mode === "band" || drag.mode === "edge-l") {
-      // Start handle and band body: slide window, duration from Launch-Fenster only.
       moveWindowToStart(drag.tStart0 + dMs);
       render();
     } else if (drag.mode === "pan") {
@@ -473,12 +580,29 @@ export function createTimebar(opts) {
   function onPointerUp(e) {
     if (!drag) return;
     const mode = drag.mode;
+    const moved = drag.moved;
+    const clickSnap = drag.clickSnap;
+    const originX = drag.originX;
     drag = null;
     try {
       track()?.releasePointerCapture?.(e.pointerId);
     } catch { /* ignore */ }
+
+    if (!moved) {
+      if (mode === "play" && Number.isFinite(clickSnap) && launchWindowH() <= 0) {
+        m.tStart = clickSnap;
+        m.tEnd = clickSnap;
+        m.playMs = clickSnap;
+        render();
+        onPlay?.();
+        emitChange();
+      }
+      // Works for pan (outside window), band, scrub — not only inside the launch band.
+      noteTapForDblClick(originX);
+      return;
+    }
+
     if (mode === "band" || mode === "edge-l") {
-      // Final hour snap with fixed duration from field
       moveWindowToStart(m.tStart);
       ensureVisibleBand();
       render();
@@ -495,8 +619,6 @@ export function createTimebar(opts) {
 
   function onWheel(e) {
     if (!ready) return;
-    // Zoom whenever the pointer is over the timebar. Ctrl/Meta still works;
-    // bare wheel over the bar zooms instead of scrolling the panel.
     e.preventDefault();
     e.stopPropagation();
     const span = m.v1 - m.v0;
@@ -509,13 +631,8 @@ export function createTimebar(opts) {
     m.v0 = clamp(center - leftFrac * newSpan, m.meta0, m.meta1);
     m.v1 = clamp(m.v0 + newSpan, m.meta0, m.meta1);
     if (m.v1 - m.v0 < newSpan) m.v0 = Math.max(m.meta0, m.v1 - newSpan);
+    lastTapTs = 0;
     render();
-  }
-
-  function onTrackDblClick(e) {
-    if (!ready) return;
-    e.preventDefault();
-    resetViewport();
   }
 
   function bind() {
@@ -523,11 +640,11 @@ export function createTimebar(opts) {
     const root = el("timebar");
     if (!tr || !root) return;
     tr.addEventListener("pointerdown", onTrackPointerDown);
-    tr.addEventListener("dblclick", onTrackDblClick);
-    tr.title = "Mausrad: zoomen · Doppelklick: ganzer Zeitraum";
+    // Double-click zoom is handled in onPointerUp via noteTapForDblClick (works
+    // outside the launch band; native dblclick is unreliable after pan gestures).
+    root.title = "Mausrad: zoomen · Doppelklick überall: ganzer Zeitraum / zurück";
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
-    // Listen on the whole timebar so wheel works over band, scrub, and callouts.
     root.addEventListener("wheel", onWheel, { passive: false });
     band()?.querySelectorAll(".timebar-edge").forEach((edge) => {
       edge.addEventListener("pointerdown", (e) => {
@@ -539,7 +656,8 @@ export function createTimebar(opts) {
     scrub()?.addEventListener("pointerdown", onScrubPointerDown);
     el("timebar-reset")?.addEventListener("click", (e) => {
       e.preventDefault();
-      resetViewport();
+      lastTapTs = 0;
+      toggleViewportZoom();
     });
   }
 

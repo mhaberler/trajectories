@@ -1132,6 +1132,18 @@ body.xsec-resizing-w #map { pointer-events: none; }
   font-weight: 600;
 }
 .xsec-head .hint { font-weight: 400; }
+.xsec-alt-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  font-size: 12px;
+  color: #52514e;
+}
+.xsec-alt-label select {
+  font: inherit;
+  max-width: 14rem;
+}
 .xsec-dem-toggle {
   display: flex;
   align-items: center;

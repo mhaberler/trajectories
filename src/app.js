@@ -14,6 +14,9 @@ import { initGeocode, reversePlaceName } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
 import { createTimebar } from "./timebar.js";
+import {
+  computeMorphRuns as computeMorphRunsAt,
+} from "./launchMorph.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -1049,37 +1052,80 @@ function attachDemHiToXsec() {
 }
 
 /**
- * Querschnitt zeichnen — ein Streifen je Lauf, oder nur der ausgewählte Lauf
- * mit DEM, Modellgelände und Track übereinander. Einziger Renderpfad, damit
- * Auswahl und DEM-Nachlieferung sich nicht gegenseitig überschreiben.
+ * Querschnitt zeichnen — eine Höhe (Dropdown), optional mit DEM.
+ * Einziger Renderpfad, damit Auswahl und DEM-Nachlieferung sich nicht
+ * gegenseitig überschreiben.
  */
 function drawCrossSection() {
   if (!state.xsec || el("xsec").hidden) return;
+  syncXsecAltitudeOptions();
   const data = xsecViewData();
   if (!data) return;
   sizeCrossSection(data);
   renderCrossSection(el("xsec-body"), data);
 }
 
+function xsecAltitudeKey(run) {
+  return `${run.heightM}|${run.method}`;
+}
+
+/** Keep #xsec-alt options in sync with current xsec runs. */
+function syncXsecAltitudeOptions() {
+  const sel = el("xsec-alt");
+  if (!sel || !state.xsec?.runs?.length) return;
+  const prev = sel.value;
+  const keys = [];
+  const seen = new Set();
+  for (const run of state.xsec.runs) {
+    const key = xsecAltitudeKey(run);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push({ key, label: run.label || `${run.heightM} m` });
+  }
+  const want = keys.map((k) => k.key).join("\0");
+  const have = [...sel.options].map((o) => o.value).join("\0");
+  if (want !== have) {
+    sel.innerHTML = "";
+    for (const k of keys) {
+      const opt = document.createElement("option");
+      opt.value = k.key;
+      opt.textContent = k.label;
+      sel.appendChild(opt);
+    }
+  }
+  const fromSel = state.selectedRunKey
+    ? state.xsec.runs.find((r) => runKey(r) === state.selectedRunKey)
+    : null;
+  const preferred = fromSel
+    ? xsecAltitudeKey(fromSel)
+    : (prev && keys.some((k) => k.key === prev) ? prev : keys[0]?.key);
+  if (preferred) sel.value = preferred;
+}
+
 /** Der aktuell ausgewählte Lauf im Querschnitt, oder null. */
 function selectedXsecRun() {
-  if (!state.selectedRunKey || !state.xsec) return null;
-  return state.xsec.runs.find((run) => runKey(run) === state.selectedRunKey) || null;
+  if (!state.xsec) return null;
+  const key = el("xsec-alt")?.value;
+  if (key) {
+    const byAlt = state.xsec.runs.find((run) => xsecAltitudeKey(run) === key);
+    if (byAlt) return byAlt;
+  }
+  if (!state.selectedRunKey) return state.xsec.runs[0] || null;
+  return state.xsec.runs.find((run) => runKey(run) === state.selectedRunKey) || state.xsec.runs[0] || null;
 }
 
 /**
- * Sicht auf `state.xsec`: bei Auswahl nur dieser Lauf (mit DEM aus dem Cache),
- * sonst alle Läufe wie bisher. Das DEM hängt je Lauf am Lauf selbst.
+ * Sicht auf `state.xsec`: immer eine Höhe (Dropdown); DEM aus dem Cache.
  */
 function xsecViewData() {
   if (!state.xsec) return null;
   const sel = selectedXsecRun();
+  if (!sel) return null;
   const withDem = (run) => {
     if (!xsecDemEnabled()) return run;
     const series = xsecDem.get(runKey(run))?.series;
     return series && series.length >= 2 ? { ...run, terrainHi: series } : run;
   };
-  if (!sel) return { ...state.xsec, runs: state.xsec.runs.map(withDem) };
   return { ...state.xsec, runs: [withDem(sel)], overlay: false };
 }
 
@@ -3455,11 +3501,6 @@ function samplesFromLaunchGeoJSON(gj, ctx) {
 }
 
 // --- Launch window (throwaway 2D + 3D scrub) --------------------------------
-const LAUNCH_RESAMPLE_N = 64;
-
-function morphKey(run) {
-  return `${run.heightM}|${run.method}`;
-}
 
 function buildLaunchT0List(tStartMs, windowH, stepMin) {
   const tEndMs = tStartMs + windowH * 3600e3;
@@ -3485,155 +3526,6 @@ function syncTimebarToLaunchWindow() {
   timebar.setBand(lw.tStartMs, lw.tEndMs, { syncField: true });
   timebar.setPlayMs(lw.tStartMs, { silent: true });
   morphAtStartMs(lw.tStartMs);
-}
-
-/** Resample track points by relative elapsed time (hold end if short). */
-function resampleTrack(points, n = LAUNCH_RESAMPLE_N) {
-  if (!points?.length) return [];
-  if (points.length === 1) {
-    return Array.from({ length: n }, () => ({ ...points[0] }));
-  }
-  const t0 = points[0].tMs;
-  const t1 = points[points.length - 1].tMs;
-  const span = Math.abs(t1 - t0) || 1;
-  const out = [];
-  for (let k = 0; k < n; k++) {
-    const frac = k / (n - 1);
-    const target = t0 + Math.sign(t1 - t0 || 1) * frac * span;
-    // Find bracketing segment along absolute tMs
-    let i = 0;
-    if (t1 >= t0) {
-      while (i < points.length - 2 && points[i + 1].tMs < target) i++;
-    } else {
-      while (i < points.length - 2 && points[i + 1].tMs > target) i++;
-    }
-    const a = points[i];
-    const b = points[i + 1] || a;
-    const den = (b.tMs - a.tMs) || 1;
-    const w = Math.min(1, Math.max(0, (target - a.tMs) / den));
-    out.push({
-      lat: a.lat + w * (b.lat - a.lat),
-      lon: a.lon + w * (b.lon - a.lon),
-      z: Number.isFinite(a.z) && Number.isFinite(b.z) ? a.z + w * (b.z - a.z) : (a.z ?? b.z ?? null),
-      tMs: target,
-    });
-  }
-  return out;
-}
-
-function lerpNum(a, b, alpha) {
-  if (Number.isFinite(a) && Number.isFinite(b)) return a + alpha * (b - a);
-  return Number.isFinite(a) ? a : (Number.isFinite(b) ? b : null);
-}
-
-/** Markers keyed by elapsed ms from track start, sorted. */
-function markersByRel(marks, t0) {
-  return (marks || [])
-    .filter((m) => Number.isFinite(m?.tMs) && Number.isFinite(m.lat) && Number.isFinite(m.lon))
-    .map((m) => ({
-      rel: m.tMs - t0,
-      lat: m.lat,
-      lon: m.lon,
-      z: m.z,
-      u: m.u,
-      v: m.v,
-      met: m.met || null,
-    }))
-    .sort((a, b) => a.rel - b.rel);
-}
-
-/** Sample marker list at a relative elapsed time (hold ends; lerp between). */
-function sampleMarkerAtRel(sorted, rel) {
-  if (!sorted.length) return null;
-  if (rel <= sorted[0].rel) return sorted[0];
-  const last = sorted[sorted.length - 1];
-  if (rel >= last.rel) return last;
-  let i = 0;
-  while (i < sorted.length - 2 && sorted[i + 1].rel < rel) i++;
-  const a = sorted[i];
-  const b = sorted[i + 1];
-  const w = (rel - a.rel) / ((b.rel - a.rel) || 1);
-  return {
-    rel,
-    lat: a.lat + w * (b.lat - a.lat),
-    lon: a.lon + w * (b.lon - a.lon),
-    z: lerpNum(a.z, b.z, w),
-    u: lerpNum(a.u, b.u, w),
-    v: lerpNum(a.v, b.v, w),
-    met: lerpMet(a.met, b.met, w),
-  };
-}
-
-function lerpMet(ma, mb, alpha) {
-  if (!ma && !mb) return null;
-  if (!ma) return mb;
-  if (!mb) return ma;
-  return {
-    t: lerpNum(ma.t, mb.t, alpha),
-    td: lerpNum(ma.td, mb.td, alpha),
-    rh: lerpNum(ma.rh, mb.rh, alpha),
-    p: lerpNum(ma.p, mb.p, alpha),
-  };
-}
-
-/**
- * Morph markers between two tracks: grid = A's relative times; sample B at
- * the same elapsed offset; lerp fields. `outT0` is absolute start for tooltips.
- */
-function lerpMarkers(marksA, marksB, t0A, t0B, alpha, outT0) {
-  const A = markersByRel(marksA, t0A);
-  const B = markersByRel(marksB, t0B);
-  if (!A.length) return [];
-  return A.map((a) => {
-    const b = B.length ? (sampleMarkerAtRel(B, a.rel) || a) : a;
-    return {
-      lat: a.lat + alpha * (b.lat - a.lat),
-      lon: a.lon + alpha * (b.lon - a.lon),
-      z: lerpNum(a.z, b.z, alpha),
-      tMs: outT0 + a.rel,
-      u: lerpNum(a.u, b.u, alpha),
-      v: lerpNum(a.v, b.v, alpha),
-      met: lerpMet(a.met, b.met, alpha),
-    };
-  });
-}
-
-function trackStartMs(run) {
-  const p0 = run?.r?.points?.[0]?.tMs;
-  if (Number.isFinite(p0)) return p0;
-  const m0 = run?.r?.markers?.[0]?.tMs;
-  return Number.isFinite(m0) ? m0 : 0;
-}
-
-function lerpRuns(runsA, runsB, alpha) {
-  const mapB = new Map(runsB.map((r) => [morphKey(r), r]));
-  const out = [];
-  for (const a of runsA) {
-    const b = mapB.get(morphKey(a));
-    if (!b) continue;
-    const pa = resampleTrack(a.r.points);
-    const pb = resampleTrack(b.r.points);
-    const points = pa.map((p, i) => {
-      const q = pb[i] || pb[pb.length - 1];
-      return {
-        lat: p.lat + alpha * (q.lat - p.lat),
-        lon: p.lon + alpha * (q.lon - p.lon),
-        z: Number.isFinite(p.z) && Number.isFinite(q.z)
-          ? p.z + alpha * (q.z - p.z)
-          : (p.z ?? q.z ?? null),
-        tMs: p.tMs + alpha * (q.tMs - p.tMs),
-      };
-    });
-    const t0A = trackStartMs(a);
-    const t0B = trackStartMs(b);
-    const outT0 = t0A + alpha * (t0B - t0A);
-    const markers = lerpMarkers(a.r.markers, b.r.markers, t0A, t0B, alpha, outT0);
-    out.push({
-      ...a,
-      r: { points, markers, status: a.r.status, reason: a.r.reason },
-    });
-  }
-  return out;
 }
 
 function paintMorphRuns(runs) {
@@ -3663,26 +3555,7 @@ function paintMorphRuns(runs) {
 
 /** Lerp launch-window samples at tMs; does not touch lastRuns. */
 function computeMorphRuns(tMs) {
-  const lw = state.launchWindow;
-  if (!lw?.samples?.length) return null;
-  const samples = lw.samples;
-  let i = 0;
-  while (i < samples.length - 2 && samples[i + 1].t0Ms <= tMs) i++;
-  const a = samples[i];
-  const b = samples[Math.min(i + 1, samples.length - 1)];
-  const den = (b.t0Ms - a.t0Ms) || 1;
-  const alpha = Math.min(1, Math.max(0, (tMs - a.t0Ms) / den));
-  if (a === b) {
-    return a.runs.map((r) => ({
-      ...r,
-      r: {
-        ...r.r,
-        points: resampleTrack(r.r.points),
-        markers: (r.r.markers || []).map((m) => ({ ...m })),
-      },
-    }));
-  }
-  return lerpRuns(a.runs, b.runs, alpha);
+  return computeMorphRunsAt(state.launchWindow?.samples, tMs);
 }
 
 function morphAtStartMs(tMs) {
@@ -4725,6 +4598,10 @@ function setPanelWidth(px, { save = false } = {}) {
 
 el("xsecbtn").addEventListener("click", () => showCrossSection(el("xsec").hidden));
 el("xsec-close").addEventListener("click", () => showCrossSection(false));
+el("xsec-alt")?.addEventListener("change", () => {
+  drawCrossSection();
+  ensureXsecDemForView();
+});
 el("xsec-dem").addEventListener("change", () => {
   persist();
   if (!xsecDemEnabled()) setXsecDemStatus("");
@@ -5562,6 +5439,14 @@ function exportCtx(key) {
         visible: true,
         coords: o.coords.map((c) => [c.lat, c.lon, c.z]),
       })),
+    launchWindow: state.launchWindow?.samples?.length >= 2
+      ? {
+        tStartMs: state.launchWindow.tStartMs,
+        tEndMs: state.launchWindow.tEndMs,
+        stepMs: state.launchWindow.stepMs,
+        samples: state.launchWindow.samples,
+      }
+      : null,
   };
 }
 

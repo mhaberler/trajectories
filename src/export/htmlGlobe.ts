@@ -25,6 +25,16 @@ let lastData: Payload | null = null;
 let flew = false;
 let currentImagery: ImageryKind = "esri";
 
+type RunGroup = {
+  key: string;
+  polyline: any;
+  wall: any;
+  markers: any[];
+  nPts: number;
+  nMarkers: number;
+};
+let runEntityGroups: RunGroup[] = [];
+
 function esc(s: string) {
   return String(s).replace(/[<>&"']/g, (c) =>
     ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c] as string));
@@ -199,11 +209,17 @@ async function recalibrate() {
   }
 }
 
+function runMorphKey(run: { heightM?: number; method?: string; label: string }) {
+  if (run.heightM != null && run.method != null) return `${run.heightM}|${run.method}`;
+  return run.label;
+}
+
 function redraw() {
   if (!viewer || !lastData) return;
   const f = exaggeration();
   viewer.scene.verticalExaggeration = f;
   viewer.entities.removeAll();
+  runEntityGroups = [];
   const H = (z: number) => (z + zOffset) * f;
 
   for (const run of lastData.runs) {
@@ -217,20 +233,21 @@ function redraw() {
       : new Cesium.PolylineOutlineMaterialProperty({
           color, outlineColor: Cesium.Color.WHITE.withAlpha(0.85), outlineWidth: 1.5,
         });
-    viewer.entities.add({
+    const polyline = viewer.entities.add({
       name: run.label,
       polyline: { positions, width: 5, material },
     });
-    viewer.entities.add({
+    const wall = viewer.entities.add({
       wall: {
         positions,
         minimumHeights: pts.map(() => 0),
         material: color.withAlpha(0.12),
       },
     });
+    const markerEnts: any[] = [];
     for (const m of run.markers) {
       if (!Number.isFinite(m.z as number)) continue;
-      viewer.entities.add({
+      markerEnts.push(viewer.entities.add({
         name: run.label,
         position: Cesium.Cartesian3.fromDegrees(m.lon, m.lat, H(m.z as number)),
         point: {
@@ -241,8 +258,16 @@ function redraw() {
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         description: markerDescription(run.name, m.rows),
-      });
+      }));
     }
+    runEntityGroups.push({
+      key: runMorphKey(run),
+      polyline,
+      wall,
+      markers: markerEnts,
+      nPts: pts.length,
+      nMarkers: markerEnts.length,
+    });
   }
 
   for (const o of lastData.overlays || []) {
@@ -276,6 +301,59 @@ function redraw() {
           : undefined,
         polyline: { positions, width: 4, material, clampToGround: true },
       });
+    }
+  }
+  viewer.scene.requestRender();
+}
+
+function topologyMatches(runs: Payload["runs"]) {
+  const usable = [];
+  for (const run of runs) {
+    const pts = run.pts.filter((p) => Number.isFinite(p[2] as number));
+    if (pts.length < 2) continue;
+    const markers = (run.markers || []).filter((m) => Number.isFinite(m.z as number));
+    usable.push({
+      key: runMorphKey(run),
+      nPts: pts.length,
+      nMarkers: markers.length,
+    });
+  }
+  if (usable.length !== runEntityGroups.length) return false;
+  for (const u of usable) {
+    const g = runEntityGroups.find((x) => x.key === u.key);
+    if (!g || g.nPts !== u.nPts || g.nMarkers !== u.nMarkers) return false;
+  }
+  return true;
+}
+
+/** Throwaway launch-window morph: rewrite positions in place when topology matches. */
+export function morphRuns(runs: Payload["runs"]) {
+  if (!viewer || !lastData || !runs?.length) return;
+  lastData = { ...lastData, runs };
+  if (!topologyMatches(runs)) {
+    redraw();
+    return;
+  }
+  const f = exaggeration();
+  const H = (z: number) => (z + zOffset) * f;
+  for (const run of runs) {
+    const pts = run.pts.filter((p) => Number.isFinite(p[2] as number));
+    if (pts.length < 2) continue;
+    const g = runEntityGroups.find((x) => x.key === runMorphKey(run));
+    if (!g) continue;
+    const positions = pts.map((p) =>
+      Cesium.Cartesian3.fromDegrees(p[1], p[0], H(p[2] as number)));
+    g.polyline.polyline.positions = positions;
+    g.wall.wall.positions = positions;
+    g.wall.wall.minimumHeights = pts.map(() => 0);
+    const markers = (run.markers || []).filter((m) => Number.isFinite(m.z as number));
+    for (let i = 0; i < markers.length; i++) {
+      const m = markers[i];
+      const ent = g.markers[i];
+      if (!ent) continue;
+      ent.position = Cesium.Cartesian3.fromDegrees(m.lon, m.lat, H(m.z as number));
+      ent.name = run.label;
+      ent.description = markerDescription(run.name, m.rows);
     }
   }
   viewer.scene.requestRender();

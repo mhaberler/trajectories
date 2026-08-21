@@ -2,17 +2,21 @@
  * Einstieg des exportierten HTML-Viewers (IIFE): 2D Leaflet + lazy 3D Cesium.
  */
 
-import { initViewer } from "./htmlViewer";
-import { initGlobe, resizeGlobe } from "./htmlGlobe";
-import { CESIUM_CDN_BASE, type Payload } from "./htmlPayload";
+import { initViewer, type ViewerApi } from "./htmlViewer";
+import { initGlobe, morphRuns as globeMorphRuns, resizeGlobe } from "./htmlGlobe";
+import { CESIUM_CDN_BASE, type Payload, type PayloadRun } from "./htmlPayload";
 import { hasCamera, readViewState, writeViewState } from "./htmlUrl";
+import {
+  computeMorphPayloadRuns,
+  nearestSampleIndex,
+} from "../launchMorph.js";
 
-declare const L: any;
-
-let mapApi: { invalidateSize: () => void } | null = null;
+let mapApi: ViewerApi | null = null;
 let globeReady = false;
 let globeLoading: Promise<void> | null = null;
 let payload: Payload | null = null;
+let playMs = 0;
+let lastMorphRuns: PayloadRun[] | null = null;
 
 function loadCesium(): Promise<void> {
   if ((window as any).Cesium) return Promise.resolve();
@@ -37,6 +41,73 @@ function setToggleActive(view: "2d" | "3d") {
   }
 }
 
+function fmtScrubTime(ms: number) {
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
+}
+
+function applyMorphAt(tMs: number) {
+  const lw = payload?.launchWindow;
+  if (!lw?.samples?.length) return;
+  playMs = Math.min(lw.tEndMs, Math.max(lw.tStartMs, tMs));
+  const runs = computeMorphPayloadRuns(lw.samples, playMs);
+  if (!runs) return;
+  lastMorphRuns = runs;
+  mapApi?.morphRuns(runs);
+  if (globeReady) globeMorphRuns(runs);
+
+  const ni = nearestSampleIndex(lw.samples, playMs);
+  if (ni >= 0) mapApi?.setProfileXsec(lw.samples[ni].xsec);
+
+  const timeEl = document.getElementById("scrub-time");
+  if (timeEl) timeEl.textContent = fmtScrubTime(playMs);
+  const play = document.getElementById("scrub-play");
+  const track = document.getElementById("scrub-track");
+  if (play && track && lw.tEndMs > lw.tStartMs) {
+    const frac = (playMs - lw.tStartMs) / (lw.tEndMs - lw.tStartMs);
+    play.style.left = `${Math.min(1, Math.max(0, frac)) * 100}%`;
+  }
+}
+
+function wireScrub() {
+  const lw = payload?.launchWindow;
+  const box = document.getElementById("launch-scrub");
+  const track = document.getElementById("scrub-track");
+  if (!lw || !box || !track || lw.samples.length < 2) return;
+  box.hidden = false;
+  playMs = lw.playMs0 ?? lw.tStartMs;
+  const band = document.getElementById("scrub-band");
+  if (band) {
+    band.style.left = "0";
+    band.style.right = "0";
+  }
+
+  const msFromClientX = (clientX: number) => {
+    const r = track.getBoundingClientRect();
+    const frac = r.width > 0 ? (clientX - r.left) / r.width : 0;
+    return lw.tStartMs + Math.min(1, Math.max(0, frac)) * (lw.tEndMs - lw.tStartMs);
+  };
+
+  const onPtr = (e: PointerEvent) => {
+    applyMorphAt(msFromClientX(e.clientX));
+  };
+  track.addEventListener("pointerdown", (e) => {
+    track.setPointerCapture(e.pointerId);
+    onPtr(e);
+  });
+  track.addEventListener("pointermove", (e) => {
+    if (!track.hasPointerCapture(e.pointerId)) return;
+    onPtr(e);
+  });
+
+  applyMorphAt(playMs);
+}
+
+function payloadForGlobe(): Payload {
+  if (!payload) throw new Error("no payload");
+  if (lastMorphRuns) return { ...payload, runs: lastMorphRuns };
+  return payload;
+}
+
 async function showView(view: "2d" | "3d") {
   const pane2d = document.getElementById("view-2d");
   const pane3d = document.getElementById("view-3d");
@@ -46,9 +117,8 @@ async function showView(view: "2d" | "3d") {
     pane2d.hidden = false;
     pane3d.hidden = true;
     if (!mapApi) mapApi = initViewer(payload);
+    if (lastMorphRuns) mapApi.morphRuns(lastMorphRuns);
     writeViewState({ view: "2d", camera: null });
-    // Nach Show/Init: Layout (Flex) neu messen — sonst Tiles ohne Pfade
-    // bzw. Pfade mit veralteter Viewport-Größe.
     requestAnimationFrame(() => {
       mapApi?.invalidateSize();
       requestAnimationFrame(() => mapApi?.invalidateSize());
@@ -67,12 +137,13 @@ async function showView(view: "2d" | "3d") {
           note.classList.remove("error");
         }
         globeLoading = loadCesium().then(async () => {
-          await initGlobe(payload!);
+          await initGlobe(payloadForGlobe());
           globeReady = true;
         });
       }
       await globeLoading;
     } else {
+      if (lastMorphRuns) globeMorphRuns(lastMorphRuns);
       resizeGlobe();
     }
   } catch (err: any) {
@@ -88,6 +159,8 @@ async function showView(view: "2d" | "3d") {
  */
 export function initExport(data: Payload) {
   payload = data;
+  lastMorphRuns = null;
+  playMs = data.launchWindow?.playMs0 ?? data.meta.t0Ms;
   for (const btn of document.querySelectorAll<HTMLButtonElement>(".gv-view-btn")) {
     btn.addEventListener("click", () => {
       const v = btn.dataset.view === "3d" ? "3d" : "2d";
@@ -100,7 +173,13 @@ export function initExport(data: Payload) {
   let start: "2d" | "3d" = data.opts.defaultView === "3d" ? "3d" : "2d";
   if (url.view === "2d" || url.view === "3d") start = url.view;
   else if (hasCamera(url)) start = "3d";
-  void showView(start);
+
+  // 2D zuerst, damit Scrub/Morph eine Viewer-API haben; bei 3D-Start danach umschalten.
+  void (async () => {
+    await showView("2d");
+    wireScrub();
+    if (start === "3d") await showView("3d");
+  })();
 }
 
 (window as any).initExport = initExport;

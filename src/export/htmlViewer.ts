@@ -10,6 +10,7 @@
 
 import { renderCrossSection } from "../crosssection";
 import { setUnits } from "../units";
+import type { XsecData } from "../types";
 import type { Payload, PayloadRun, PopupRow } from "./htmlPayload";
 import { readViewState, writeViewState } from "./htmlUrl";
 
@@ -29,6 +30,19 @@ interface OverlayTrack {
   layer: any;
   bounds: any;
 }
+
+export interface ViewerApi {
+  invalidateSize: () => void;
+  morphRuns: (runs: PayloadRun[]) => void;
+  setProfileXsec: (xsec: XsecData) => void;
+}
+
+let viewerMap: any = null;
+let viewerTracks: Track[] = [];
+let viewerPayload: Payload | null = null;
+let profileXsec: XsecData | null = null;
+let altitudeKey: string | null = null;
+let profileRedraw: (() => void) | null = null;
 
 function esc(s: string) {
   return String(s).replace(/[<>&"']/g, (c) =>
@@ -97,9 +111,20 @@ function popupHtml(name: string, rows: PopupRow[]) {
   return `<strong>${esc(name)}</strong><table style="border-collapse:collapse;margin-top:3px">${body}</table>`;
 }
 
-function buildTracks(map: any, data: Payload): Track[] {
+function altitudeOptionKey(run: { heightM: number; method: string }) {
+  return `${run.heightM}|${run.method}`;
+}
+
+function filterXsecByAltitude(xsec: XsecData, key: string | null): XsecData {
+  if (!key || !xsec?.runs?.length) return xsec;
+  const runs = xsec.runs.filter((r) => altitudeOptionKey(r) === key);
+  if (!runs.length) return { ...xsec, runs: [xsec.runs[0]], overlay: false };
+  return { ...xsec, runs, overlay: false };
+}
+
+function buildTracks(map: any, data: Payload, runs: PayloadRun[]): Track[] {
   const { opts } = data;
-  return data.runs.map((run) => {
+  return runs.map((run) => {
     const latlngs = run.pts.map((p) => [p[0], p[1]]);
     const group = L.layerGroup();
     L.polyline(latlngs, {
@@ -299,13 +324,46 @@ function buildProfile(map: any, data: Payload, profileOn: boolean): ((on: boolea
     host.style.display = "none";
     return null;
   }
+  profileXsec = data.xsec;
+  altitudeKey = altitudeOptionKey(data.xsec.runs[0]);
+
+  host.innerHTML = "";
+  const toolbar = document.createElement("div");
+  toolbar.className = "gv-profile-toolbar";
+  const lab = document.createElement("label");
+  lab.textContent = "Höhe ";
+  const sel = document.createElement("select");
+  sel.id = "gv-xsec-alt";
+  const seen = new Set<string>();
+  for (const run of data.xsec.runs) {
+    const key = altitudeOptionKey(run);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = run.label || `${run.heightM} m`;
+    sel.appendChild(opt);
+  }
+  sel.value = altitudeKey;
+  sel.addEventListener("change", () => {
+    altitudeKey = sel.value;
+    draw();
+  });
+  lab.appendChild(sel);
+  toolbar.appendChild(lab);
+  const chart = document.createElement("div");
+  chart.id = "gv-xsec-chart";
+  chart.style.cssText = "flex:1;min-height:0;width:100%";
+  host.append(toolbar, chart);
+
   const draw = () => {
-    if (host.clientWidth > 0) renderCrossSection(host, data.xsec);
+    if (!profileXsec || chart.clientWidth <= 0) return;
+    renderCrossSection(chart, filterXsecByAltitude(profileXsec, altitudeKey));
   };
+  profileRedraw = draw;
+
   let last = -1;
   const redraw = () => {
-    // Nur bei echter Breitenänderung, sonst Endlosschleife: das Zeichnen
-    // ändert den Inhalt und damit wieder die beobachtete Größe.
     const w = Math.round(host.clientWidth);
     if (w > 0 && w !== last) {
       last = w;
@@ -313,8 +371,6 @@ function buildProfile(map: any, data: Payload, profileOn: boolean): ((on: boolea
     }
   };
   if (typeof ResizeObserver !== "undefined") new ResizeObserver(redraw).observe(host);
-  // Erster Anlauf trotzdem aktiv anstoßen: liefert der Observer beim Start
-  // nur eine Nullbreite, käme er ohne Größenänderung nie wieder.
   requestAnimationFrame(redraw);
   window.addEventListener("load", redraw);
   let t: ReturnType<typeof setTimeout>;
@@ -324,12 +380,11 @@ function buildProfile(map: any, data: Payload, profileOn: boolean): ((on: boolea
   });
 
   const setVisible = (on: boolean) => {
-    host.style.display = on ? "" : "none";
+    host.style.display = on ? "flex" : "none";
+    host.style.flexDirection = "column";
     host.style.height = on ? `${data.opts.profileHeight}px` : "";
-    // Karte neu vermessen — sie teilt sich die Höhe mit dem Streifen.
     setTimeout(() => {
       map.invalidateSize();
-      // Breite ändert sich nicht, darum die Sperre lösen und neu zeichnen.
       last = -1;
       redraw();
     }, 0);
@@ -338,18 +393,17 @@ function buildProfile(map: any, data: Payload, profileOn: boolean): ((on: boolea
   return setVisible;
 }
 
-function initViewer(data: Payload): { invalidateSize: () => void } {
+function initViewer(data: Payload): ViewerApi {
   setUnits(data.units);
   document.title = data.meta.title;
+  viewerPayload = data;
 
   const bases = buildBaseLayers();
   const startName = bases[data.opts.defaultBase] ? data.opts.defaultBase : "OpenStreetMap";
   let active = bases[startName];
 
-  // Zuerst setView: sonst ist die Karte beim Path.onAdd noch nicht „loaded“,
-  // der SVG-Renderer hat kein `_bounds`, und Leaflet wirft in `_clipPoints`
-  // (`bounds.min` an undefined) — Pane da, Trajektorien fehlen.
   const map = L.map("map");
+  viewerMap = map;
   map.setView([50.5, 10.5], 6);
   active.addTo(map);
   L.control.layers(bases, null, { position: "topleft" }).addTo(map);
@@ -361,35 +415,44 @@ function initViewer(data: Payload): { invalidateSize: () => void } {
   applyOpacity(active, data.opts.baseOpacity);
   buildOpacityControl(map, () => active, data.opts.baseOpacity);
 
-  const tracks = buildTracks(map, data);
+  viewerTracks = buildTracks(map, data, data.runs);
   const overlays = buildOverlays(map, data);
-  let bounds = tracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
+  let bounds = viewerTracks.reduce((b, t) => (b ? b.extend(t.bounds) : t.bounds), null as any);
   for (const o of overlays) {
     if (o.visible === false || !o.bounds?.isValid?.()) continue;
     bounds = bounds ? bounds.extend(o.bounds) : o.bounds;
   }
   if (bounds) map.fitBounds(bounds, { padding: [30, 30] });
 
-  // Erst den Querschnitt aufbauen — die Tracklist braucht seinen Schalter.
-  // URL `profile` schlägt den Export-Default.
   const urlProfile = readViewState().profile;
   const profileOn = urlProfile !== undefined ? urlProfile : !!data.opts.profile;
   const toggleProfile = buildProfile(map, data, profileOn);
-  if (data.opts.tracklist && (tracks.length || overlays.length)) {
-    buildTracklist(map, tracks, overlays, toggleProfile, profileOn);
+  if (data.opts.tracklist && (viewerTracks.length || overlays.length)) {
+    buildTracklist(map, viewerTracks, overlays, toggleProfile, profileOn);
   }
   if (data.opts.legendHtml.trim()) buildLegend(map, data.opts.legendHtml, data.meta.generated);
 
   writeViewState({ view: "2d", profile: profileOn });
 
   const syncSize = () => map.invalidateSize();
-  // Flex-Layout (#map) oft erst nach dem ersten Paint mit echter Höhe.
   requestAnimationFrame(() => {
     syncSize();
     requestAnimationFrame(syncSize);
   });
 
-  return { invalidateSize: syncSize };
+  return {
+    invalidateSize: syncSize,
+    morphRuns(runs: PayloadRun[]) {
+      if (!viewerMap || !viewerPayload) return;
+      for (const t of viewerTracks) viewerMap.removeLayer(t.layer);
+      viewerTracks = buildTracks(viewerMap, viewerPayload, runs);
+      // Keep tracklist checkboxes in sync is hard without rebuild; layers are replaced.
+    },
+    setProfileXsec(xsec: XsecData) {
+      profileXsec = xsec;
+      profileRedraw?.();
+    },
+  };
 }
 
 function buildOverlays(map: any, data: Payload): OverlayTrack[] {

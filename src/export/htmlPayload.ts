@@ -58,6 +58,16 @@ export interface ExportCtx {
   overlays?: PayloadOverlay[];
   /** Nur für Tests/Reproduzierbarkeit; sonst „jetzt". */
   now?: number;
+  /**
+   * Launch-Fenster-Samples (App-Form). Wenn ≥2 Samples, wird `launchWindow`
+   * in die Nutzlast geschrieben (Tracks + xsec je Sample).
+   */
+  launchWindow?: {
+    tStartMs: number;
+    tEndMs: number;
+    stepMs: number;
+    samples: { t0Ms: number; runs: Run[] }[];
+  } | null;
 }
 
 export interface PayloadRun {
@@ -65,9 +75,32 @@ export interface PayloadRun {
   color: string;
   dash: string | null;
   name: string;
+  heightM: number;
+  method: string;
   /** [lat, lon, z|null, tMs] — z fehlt, solange die Höhe unbekannt ist. */
   pts: [number, number, number | null, number][];
-  markers: { lat: number; lon: number; z: number | null; rows: PopupRow[] }[];
+  markers: {
+    lat: number;
+    lon: number;
+    z: number | null;
+    tMs: number;
+    rows: PopupRow[];
+  }[];
+}
+
+export interface PayloadLaunchSample {
+  t0Ms: number;
+  runs: PayloadRun[];
+  xsec: XsecData;
+}
+
+export interface PayloadLaunchWindow {
+  tStartMs: number;
+  tEndMs: number;
+  stepMs: number;
+  /** Initial playhead (Fenster-Start). */
+  playMs0: number;
+  samples: PayloadLaunchSample[];
 }
 
 export interface Payload {
@@ -87,6 +120,8 @@ export interface Payload {
   start: { lat: number; lon: number } | null;
   modelElev: number | null;
   overlays: PayloadOverlay[];
+  /** Present when export includes a scrubable launch window. */
+  launchWindow?: PayloadLaunchWindow;
 }
 
 export const HTML_EXPORT_DEFAULTS: HtmlExportOpts = {
@@ -178,19 +213,19 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
   const prec = 5;
   const { runs, modelKey, mode, t0Ms, duration, direction } = data;
 
-  const payloadRuns: PayloadRun[] = runs.map((run) => ({
+  const packRun = (run: Run): PayloadRun => ({
     label: run.label,
     color: run.color,
     dash: run.dash,
     name: ctx.trackName(run, direction),
+    heightM: run.heightM,
+    method: run.method,
     pts: run.r.points.map((p) => [
       rd(p.lat, prec),
       rd(p.lon, prec),
       Number.isFinite(p.z) ? Math.round(p.z as number) : null,
       p.tMs,
     ] as [number, number, number | null, number]),
-    // Popup-Inhalt wird hier erzeugt: `kmlMarkerFields` formatiert bereits in
-    // der gewählten Einheit, dadurch braucht der Viewer keine Einheitenlogik.
     markers: opts.markers
       ? run.r.markers
         .filter((m) => Number.isFinite(m.lat) && Number.isFinite(m.lon))
@@ -200,12 +235,26 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
           z: Number.isFinite((m as { z?: number }).z)
             ? Math.round((m as { z: number }).z)
             : null,
+          tMs: Number.isFinite(m.tMs) ? m.tMs : t0Ms,
           rows: ctx.markerFields(m, run.label)
             .filter(Boolean)
             .map(({ label, value }) => ({ label, value })),
         }))
       : [],
-  }));
+  });
+
+  const packXsecFromRuns = (sampleRuns: Run[], sampleT0: number): XsecData =>
+    pickXsec({
+      t0Ms: sampleT0,
+      direction,
+      overlay: ctx.xsec!.overlay,
+      runs: sampleRuns.map((run) => ({
+        ...run,
+        terrain: run.terrain || run.r.points.map(() => null),
+      })),
+    } as XsecData, prec);
+
+  const payloadRuns: PayloadRun[] = runs.map(packRun);
 
   const generated = new Date(ctx.now ?? Date.now()).toISOString();
   const start = ctx.start && Number.isFinite(ctx.start.lat) && Number.isFinite(ctx.start.lon)
@@ -227,6 +276,22 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
       ] as [number, number, number | null]),
     }));
 
+  let launchWindow: PayloadLaunchWindow | undefined;
+  const lw = ctx.launchWindow;
+  if (lw?.samples && lw.samples.length >= 2) {
+    launchWindow = {
+      tStartMs: lw.tStartMs,
+      tEndMs: lw.tEndMs,
+      stepMs: lw.stepMs,
+      playMs0: lw.tStartMs,
+      samples: lw.samples.map((s) => ({
+        t0Ms: s.t0Ms,
+        runs: s.runs.map(packRun),
+        xsec: packXsecFromRuns(s.runs, s.t0Ms),
+      })),
+    };
+  }
+
   return {
     meta: {
       modelKey,
@@ -244,6 +309,7 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     start,
     modelElev,
     overlays,
+    ...(launchWindow ? { launchWindow } : {}),
   };
 }
 
@@ -298,6 +364,16 @@ ${p.viewerCss}
     <button type="button" class="gv-view-btn" data-view="3d">3D</button>
   </div>
 </header>
+<div id="launch-scrub" class="gv-scrub" hidden>
+  <div class="gv-scrub-meta">
+    <span>Startzeit (UTC)</span>
+    <span id="scrub-time" class="mono">–</span>
+  </div>
+  <div id="scrub-track" class="gv-scrub-track">
+    <div id="scrub-band" class="gv-scrub-band"></div>
+    <div id="scrub-play" class="gv-scrub-play"></div>
+  </div>
+</div>
 <div id="view-2d" class="gv-pane">
   <div id="map"></div>
   <div id="profile"></div>

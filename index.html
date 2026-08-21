@@ -45,29 +45,42 @@
       <span id="timelabel" class="mono">–</span>
     </div>
     <div id="timebar" class="timebar" aria-label="Zeitfenster">
-      <div id="timebar-callouts" class="timebar-callouts" hidden>
-        <div id="timebar-callout-start" class="timebar-callout timebar-callout-start">–</div>
-        <div id="timebar-callout-end" class="timebar-callout timebar-callout-end">–</div>
+      <div class="timebar-head">
+        <div id="timebar-playhead" class="timebar-playhead" title="Startzeit innerhalb des Fensters"></div>
       </div>
       <div id="timebar-track" class="timebar-track">
         <div id="timebar-meta-shade" class="timebar-meta-shade" title="Verfügbare Modelldaten"></div>
-        <div id="timebar-reach-shade" class="timebar-reach-shade" title="Flugdauer ab Fenster (bis Landung beim spätesten Start)" hidden></div>
+        <div id="timebar-band" class="timebar-band" hidden></div>
+        <div id="timebar-reach-shade" class="timebar-reach-shade" title="Flugdauer ab gewählter Startzeit" hidden></div>
         <div id="timebar-ticks" class="timebar-ticks"></div>
-        <div id="timebar-band" class="timebar-band" hidden>
-          <div class="timebar-edge timebar-edge-l" data-edge="l" title="Startzeit verschieben"></div>
-          <div class="timebar-band-end" aria-hidden="true"></div>
-        </div>
         <div id="timebar-needle" class="timebar-needle" aria-hidden="true"></div>
       </div>
-      <div id="timebar-scrub" class="timebar-scrub">
-        <div id="timebar-playhead" class="timebar-playhead" title="Zeit innerhalb des Fensters"></div>
+      <div id="timebar-tips" class="timebar-tips">
+        <div id="timebar-tip-win-start" class="timebar-tip timebar-tip-win" data-tip="win-start" title="Fenster-Start" hidden>
+          <div class="timebar-tip-shape"></div>
+        </div>
+        <div id="timebar-tip-win-end" class="timebar-tip timebar-tip-win" data-tip="win-end" title="Fenster-Ende" hidden>
+          <div class="timebar-tip-shape"></div>
+        </div>
+        <div id="timebar-tip-dur" class="timebar-tip timebar-tip-dur" data-tip="dur-end" title="Flugdauer-Ende">
+          <div class="timebar-tip-shape"></div>
+        </div>
+        <div id="timebar-lbl-win-start" class="timebar-tip-label" hidden></div>
+        <div id="timebar-lbl-win-end" class="timebar-tip-label" hidden></div>
+        <div id="timebar-lbl-dur" class="timebar-tip-label"></div>
       </div>
       <div class="timebar-zoomrow">
+        <div class="timebar-zoombtns">
+          <button type="button" id="timebar-zoom-out" class="timebar-zbtn" title="Herauszoomen">−</button>
+          <button type="button" id="timebar-zoom-in" class="timebar-zbtn" title="Hineinzoomen">+</button>
+        </div>
         <span class="timebar-zoomhint hint">
           <span class="timebar-legend-meta">Modelldaten</span>
           ·
+          <span class="timebar-legend-fenster">Fenster</span>
+          ·
           <span class="timebar-legend-reach">Flugdauer</span>
-          · Mausrad zoomen · Doppelklick = ganzer Zeitraum / zurück
+          · Mausrad · Doppelklick
         </span>
         <button type="button" id="timebar-reset" class="timebar-reset" hidden
                 title="Zwischen ganzer Modellspanne und letzter Zoomstufe umschalten">Ganzer Zeitraum</button>
@@ -76,7 +89,7 @@
 
     <div class="grid2">
       <label>Dauer (h)
-        <input type="number" id="duration" min="1" max="72" step="1" value="12" />
+        <input type="number" id="duration" min="0.25" max="72" step="0.25" value="12" />
       </label>
       <label>Richtung
         <select id="direction">
@@ -87,8 +100,8 @@
     </div>
     <div class="grid2">
       <label>Launch-Fenster (h)
-        <input type="number" id="launchwindow" min="0" max="12" step="1" value="0"
-               title="0 = einzelne Startzeit; 1–12 h = Launch-Fenster [T0, T0+Fenster] in ganzen Stunden" />
+        <input type="number" id="launchwindow" min="0" max="12" step="0.25" value="0"
+               title="0 = einzelne Startzeit; &gt;0 = Launch-Fenster [T0, T0+Fenster]" />
       </label>
       <label>Launch-Schritt (min)
         <input type="number" id="launchstep" min="5" max="180" step="5" value="15" />

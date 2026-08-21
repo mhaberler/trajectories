@@ -391,7 +391,7 @@ const FP_PRESETS = {
 
 function defaultConstantTargets() {
   const h = activeHeight != null ? activeHeight : 500;
-  const hours = Math.min(72, Math.max(1, +el("duration").value || 12));
+  const hours = Math.min(72, Math.max(0.25, +el("duration").value || 12));
   return [
     { tSec: 0, targetAgl: h },
     { tSec: hours * 3600, targetAgl: h },
@@ -2145,7 +2145,7 @@ async function runProfileRedraw() {
     return;
   }
   const direction = +el("direction").value;
-  const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
+  const duration = Math.min(72, Math.max(0.25, +el("duration").value || 12));
   const t0Ms = state.profileEdit?.t0Ms ?? timebarStartMs();
   const markerIntervalSec = +el("markerint").value;
   const gen = ++state.profileRedrawGen;
@@ -2827,6 +2827,11 @@ el("launchwindow").addEventListener("input", () => {
   }
 });
 el("launchstep").addEventListener("input", () => {
+  timebar?.onLaunchWindowInput();
+  timebar?.render();
+});
+el("duration").addEventListener("input", () => {
+  updateReachHint();
   timebar?.render();
 });
 
@@ -3157,10 +3162,13 @@ function initTimebar() {
     el,
     launchWindowH: () => Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
     setLaunchWindowH: (h) => {
-      el("launchwindow").value = String(Math.min(12, Math.max(0, h)));
+      el("launchwindow").value = String(Math.min(12, Math.max(0, Math.round(h * 4) / 4)));
     },
     launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
-    durationH: () => Math.min(72, Math.max(1, +el("duration").value || 12)),
+    durationH: () => Math.min(72, Math.max(0.25, +el("duration").value || 12)),
+    setDurationH: (h) => {
+      el("duration").value = String(Math.min(72, Math.max(0.25, Math.round(h * 4) / 4)));
+    },
     direction: () => (+el("direction").value === -1 ? -1 : 1),
     fmtTime,
     onPlay: () => {
@@ -3270,7 +3278,7 @@ function updateReachHint() {
   const box = el("reachhint");
   if (!state.meta) { box.textContent = ""; box.classList.remove("error"); return; }
   const dir = +el("direction").value;
-  const dur = Math.min(72, Math.max(1, +el("duration").value || 12));
+  const dur = Math.min(72, Math.max(0.25, +el("duration").value || 12));
   const t0Ms = timebarStartMs();
   const back = dir === -1;
   const edgeMs = (back ? state.meta.t0 : state.meta.t1) * 1000;
@@ -3285,10 +3293,6 @@ function updateReachHint() {
   }
 }
 
-el("duration").addEventListener("input", () => {
-  updateReachHint();
-  timebar?.render();
-});
 el("direction").addEventListener("change", () => {
   updateDirectionLabels();
   updateHeightContext(); // „am Startort"/„am Zielort" hängt an der Richtung
@@ -4047,7 +4051,7 @@ async function runTrajectories() {
     return setStatus("Bitte mindestens eine Methode wählen.", true);
   }
   const direction = +el("direction").value;
-  const duration = Math.min(72, Math.max(1, +el("duration").value || 12));
+  const duration = Math.min(72, Math.max(0.25, +el("duration").value || 12));
   const t0Ms = timebarStartMs();
 
   if (!profileOn && !activeHeights.length) {

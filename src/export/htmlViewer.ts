@@ -122,30 +122,41 @@ function filterXsecByAltitude(xsec: XsecData, key: string | null): XsecData {
   return { ...xsec, runs, overlay: false };
 }
 
-function buildTracks(map: any, data: Payload, runs: PayloadRun[]): Track[] {
-  const { opts } = data;
-  return runs.map((run) => {
-    const latlngs = run.pts.map((p) => [p[0], p[1]]);
-    const group = L.layerGroup();
-    L.polyline(latlngs, {
-      color: run.color,
-      weight: opts.lineWidth,
-      opacity: opts.lineOpacity,
-      dashArray: run.dash || undefined,
-    }).bindTooltip(run.name, { sticky: true }).addTo(group);
+function trackKey(run: PayloadRun) {
+  return `${run.heightM}|${run.method}`;
+}
 
-    for (const m of run.markers) {
-      L.circleMarker([m.lat, m.lon], {
-        radius: opts.markerRadius,
-        color: run.color,
-        weight: 1.5,
-        fillColor: "#ffffff",
-        fillOpacity: 1,
-      }).bindPopup(popupHtml(run.name, m.rows)).addTo(group);
-    }
-    group.addTo(map);
-    return { run, layer: group, bounds: L.latLngBounds(latlngs) };
-  });
+function buildOneTrack(
+  map: any,
+  data: Payload,
+  run: PayloadRun,
+  { addToMap = true }: { addToMap?: boolean } = {},
+): Track {
+  const { opts } = data;
+  const latlngs = run.pts.map((p) => [p[0], p[1]]);
+  const group = L.layerGroup();
+  L.polyline(latlngs, {
+    color: run.color,
+    weight: opts.lineWidth,
+    opacity: opts.lineOpacity,
+    dashArray: run.dash || undefined,
+  }).bindTooltip(run.name, { sticky: true }).addTo(group);
+
+  for (const m of run.markers) {
+    L.circleMarker([m.lat, m.lon], {
+      radius: opts.markerRadius,
+      color: run.color,
+      weight: 1.5,
+      fillColor: "#ffffff",
+      fillOpacity: 1,
+    }).bindPopup(popupHtml(run.name, m.rows)).addTo(group);
+  }
+  if (addToMap) group.addTo(map);
+  return { run, layer: group, bounds: L.latLngBounds(latlngs) };
+}
+
+function buildTracks(map: any, data: Payload, runs: PayloadRun[]): Track[] {
+  return runs.map((run) => buildOneTrack(map, data, run));
 }
 
 /** Schwebender Kasten mit Kopfzeile: verschiebbar, per Doppelklick einklappbar. */
@@ -444,9 +455,19 @@ function initViewer(data: Payload): ViewerApi {
     invalidateSize: syncSize,
     morphRuns(runs: PayloadRun[]) {
       if (!viewerMap || !viewerPayload) return;
-      for (const t of viewerTracks) viewerMap.removeLayer(t.layer);
-      viewerTracks = buildTracks(viewerMap, viewerPayload, runs);
-      // Keep tracklist checkboxes in sync is hard without rebuild; layers are replaced.
+      // Mutate existing Track objects so tracklist closures keep working.
+      const byKey = new Map(runs.map((r) => [trackKey(r), r]));
+      for (const t of viewerTracks) {
+        const run = byKey.get(trackKey(t.run));
+        if (!run) continue;
+        const visible = viewerMap.hasLayer(t.layer);
+        viewerMap.removeLayer(t.layer);
+        const next = buildOneTrack(viewerMap, viewerPayload, run, { addToMap: false });
+        t.run = next.run;
+        t.layer = next.layer;
+        t.bounds = next.bounds;
+        if (visible) t.layer.addTo(viewerMap);
+      }
     },
     setProfileXsec(xsec: XsecData) {
       profileXsec = xsec;

@@ -168,10 +168,10 @@ def test_request_partial_slab_only_slow_fetches_outliers():
     om = MagicMock()
     om._xy = backend._xy
     om.request_from_slab = lambda *a, **k: Real.request_from_slab(om, *a, **k)
-    slow_calls: list[list[list[float]]] = []
+    slow_calls: list[dict] = []
 
-    def slow(coords, vars_, start_date, end_date, *, with_meta=False):
-        slow_calls.append(coords)
+    def slow(coords, vars_, start_date, end_date, *, with_meta=False, t0=None, t1=None):
+        slow_calls.append({"coords": coords, "t0": t0, "t1": t1})
         return [
             {
                 "wind_u_component_level65": [9.0, 9.0],
@@ -196,7 +196,26 @@ def test_request_partial_slab_only_slow_fetches_outliers():
     assert len(out) == 2
     assert out[0]["wind_u_component_level65"] == [1.0, 2.0]
     assert out[1]["wind_u_component_level65"] == [9.0, 9.0]
-    assert slow_calls == [[[60.0, 15.0]]]
+    assert [c["coords"] for c in slow_calls] == [[[60.0, 15.0]]]
+    assert slow_calls[0]["t0"] == np.datetime64(int(times[0]), "s")
+    assert slow_calls[0]["t1"] == np.datetime64(int(times[-1]), "s")
+
+
+def test_series_on_times_maps_by_timestamp():
+    from trajectories.windfield import series_on_times
+
+    src_t = [1.0e9, 1.0e9 + 3600, 1.0e9 + 7200]
+    dst_t = [1.0e9 + 3600, 1.0e9 + 7200]
+    src = [10.0, 20.0, 30.0]
+    assert series_on_times(src, src_t, dst_t) == [20.0, 30.0]
+    # Calendar-day series vs slab window: take the overlapping hours, not a prefix.
+    cal = list(range(48))
+    cal_t = [1.0e9 + i * 3600 for i in range(48)]
+    slab_t = [1.0e9 + 15 * 3600 + i * 3600 for i in range(26)]
+    got = series_on_times(cal, cal_t, slab_t)
+    assert got[0] == 15
+    assert got[-1] == 40
+    assert series_on_times(None, cal_t, dst_t) == [None, None]
 
 
 def test_chunk_times_cached_and_matches_meta():

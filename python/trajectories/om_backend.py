@@ -539,12 +539,15 @@ class OmBackend:
                     for j, i in enumerate(inside_idx):
                         out[i] = inside_rows[j]
             if outside_idx:
+                t0, t1 = _time_bounds_from_unix(slab.times_unix)
                 outside_rows = self._request_points(
                     [coords[i] for i in outside_idx],
                     vars_,
                     start_date,
                     end_date,
                     with_meta=with_meta,
+                    t0=t0,
+                    t1=t1,
                 )
                 for j, i in enumerate(outside_idx):
                     out[i] = outside_rows[j]
@@ -567,17 +570,24 @@ class OmBackend:
         end_date: str,
         *,
         with_meta: bool = False,
+        t0: np.datetime64 | None = None,
+        t1: np.datetime64 | None = None,
     ) -> list[dict]:
         """Fallback when points leave the preloaded slab.
 
         Loads one spatial bbox covering all coords (per var), not one OM read
         per (var, point) — the latter pins workers at ~100% CPU for long tracks.
+
+        ``t0``/``t1`` must match the slab time axis when used as a fallback so
+        ``WindField.times`` indices stay aligned. Calendar start/end dates are
+        only the default when no slab window is provided.
         """
         if not coords:
             return []
 
-        t0 = np.datetime64(f"{start_date}T00:00")
-        t1 = np.datetime64(f"{end_date}T23:00")
+        if t0 is None or t1 is None:
+            t0 = np.datetime64(f"{start_date}T00:00")
+            t1 = np.datetime64(f"{end_date}T23:00")
 
         file_vars = [v for v in vars_ if not v.startswith("height_agl_level")]
         height_levels = [
@@ -649,7 +659,7 @@ class OmBackend:
         assert hsurf is not None
         assert times_unix is not None or not file_vars
         if times_unix is None:
-            times_unix = _hourly_unix(start_date, end_date)
+            times_unix = _hourly_unix_dt64(t0, t1)
 
         T = len(times_unix)
         slab = OmSlab(
@@ -688,6 +698,27 @@ class OmBackend:
 
 def _dt64_to_unix(t: np.datetime64) -> float:
     return float(t.astype("datetime64[s]").astype(np.int64))
+
+
+def _time_bounds_from_unix(
+    times_unix: list[float] | None,
+) -> tuple[np.datetime64 | None, np.datetime64 | None]:
+    if not times_unix:
+        return None, None
+    return (
+        np.datetime64(int(times_unix[0]), "s"),
+        np.datetime64(int(times_unix[-1]), "s"),
+    )
+
+
+def _hourly_unix_dt64(t0: np.datetime64, t1: np.datetime64) -> list[float]:
+    t = float(t0.astype("datetime64[s]").astype(np.int64))
+    end = float(t1.astype("datetime64[s]").astype(np.int64))
+    out: list[float] = []
+    while t <= end:
+        out.append(t)
+        t += 3600
+    return out
 
 
 def _hourly_unix(start_date: str, end_date: str) -> list[float]:

@@ -312,8 +312,9 @@ class WindField:
     def store_point(self, i_lat: int, i_lon: int, r: dict) -> None:
         assert self.levels is not None
         L = len(self.levels)
+        src_times = r.get("__times")
         if self.times is None:
-            self.times = r["__times"]
+            self.times = src_times
         T = len(self.times)
         w_unit = (
             unit_factor(self.units.get(f"{self.w_var_prefix}_level{self.levels[0]}"))
@@ -332,6 +333,10 @@ class WindField:
             if self.backend_kind == "om"
             else unit_factor(self.units.get(f"wind_u_component_level{self.levels[0]}", "km/h"))
         )
+
+        def series(key: str):
+            return series_on_times(r.get(key), src_times, self.times)
+
         point: dict[str, Any] = {
             "elevation": r["__elevation"],
             "hAgl": [float("nan")] * L,
@@ -345,18 +350,18 @@ class WindField:
         }
         for k in range(L):
             l = self.levels[k]
-            point["u"].append(to_array(r.get(f"wind_u_component_level{l}"), T, u_unit))
-            point["v"].append(to_array(r.get(f"wind_v_component_level{l}"), T, u_unit))
+            point["u"].append(to_array(series(f"wind_u_component_level{l}"), T, u_unit))
+            point["v"].append(to_array(series(f"wind_v_component_level{l}"), T, u_unit))
             if point["p"] is not None:
-                point["p"].append(to_array(r.get(f"pressure_level{l}"), T, 1))
+                point["p"].append(to_array(series(f"pressure_level{l}"), T, 1))
             if point["T"] is not None:
-                point["T"].append(to_array(r.get(f"temperature_level{l}"), T, 1, 273.15))
+                point["T"].append(to_array(series(f"temperature_level{l}"), T, 1, 273.15))
             if point["w"] is not None:
-                point["w"].append(to_array(r.get(f"{self.w_var_prefix}_level{l}"), T, w_unit))
+                point["w"].append(to_array(series(f"{self.w_var_prefix}_level{l}"), T, w_unit))
             if point["q"] is not None:
-                point["q"].append(to_array(r.get(f"specific_humidity_level{l}"), T, q_unit))
+                point["q"].append(to_array(series(f"specific_humidity_level{l}"), T, q_unit))
             if point["rh"] is not None:
-                point["rh"].append(to_array(r.get(f"relative_humidity_level{l}"), T, 1))
+                point["rh"].append(to_array(series(f"relative_humidity_level{l}"), T, 1))
             h = first_finite(r.get(f"height_agl_level{l}"))
             point["hAgl"][k] = float("nan") if h is None else h
         self.points[self.key(i_lat, i_lon)] = point
@@ -691,6 +696,35 @@ def relative_humidity_pct(q_kgkg: float, p_hpa: float, t_c: float) -> float | No
 def level_value_at_t(arr: list[float], tt: dict) -> float:
     ti, tw = tt["ti"], tt["tw"]
     return arr[ti] + tw * (arr[ti + 1] - arr[ti])
+
+
+def series_on_times(src, src_times, dst_times):
+    """Map a time series onto ``dst_times`` by unix timestamp (nearest second)."""
+    T = len(dst_times)
+    if src is None:
+        return [None] * T
+    if not src_times:
+        out = list(src[:T])
+        if len(out) < T:
+            out.extend([None] * (T - len(out)))
+        return out
+    if len(src_times) == T:
+        same = True
+        for a, b in zip(src_times, dst_times):
+            if abs(float(a) - float(b)) >= 0.5:
+                same = False
+                break
+        if same:
+            return src
+    by = {}
+    n = len(src)
+    for i, t in enumerate(src_times):
+        by[int(round(float(t)))] = i
+    out = []
+    for t in dst_times:
+        i = by.get(int(round(float(t))))
+        out.append(src[i] if i is not None and i < n else None)
+    return out
 
 
 def to_array(src, T: int, factor: float, offset: float = 0) -> list[float]:

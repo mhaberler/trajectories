@@ -4,9 +4,52 @@
  */
 
 /**
- * @typedef {{ lat: number, lon: number, z: number|null }} OverlayCoord
+ * @typedef {{ lat: number, lon: number, z: number|null, t?: number }} OverlayCoord
  * @typedef {{ name: string, sourceName: string, coords: OverlayCoord[] }} OverlayDraft
  */
+
+/**
+ * @param {unknown} v ISO string, epoch ms, or epoch seconds
+ * @returns {number|null}
+ */
+function parseTimeMs(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return v < 1e12 ? Math.round(v * 1000) : v;
+  }
+  const ms = Date.parse(String(v));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * togeojson: `coordTimes`; GeoJSON-T / others: `times` or `coordinateProperties.times`.
+ * @param {Record<string, unknown>|null|undefined} props
+ * @returns {unknown[]|undefined}
+ */
+function coordTimesFromProps(props) {
+  if (!props || typeof props !== "object") return undefined;
+  const cp = props.coordinateProperties;
+  if (cp && typeof cp === "object") {
+    const nested = /** @type {Record<string, unknown>} */ (cp).times;
+    if (Array.isArray(nested)) return nested;
+  }
+  if (Array.isArray(props.coordTimes)) return props.coordTimes;
+  if (Array.isArray(props.times)) return props.times;
+  return undefined;
+}
+
+/**
+ * @param {unknown[]|undefined} times
+ * @param {number} partIndex
+ * @param {boolean} multi
+ * @returns {unknown[]|undefined}
+ */
+function timesForPart(times, partIndex, multi) {
+  if (!Array.isArray(times)) return undefined;
+  if (!multi) return times;
+  const part = times[partIndex];
+  return Array.isArray(part) ? part : undefined;
+}
 
 /**
  * @param {number[]} c GeoJSON position [lon, lat, ele?]
@@ -23,14 +66,18 @@ function posToCoord(c) {
 
 /**
  * @param {unknown} coords LineString coordinates
+ * @param {unknown[]|undefined} [times]
  * @returns {OverlayCoord[]}
  */
-export function lineCoords(coords) {
+export function lineCoords(coords, times) {
   if (!Array.isArray(coords)) return [];
   const out = [];
-  for (const c of coords) {
-    const p = posToCoord(c);
-    if (p) out.push(p);
+  for (let i = 0; i < coords.length; i++) {
+    const p = posToCoord(coords[i]);
+    if (!p) continue;
+    const t = parseTimeMs(times?.[i]);
+    if (t != null) p.t = t;
+    out.push(p);
   }
   return out;
 }
@@ -51,16 +98,17 @@ function pushLine(out, name, sourceName, coords) {
  * @param {string} name
  * @param {string} sourceName
  * @param {OverlayDraft[]} out
+ * @param {unknown[]|undefined} [times]
  */
-function collectGeometry(geom, name, sourceName, out) {
+function collectGeometry(geom, name, sourceName, out, times) {
   if (!geom || !geom.type) return;
   if (geom.type === "LineString") {
-    pushLine(out, name, sourceName, lineCoords(geom.coordinates));
+    pushLine(out, name, sourceName, lineCoords(geom.coordinates, timesForPart(times, 0, false)));
   } else if (geom.type === "MultiLineString") {
     const parts = Array.isArray(geom.coordinates) ? geom.coordinates : [];
     parts.forEach((part, i) => {
       const label = parts.length > 1 ? `${name} (${i + 1})` : name;
-      pushLine(out, label, sourceName, lineCoords(part));
+      pushLine(out, label, sourceName, lineCoords(part, timesForPart(times, i, true)));
     });
   } else if (geom.type === "GeometryCollection" && Array.isArray(geom.geometries)) {
     for (const g of geom.geometries) collectGeometry(g, name, sourceName, out);
@@ -85,12 +133,12 @@ export function overlaysFromGeoJSON(gj, sourceName) {
       const feat = /** @type {Record<string, unknown>} */ (f);
       const props = /** @type {Record<string, unknown>} */ (feat.properties || {});
       const name = String(props.name || props.Name || sourceName);
-      collectGeometry(/** @type {any} */ (feat.geometry), name, sourceName, drafts);
+      collectGeometry(/** @type {any} */ (feat.geometry), name, sourceName, drafts, coordTimesFromProps(props));
     }
   } else if (root.type === "Feature") {
     const props = /** @type {Record<string, unknown>} */ (root.properties || {});
     const name = String(props.name || props.Name || sourceName);
-    collectGeometry(/** @type {any} */ (root.geometry), name, sourceName, drafts);
+    collectGeometry(/** @type {any} */ (root.geometry), name, sourceName, drafts, coordTimesFromProps(props));
   } else if (typeof root.type === "string") {
     collectGeometry(/** @type {any} */ (gj), sourceName, sourceName, drafts);
   } else {

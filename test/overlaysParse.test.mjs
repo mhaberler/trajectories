@@ -62,10 +62,45 @@ const KML = `<?xml version="1.0" encoding="UTF-8"?>
 }
 
 {
+  const gj = {
+    type: "Feature",
+    properties: {
+      name: "TimedLine",
+      coordTimes: ["2024-06-01T10:00:00Z", "2024-06-01T10:00:30Z"],
+    },
+    geometry: {
+      type: "LineString",
+      coordinates: [[11.1, 47.1, 800], [11.2, 47.2, 810]],
+    },
+  };
+  const { drafts } = overlaysFromGeoJSON(gj, "t.geojson");
+  check("geojson: coordTimes", drafts[0]?.coords[0].t === Date.parse("2024-06-01T10:00:00Z"));
+  check("geojson: coordTimes 2", drafts[0]?.coords[1].t === Date.parse("2024-06-01T10:00:30Z"));
+}
+
+{
   const { drafts } = await parseOverlayFile(GPX, "flight.gpx");
   check("gpx: eine Spur", drafts.length === 1, `n=${drafts.length}`);
   check("gpx: Name", drafts[0]?.name === "TestTrack", drafts[0]?.name);
   check("gpx: 3 Punkte mit ele", drafts[0]?.coords.length === 3 && drafts[0].coords[0].z === 1000);
+}
+
+{
+  const GPX_TIME = `<?xml version="1.0"?>
+<gpx version="1.1" creator="test">
+  <trk><name>Timed</name>
+    <trkseg>
+      <trkpt lat="47.1" lon="11.1"><ele>1000</ele><time>2024-06-01T10:00:00Z</time></trkpt>
+      <trkpt lat="47.2" lon="11.2"><ele>1100</ele><time>2024-06-01T10:01:00Z</time></trkpt>
+      <trkpt lat="47.3" lon="11.3"><ele>1200</ele><time>2024-06-01T10:02:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+  const { drafts } = await parseOverlayFile(GPX_TIME, "timed.gpx");
+  const ts = drafts[0]?.coords.map((c) => c.t);
+  check("gpx: Zeiten übernommen", ts?.length === 3 && ts.every((t) => Number.isFinite(t)), String(ts));
+  check("gpx: erste Zeit UTC", ts?.[0] === Date.parse("2024-06-01T10:00:00Z"));
+  check("gpx: 60s Abstand", ts?.[1] - ts?.[0] === 60_000);
 }
 
 {

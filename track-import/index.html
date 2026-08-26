@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Track-Import — Färbung</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="panel">
+    <div id="panelhead">
+      <h1>Track-Import</h1>
+    </div>
+
+    <div class="label">Flugspuren <span class="hint">(GPX / KML / KMZ / GeoJSON)</span></div>
+    <div class="row">
+      <input type="file" id="overlay-file" accept=".gpx,.kml,.kmz,.geojson,.json,application/gpx+xml,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/geo+json,application/json" multiple hidden />
+      <button type="button" id="overlay-add" class="secondary">Datei hinzufügen…</button>
+    </div>
+    <div id="overlays-list"></div>
+
+    <div class="block">
+      <div class="label">Färbung</div>
+      <label class="radio"><input type="radio" name="color-mode" value="speed" /> Geschwindigkeit</label>
+      <label class="radio"><input type="radio" name="color-mode" value="altitude" /> Höhe</label>
+      <label class="radio"><input type="radio" name="color-mode" value="fixed" /> Fest</label>
+    </div>
+
+    <div id="scale-block">
+      <div class="label">Colormap</div>
+      <div id="colormap-host"></div>
+      <label class="row" id="max-speed-row">
+        <span>Max. Geschwindigkeit <span class="hint">(km/h)</span></span>
+        <input type="number" id="max-speed" min="1" step="1" />
+      </label>
+      <label class="row" id="max-alt-row">
+        <span>Max. Höhe <span class="hint">(m)</span></span>
+        <input type="number" id="max-alt" min="1" step="10" />
+      </label>
+      <div class="legend">
+        <div id="legend-bar"></div>
+        <div class="legend-labels">
+          <span>0</span>
+          <span id="legend-max"></span>
+        </div>
+      </div>
+    </div>
+
+    <label class="row" id="fixed-row">
+      <span>Farbe</span>
+      <input type="color" id="fixed-color" />
+    </label>
+
+    <div id="status"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

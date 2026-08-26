@@ -1822,9 +1822,11 @@ function afterProfileTargetsMutated() {
   }
 }
 
-/** @returns {"amsl"|"agl"} inherit mode for cascade / add / insert (default AMSL). */
+/** @returns {"amsl"|"agl"|"none"} inherit mode for cascade / add / insert (default AMSL). */
 function profileInheritMode() {
-  return el("fp-inherit-agl")?.checked ? "agl" : "amsl";
+  if (el("fp-inherit-none")?.checked) return "none";
+  if (el("fp-inherit-agl")?.checked) return "agl";
+  return "amsl";
 }
 
 /**
@@ -1866,9 +1868,12 @@ function toZPreview(w) {
 function updateInheritHint() {
   const hint = el("fp-inherit-hint");
   if (!hint) return;
-  hint.textContent = profileInheritMode() === "agl"
+  const mode = profileInheritMode();
+  hint.textContent = mode === "agl"
     ? "spätere Marker · AGL = konstante Höhe über Grund"
-    : "spätere Marker · AMSL = konstante NN-Höhe";
+    : mode === "none"
+      ? "jeder Marker unabhängig · keine Kopie nach rechts"
+      : "spätere Marker · AMSL = konstante NN-Höhe";
 }
 
 /**
@@ -1876,7 +1881,11 @@ function updateInheritHint() {
  * AGL mode: copy AGL. AMSL mode: copy absolute AMSL (no DEM delta).
  * @returns {{ tSec: number, targetAgl: number, targetAmsl?: number }|null}
  */
-function inheritWaypointFromEarlier(earlier, tSec) {
+function inheritWaypointFromEarlier(earlier, tSec, hAgl = null) {
+  if (profileInheritMode() === "none") {
+    const h = Number.isFinite(hAgl) ? hAgl : profileHeightAt(tSec);
+    return { tSec, targetAgl: Math.max(0, Math.round(h)) };
+  }
   if (!earlier) return null;
   if (profileInheritMode() === "agl") {
     return { tSec, targetAgl: Math.max(0, Math.round(earlier.targetAgl)) };
@@ -1903,9 +1912,11 @@ function inheritWaypointFromEarlier(earlier, tSec) {
 function cascadeProfileAltitude(fromIndex, h) {
   if (fromIndex < 0 || fromIndex >= profileTargets.length) return false;
   const val = Math.max(0, Math.round(h));
+  const mode = profileInheritMode();
+  const last = mode === "none" ? fromIndex + 1 : profileTargets.length;
 
-  if (profileInheritMode() === "agl") {
-    for (let j = fromIndex; j < profileTargets.length; j++) {
+  if (mode === "agl" || mode === "none") {
+    for (let j = fromIndex; j < last; j++) {
       const w = profileTargets[j];
       profileTargets[j] = { tSec: w.tSec, targetAgl: val };
     }
@@ -1913,7 +1924,7 @@ function cascadeProfileAltitude(fromIndex, h) {
   }
 
   // AMSL: same NN height on this marker and every marker to the right.
-  for (let j = fromIndex; j < profileTargets.length; j++) {
+  for (let j = fromIndex; j < last; j++) {
     const w = profileTargets[j];
     profileTargets[j] = {
       tSec: w.tSec,
@@ -1947,7 +1958,7 @@ function insertProfileTarget(tSec, _hAgl) {
     return false;
   }
   const earlier = [...sorted].reverse().find((w) => w.tSec < t) || sorted[0];
-  const next = inheritWaypointFromEarlier(earlier, t);
+  const next = inheritWaypointFromEarlier(earlier, t, _hAgl);
   if (!next) return false;
   profileTargets.push(next);
   profileTargets.sort((a, b) => a.tSec - b.tSec);
@@ -2716,6 +2727,11 @@ el("fp-inherit-agl")?.addEventListener("change", () => {
   persist();
   renderProfileSideView();
 });
+el("fp-inherit-none")?.addEventListener("change", () => {
+  updateInheritHint();
+  persist();
+  renderProfileSideView();
+});
 el("fp-tbody").addEventListener("change", (e) => {
   const inp = e.target;
   const field = inp?.dataset?.field;
@@ -2739,7 +2755,9 @@ el("fp-add").addEventListener("click", () => {
   if (profileTargets.length >= FP_MAX_ROWS) return;
   const last = profileTargets[profileTargets.length - 1];
   const tSec = last.tSec + 1800;
-  const next = inheritWaypointFromEarlier(last, tSec);
+  const next = profileInheritMode() === "none"
+    ? { tSec, targetAgl: Math.max(0, Math.round(last.targetAgl)) }
+    : inheritWaypointFromEarlier(last, tSec);
   if (!next) return;
   profileTargets.push(next);
   refreshProfileUI({ scheduleApi: true });
@@ -3004,6 +3022,8 @@ if (Number.isFinite(saved.fpDemIntervalMin)) {
 }
 if (saved.fpInheritMode === "agl") {
   if (el("fp-inherit-agl")) el("fp-inherit-agl").checked = true;
+} else if (saved.fpInheritMode === "none") {
+  if (el("fp-inherit-none")) el("fp-inherit-none").checked = true;
 } else if (el("fp-inherit-amsl")) {
   el("fp-inherit-amsl").checked = true;
 }

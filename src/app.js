@@ -59,10 +59,12 @@ function persist() {
     refmode: el("refmode").value,
     markerIntervalSec: +el("markerint").value || 600,
     duration: +el("duration").value || 12,
-    launchWindowH: Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
+    launchWindowH: liveUiStash
+      ? liveUiStash.launchWindowH
+      : Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
     launchStepMin: Math.max(5, +el("launchstep").value || 15),
-    tStartMs: timebar?.startMs?.() ?? null,
-    playMs: timebar?.playMs?.() ?? null,
+    tStartMs: liveUiStash?.tStartMs ?? timebar?.startMs?.() ?? null,
+    playMs: timebar?.playMs?.() ?? liveUiStash?.playMs ?? null,
     direction: el("direction").value,
     heights: [...heightColors].map(([m, color]) => ({ m, color })),
     activeHeight,
@@ -75,7 +77,8 @@ function persist() {
     liveMode: el("livemode").checked,
     methods: selectedMethods(),
     metExtras: el("metextras").checked,
-    useApi: el("useapi").checked,
+    liveSavedUseApi: liveUiStash ? liveUiStash.useApi : null,
+    useApi: liveUiStash ? liveUiStash.useApi : el("useapi").checked,
     profileTargets: profileTargets.map((w) => {
       const o = { tSec: w.tSec, targetAgl: w.targetAgl };
       if (Number.isFinite(w.targetAmsl)) o.targetAmsl = w.targetAmsl;
@@ -1994,6 +1997,7 @@ function applyProfileUI() {
   el("livemode").disabled = on;
   el("refmode").disabled = on;
   if (on) {
+    if (el("livemode").checked) liveUiStash = null;
     el("livemode").checked = false;
     el("refmode").value = "agl";
     el("useapi").checked = true;
@@ -2677,12 +2681,53 @@ function applyLiveLaunchUi() {
   el("launchstep").title = live ? title : "";
 }
 
+/** @type {null | {
+ *   launchWindowH: number,
+ *   useApi: boolean,
+ *   tStartMs: number,
+ *   playMs: number,
+ *   launchWindow: object | null,
+ * }} */
+let liveUiStash = null;
+
+function captureLiveUiStash() {
+  return {
+    launchWindowH: Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
+    useApi: el("useapi").checked,
+    tStartMs: timebar?.startMs?.() ?? timebarPlayMs(),
+    playMs: timebarPlayMs(),
+    launchWindow: state.launchWindow,
+  };
+}
+
+function restoreLiveUi() {
+  const s = liveUiStash;
+  liveUiStash = null;
+  if (!s) return;
+  try {
+    el("launchwindow").value = String(s.launchWindowH);
+    state.launchWindow = s.launchWindow;
+    if (s.launchWindowH > 0) {
+      timebar?.setBand(s.tStartMs);
+      if (Number.isFinite(s.playMs)) timebar?.setPlayMs(s.playMs, { silent: true });
+    } else {
+      timebar?.setBand(s.playMs ?? s.tStartMs);
+    }
+    updateTimeLabel();
+    updateReachHint();
+  } finally {
+    // After timebar persist: always put API back last (Live had forced it off).
+    el("useapi").checked = !!s.useApi;
+  }
+}
+
 /** Collapse Launch Window to the timebar playhead so Live can run locally. */
 function freezeLaunchForLive() {
   const t0 = timebarPlayMs();
-  const winH = Math.max(0, +el("launchwindow").value || 0);
-  const hadLaunch = winH > 0 || !!state.launchWindow;
-  const hadApi = el("useapi").checked;
+  // Keep the first snapshot; a second freeze would see API already off.
+  if (!liveUiStash) liveUiStash = captureLiveUiStash();
+  const winH = liveUiStash.launchWindowH;
+  const hadLaunch = winH > 0 || !!liveUiStash.launchWindow;
 
   if (state.launchWindow?.samples?.length >= 2) {
     const runs = computeMorphRuns(t0);
@@ -2702,10 +2747,10 @@ function freezeLaunchForLive() {
 
   if (hadLaunch) {
     el("launchwindow").value = "0";
-    clearLaunchWindow();
+    state.launchWindow = null;
     timebar?.setBand(t0);
   }
-  if (hadApi) el("useapi").checked = false;
+  if (liveUiStash.useApi) el("useapi").checked = false;
 
   setStatus(`Live lokal · Start eingefroren ${fmtTime(t0)} · API/Launch aus`);
 }
@@ -2720,18 +2765,26 @@ function applyModeUI() {
 }
 
 el("livemode").addEventListener("change", () => {
+  const leaving = !el("livemode").checked;
+  const restoreApi = leaving ? (liveUiStash ? liveUiStash.useApi : true) : null;
   if (el("livemode").checked) {
     if (el("flightprofile").checked) {
       el("flightprofile").checked = false;
       applyProfileUI();
     }
     freezeLaunchForLive();
+  } else {
+    restoreLiveUi();
   }
   applyModeUI();
   state.live = null;
   // Beim Verlassen des Live-Modus bleiben alle Trajektorien sichtbar (aktive
   // Linie + Pins). Ein späterer „echter" Lauf zeichnet ohnehin alles neu.
   persist();
+  if (leaving) {
+    el("useapi").checked = !!restoreApi;
+    persist();
+  }
   liveRun();
 });
 
@@ -2740,6 +2793,7 @@ el("flightprofile").addEventListener("change", () => {
   if (el("flightprofile").checked && el("livemode").checked) {
     el("livemode").checked = false;
     state.live = null;
+    liveUiStash = null;
     applyModeUI();
   }
   if (!el("flightprofile").checked) state.profileEdit = null;
@@ -2955,6 +3009,7 @@ el("launchwindow").addEventListener("input", () => {
   if (el("livemode").checked) {
     el("livemode").checked = false;
     state.live = null;
+    liveUiStash = null;
     el("useapi").checked = true;
     applyModeUI();
     setStatus("Launch-Fenster braucht „API abrufen“; Live-Modus aus.");
@@ -3019,7 +3074,18 @@ el("unitheight").addEventListener("change", onUnitsChange);
 el("unitwind").addEventListener("change", onUnitsChange);
 
 if (saved.liveMode) el("livemode").checked = true;
-if (el("livemode").checked) el("launchwindow").value = "0";
+if (el("livemode").checked) {
+  const savedApi = saved.liveSavedUseApi;
+  liveUiStash = {
+    launchWindowH: Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
+    // Missing liveSavedUseApi: older persist wrote the frozen-off checkbox.
+    useApi: savedApi == null ? true : !!savedApi,
+    tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : timebarPlayMs(),
+    playMs: Number.isFinite(saved.playMs) ? saved.playMs : timebarPlayMs(),
+    launchWindow: null,
+  };
+  el("launchwindow").value = "0";
+}
 if (Array.isArray(saved.methods) && saved.methods.length) {
   for (const c of el("methodlist").querySelectorAll("input")) {
     c.checked = saved.methods.includes(c.value);
@@ -3042,6 +3108,8 @@ el("useapi").addEventListener("change", () => {
   if (el("useapi").checked && el("livemode").checked) {
     el("livemode").checked = false;
     state.live = null;
+    restoreLiveUi();
+    el("useapi").checked = true;
     applyModeUI();
     setStatus("API abrufen: Live-Modus aus (Live rechnet lokal).");
   }

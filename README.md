@@ -72,7 +72,8 @@ ein Windfeld, und der Querschnitt zeigt die z(t)-Kurven in einem Streifen
 Der **Live-Modus** rechnet lokal im Browser genau eine Trajektorie, die dem
 Höhenschieber folgt: Schieber bewegen → Neuberechnung (entprellt, ~200 ms).
 Beim Einschalten wird ein aktives Launch-Fenster auf die gewählte Timebar-
-Startzeit eingefroren (Fenster und API aus). Das Windfeld samt Punkt-Cache
+Startzeit eingefroren (Fenster und API aus); Ausschalten stellt Fenster und
+API wieder her. Das Windfeld samt Punkt-Cache
 bleibt erhalten, solange Modell, Vertikaloption, Startzeit, Dauer und
 Richtung gleich bleiben — nach der ersten Bewegung kommt praktisch alles
 aus dem Cache und der Schieber reagiert flüssig. Ein geöffneter

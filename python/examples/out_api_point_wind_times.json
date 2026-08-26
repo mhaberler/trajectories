@@ -1,0 +1,94 @@
+{
+  "latitude": 47.23,
+  "longitude": 15.82,
+  "height_reference": "agl",
+  "height_m": 550.0,
+  "times": [
+    "2026-08-26T11:00:00.000Z",
+    "2026-08-26T11:15:00.000Z",
+    "2026-08-26T11:30:00.000Z"
+  ],
+  "samples": [
+    {
+      "time": "2026-08-26T11:00:00.000Z",
+      "models": [
+        {
+          "model": "icon_eu",
+          "wind_u_ms": 1.719,
+          "wind_v_ms": 1.133,
+          "wind_w_ms": 0.0515,
+          "wind_speed_ms": 2.059,
+          "wind_speed_kmh": 7.4,
+          "wind_direction_deg": 237,
+          "z_amsl_m": 1060,
+          "terrain_m": null
+        },
+        {
+          "model": "icon_d2",
+          "wind_u_ms": 2.25,
+          "wind_v_ms": 0.377,
+          "wind_w_ms": -0.0427,
+          "wind_speed_ms": 2.281,
+          "wind_speed_kmh": 8.2,
+          "wind_direction_deg": 260,
+          "z_amsl_m": 1028,
+          "terrain_m": null
+        }
+      ]
+    },
+    {
+      "time": "2026-08-26T11:15:00.000Z",
+      "models": [
+        {
+          "model": "icon_eu",
+          "wind_u_ms": 1.726,
+          "wind_v_ms": 1.223,
+          "wind_w_ms": 0.0477,
+          "wind_speed_ms": 2.115,
+          "wind_speed_kmh": 7.6,
+          "wind_direction_deg": 235,
+          "z_amsl_m": 1060,
+          "terrain_m": null
+        },
+        {
+          "model": "icon_d2",
+          "wind_u_ms": 2.4,
+          "wind_v_ms": 0.29,
+          "wind_w_ms": -0.0287,
+          "wind_speed_ms": 2.417,
+          "wind_speed_kmh": 8.7,
+          "wind_direction_deg": 263,
+          "z_amsl_m": 1028,
+          "terrain_m": null
+        }
+      ]
+    },
+    {
+      "time": "2026-08-26T11:30:00.000Z",
+      "models": [
+        {
+          "model": "icon_eu",
+          "wind_u_ms": 1.733,
+          "wind_v_ms": 1.312,
+          "wind_w_ms": 0.0439,
+          "wind_speed_ms": 2.173,
+          "wind_speed_kmh": 7.8,
+          "wind_direction_deg": 233,
+          "z_amsl_m": 1060,
+          "terrain_m": null
+        },
+        {
+          "model": "icon_d2",
+          "wind_u_ms": 2.55,
+          "wind_v_ms": 0.202,
+          "wind_w_ms": -0.0147,
+          "wind_speed_ms": 2.558,
+          "wind_speed_kmh": 9.2,
+          "wind_direction_deg": 265,
+          "z_amsl_m": 1028,
+          "terrain_m": null
+        }
+      ]
+    }
+  ]
+}

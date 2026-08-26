@@ -394,12 +394,19 @@ const FP_PRESETS = {
   ],
 };
 
+function profileDurationHours() {
+  return Math.min(72, Math.max(0.25, +el("duration").value || 12));
+}
+
+function profileDurationSec() {
+  return profileDurationHours() * 3600;
+}
+
 function defaultConstantTargets() {
   const h = activeHeight != null ? activeHeight : 500;
-  const hours = Math.min(72, Math.max(0.25, +el("duration").value || 12));
   return [
     { tSec: 0, targetAgl: h },
-    { tSec: hours * 3600, targetAgl: h },
+    { tSec: profileDurationSec(), targetAgl: h },
   ];
 }
 
@@ -624,7 +631,15 @@ function readProfileTable() {
     if (Number.isFinite(prevAmsl)) row.targetAmsl = prevAmsl;
     next.push(row);
   }
-  if (next.length >= 2) profileTargets = next;
+    if (next.length >= 2) {
+      profileTargets = next;
+      for (let i = 0; i < profileTargets.length; i++) {
+        const tSec = clampProfileTime(i, profileTargets[i].tSec);
+        if (tSec !== profileTargets[i].tSec) {
+          profileTargets[i] = { ...profileTargets[i], tSec };
+        }
+      }
+    }
 }
 
 function validateProfileTargets(list) {
@@ -922,7 +937,7 @@ function scheduleSideHover(kind, i) {
 
 /**
  * Clamp waypoint time: start fixed at 0; others strictly between neighbors (±1 s gap).
- * End has no artificial upper bound.
+ * Last point cannot pass the Dauer field (seconds).
  */
 function clampProfileTime(i, tSec) {
   if (i === 0) return 0;
@@ -930,7 +945,7 @@ function clampProfileTime(i, tSec) {
   const prev = profileTargets[i - 1]?.tSec ?? 0;
   const next = i < profileTargets.length - 1 ? profileTargets[i + 1].tSec : null;
   const lo = prev + 1;
-  const hi = next != null ? next - 1 : Infinity;
+  const hi = next != null ? next - 1 : profileDurationSec();
   if (hi < lo) return prev + 1; // degenerate gap — stay just after prev
   return Math.min(hi, Math.max(lo, t));
 }
@@ -1368,7 +1383,7 @@ function renderProfileSideView() {
   // One ground series for axis + AGL↔AMSL (DEM when on, else model) — never mix.
   const groundSeries = profileGroundSeries();
   const useAmsl = groundSeries.length >= 2;
-  const tMax = Math.max(...profileTargets.map((w) => w.tSec), 1);
+  const tMax = Math.max(...profileTargets.map((w) => w.tSec), profileDurationSec(), 1);
   const inheritAmsl = profileInheritMode() === "amsl";
 
   const toZ = (tSec, hAgl) => {
@@ -1600,9 +1615,7 @@ function wireProfileSideView() {
   host.addEventListener("pointermove", (e) => {
     if (!sideDrag || e.pointerId !== sideDrag.pointerId) return;
     const i = sideDrag.i;
-    const rawT = sideViewClientToTSec(e.clientX, {
-      allowBeyond: i === profileTargets.length - 1,
-    });
+    const rawT = sideViewClientToTSec(e.clientX);
     if (rawT == null) return;
     const tSec = clampProfileTime(i, rawT);
     const cur = profileTargets[i];
@@ -2881,6 +2894,16 @@ el("launchstep").addEventListener("input", () => {
 el("duration").addEventListener("input", () => {
   updateReachHint();
   timebar?.render();
+  const last = profileTargets.length - 1;
+  if (last >= 1) {
+    const tSec = clampProfileTime(last, profileTargets[last].tSec);
+    if (tSec !== profileTargets[last].tSec) {
+      profileTargets[last] = { ...profileTargets[last], tSec };
+      renderProfileTable();
+      updateProfileHint();
+    }
+  }
+  renderProfileSideView();
 });
 
 // Modell-Vertikalgeschwindigkeit: je Modell prüfen, ob der Server die

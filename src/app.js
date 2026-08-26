@@ -22,6 +22,15 @@ import {
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
   localStorage.getItem("trajDebug") === "1";
 
+const API_BACKENDS = new Set(["auto", "http", "om"]);
+const apiBackendParam = new URLSearchParams(location.search).get("backend");
+const apiBackend = API_BACKENDS.has(apiBackendParam) ? apiBackendParam : "auto";
+console.log(
+  "[traj] API backend",
+  apiBackend,
+  apiBackendParam == null ? "(default, no ?backend=)" : `(?backend=${apiBackendParam})`,
+);
+
 /* global L */
 
 const el = (id) => document.getElementById(id);
@@ -3753,7 +3762,7 @@ function buildTrajectoryApiParams({
     marker_interval: String(markerIntervalSec / 60),
     met_extras: String(el("metextras").checked),
     format: "geojson",
-    backend: "auto",
+    backend: apiBackend,
   });
   const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
   if (t0ListMs?.length) {

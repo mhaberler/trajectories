@@ -13,7 +13,6 @@ from .integrator import compute_trajectory
 from .windfield import WindField
 
 TRACK_WORKERS = 8
-MAX_START_TIMES = 49
 
 
 def _parse_time(time: str | datetime | float | int) -> float:
@@ -145,8 +144,6 @@ def compute_trajectories(
 
     if has_times:
         t0_list_ms = sorted({_parse_time(t) for t in times})  # type: ignore[arg-type]
-        if len(t0_list_ms) > MAX_START_TIMES:
-            raise ValueError(f"times accepts at most {MAX_START_TIMES} starts")
         if not t0_list_ms:
             raise ValueError("times must contain at least one start")
     else:
@@ -154,8 +151,16 @@ def compute_trajectories(
 
     if model not in config.MODELS:
         raise ValueError(f"Unknown model: {model}")
+    cap = config.max_times_points(model)
+    if has_times and len(t0_list_ms) > cap:
+        raise ValueError(f"times accepts at most {cap} starts")
     model_cfg = config.MODELS[model]
     backend_kind = config.resolve_backend(model)
+    horizon_h = config.forecast_horizon_h(model)
+    if float(duration_h) > horizon_h:
+        raise ValueError(
+            f"forecast_hours must be <= {horizon_h} for {model}"
+        )
 
     profile: list[tuple[float, float]] | None = None
     if height_profile is not None:
@@ -172,7 +177,7 @@ def compute_trajectories(
         h0 = profile[0][1]
         heights = [h0]
         t_last_h = profile[-1][0] / 3600.0
-        duration = min(72.0, max(0.0, float(duration_h)), t_last_h)
+        duration = min(max(0.0, float(duration_h)), t_last_h)
         if duration <= 0:
             raise ValueError("flight profile duration must be > 0")
     else:
@@ -182,7 +187,7 @@ def compute_trajectories(
             raise ValueError("At least one height required")
         if not methods:
             raise ValueError("At least one method required")
-        duration = min(72, max(1, float(duration_h)))
+        duration = max(1, float(duration_h))
 
     for m in methods:
         if m not in {x["key"] for x in config.METHODS}:
@@ -318,43 +323,11 @@ def _iso_ms(t_ms: float) -> str:
     )
 
 
-def _sample_point_wind_one(
-    *,
+def _pack_point_wind_model(
     model: str,
-    lat: float,
-    lon: float,
-    t0_ms: float,
-    height_m: float,
-    height_ref: str,
-    backend_kind: str,
+    sample: dict[str, Any],
+    terrain: float | None,
 ) -> dict[str, Any]:
-    """Sample one model; raises ValueError/RuntimeError on hard failure."""
-    if model not in config.MODELS:
-        raise ValueError(f"Unknown model: {model}")
-    model_cfg = config.MODELS[model]
-    b = model_cfg["bbox"]
-    if not (b["latMin"] <= lat <= b["latMax"] and b["lonMin"] <= lon <= b["lonMax"]):
-        raise ValueError(f"Point outside {model_cfg['label']} domain")
-
-    w_prefix = WindField.detect_w_variable(model, backend=backend_kind)
-    target = {"type": "height", "mode": height_ref, "value": height_m}
-
-    with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
-        wf.init(
-            lat,
-            lon,
-            height_m,
-            t0_ms,
-            t0_ms,
-            "height",
-            met_extras=False,
-            include_w=bool(w_prefix),
-        )
-        sample = wf.wind_at(lat, lon, target, t0_ms)
-        if sample.get("error"):
-            raise RuntimeError(sample["error"])
-        elev = wf.elevation_at(lat, lon)
-
     u = float(sample["u"])
     v = float(sample["v"])
     spd_ms = math.hypot(u, v)
@@ -362,8 +335,6 @@ def _sample_point_wind_one(
     w_raw = sample.get("w")
     w_ms = float(w_raw) if w_raw is not None and math.isfinite(float(w_raw)) else None
     z_amsl = sample.get("zAmsl")
-    terrain = float(elev) if elev is not None and math.isfinite(elev) else None
-
     return {
         "model": model,
         "wind_u_ms": round(u, 3),
@@ -377,11 +348,62 @@ def _sample_point_wind_one(
     }
 
 
+def _sample_point_wind_one(
+    *,
+    model: str,
+    lat: float,
+    lon: float,
+    t0_list_ms: Sequence[float],
+    height_m: float,
+    height_ref: str,
+    backend_kind: str,
+) -> list[dict[str, Any]]:
+    """Sample one model at each start time with a single WindField.init.
+
+    Raises ValueError/RuntimeError on domain or setup failure. Per-time
+    ``wind_at`` errors become ``{model, error, reason}`` rows.
+    """
+    if model not in config.MODELS:
+        raise ValueError(f"Unknown model: {model}")
+    model_cfg = config.MODELS[model]
+    b = model_cfg["bbox"]
+    if not (b["latMin"] <= lat <= b["latMax"] and b["lonMin"] <= lon <= b["lonMax"]):
+        raise ValueError(f"Point outside {model_cfg['label']} domain")
+
+    w_prefix = WindField.detect_w_variable(model, backend=backend_kind)
+    target = {"type": "height", "mode": height_ref, "value": height_m}
+    t_lo = min(t0_list_ms)
+    t_hi = max(t0_list_ms)
+
+    rows: list[dict[str, Any]] = []
+    with WindField(model, w_var_prefix=w_prefix, backend=backend_kind) as wf:
+        wf.init(
+            lat,
+            lon,
+            height_m,
+            t_lo,
+            t_hi,
+            "height",
+            met_extras=False,
+            include_w=bool(w_prefix),
+        )
+        elev = wf.elevation_at(lat, lon)
+        terrain = float(elev) if elev is not None and math.isfinite(elev) else None
+        for t0_ms in t0_list_ms:
+            sample = wf.wind_at(lat, lon, target, t0_ms)
+            if sample.get("error"):
+                rows.append({"model": model, "error": True, "reason": str(sample["error"])})
+                continue
+            rows.append(_pack_point_wind_model(model, sample, terrain))
+    return rows
+
+
 def compute_point_wind(
     *,
     lat: float,
     lon: float,
-    time: str | datetime | float | int,
+    time: str | datetime | float | int | None = None,
+    times: Sequence[str | datetime | float | int] | None = None,
     models: str | Sequence[str] = "icon_eu",
     height_m: float,
     height_ref: str = "agl",
@@ -390,11 +412,15 @@ def compute_point_wind(
     backend: str | None = None,
 ) -> dict[str, Any]:
     """
-    Sample horizontal (+ optional vertical) wind at one lat/lon/time/height.
+    Sample horizontal (+ optional vertical) wind at one lat/lon/height.
+
+    Pass exactly one of ``time`` (single sample) or ``times`` (launch-window
+    batch; at most 4× the shortest model forecast horizon). Multiple starts
+    share one WindField init spanning the full time range.
 
     ``models`` may be a single id or a sequence / CSV-split list. Per-model
     failures become ``{model, error, reason}`` entries when at least one model
-    succeeds; if all fail, raises ValueError with a combined reason.
+    succeeds at least once; if all fail, raises ValueError with a combined reason.
     """
     if api_base:
         config.set_api_base(api_base)
@@ -415,43 +441,86 @@ def compute_point_wind(
     if not model_list:
         raise ValueError("At least one model required")
 
-    t0_ms = _parse_time(time)
-    entries: list[dict[str, Any]] = []
-    ok = 0
+    has_time = time is not None and not (
+        isinstance(time, str) and not str(time).strip()
+    )
+    has_times = times is not None and len(list(times)) > 0
+    if has_time == has_times:
+        raise ValueError("Specify exactly one of time or times")
+
+    if has_times:
+        t0_list_ms = sorted({_parse_time(t) for t in times})  # type: ignore[arg-type]
+        cap = config.max_times_points_for_models(model_list)
+        if len(t0_list_ms) > cap:
+            raise ValueError(f"times accepts at most {cap} starts")
+        if not t0_list_ms:
+            raise ValueError("times must contain at least one start")
+        batch = True
+    else:
+        t0_list_ms = [_parse_time(time)]  # type: ignore[arg-type]
+        batch = False
+
+    # [model_index][time_index]
+    per_model: list[list[dict[str, Any]]] = []
     errors: list[str] = []
 
     for model in model_list:
         try:
             backend_kind = config.resolve_backend(model)
-            entries.append(
+            per_model.append(
                 _sample_point_wind_one(
                     model=model,
                     lat=lat,
                     lon=lon,
-                    t0_ms=t0_ms,
+                    t0_list_ms=t0_list_ms,
                     height_m=float(height_m),
                     height_ref=height_ref,
                     backend_kind=backend_kind,
                 )
             )
-            ok += 1
         except (ValueError, RuntimeError) as exc:
             reason = str(exc)
             errors.append(f"{model}: {reason}")
-            entries.append({"model": model, "error": True, "reason": reason})
+            fail = {"model": model, "error": True, "reason": reason}
+            per_model.append([fail] * len(t0_list_ms))
         except Exception as exc:  # noqa: BLE001
             reason = f"Internal error: {exc}"
             errors.append(f"{model}: {reason}")
-            entries.append({"model": model, "error": True, "reason": reason})
+            fail = {"model": model, "error": True, "reason": reason}
+            per_model.append([fail] * len(t0_list_ms))
+
+    samples: list[dict[str, Any]] = []
+    ok = 0
+    for i, t0_ms in enumerate(t0_list_ms):
+        entries = [per_model[m][i] for m in range(len(model_list))]
+        if any(not e.get("error") for e in entries):
+            ok += 1
+        else:
+            for e in entries:
+                if e.get("error"):
+                    errors.append(f"{e.get('model')}: {e.get('reason')}")
+        samples.append({"time": _iso_ms(t0_ms), "models": entries})
 
     if ok == 0:
-        raise ValueError("; ".join(errors) if errors else "No wind sample")
+        # Dedupe while preserving order (setup failures are repeated per time).
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for msg in errors:
+            if msg not in seen:
+                seen.add(msg)
+                uniq.append(msg)
+        raise ValueError("; ".join(uniq) if uniq else "No wind sample")
 
-    return {
+    base = {
         "latitude": lat,
         "longitude": lon,
-        "time": _iso_ms(t0_ms),
         "height_reference": height_ref,
         "height_m": float(height_m),
-        "models": entries,
     }
+    if batch:
+        return {
+            **base,
+            "times": [s["time"] for s in samples],
+            "samples": samples,
+        }
+    return {**base, "time": samples[0]["time"], "models": samples[0]["models"]}

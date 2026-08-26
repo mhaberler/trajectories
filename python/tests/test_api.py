@@ -191,10 +191,10 @@ def test_trajectory_times_over_cap():
     from datetime import datetime, timedelta, timezone
 
     t0 = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
+    n = 193  # ICON-D2: 4 × 48 h + 1
     starts = ",".join(
-        (t0 + timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(50)
+        (t0 + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(n)
     )
-    assert starts.count(",") + 1 == 50
     r = client.get(
         "/v1/trajectory",
         params={
@@ -207,6 +207,63 @@ def test_trajectory_times_over_cap():
     )
     assert r.status_code == 400
     assert "at most" in r.json()["reason"]
+    assert "192" in r.json()["reason"]
+
+
+@patch("trajectories.api.compute_trajectories", return_value=TINY_GJ)
+def test_trajectory_times_at_d2_cap(mock_compute):
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
+    starts = ",".join(
+        (t0 + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(192)
+    )
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "times": starts,
+            "height_agl": "500",
+        },
+    )
+    assert r.status_code == 200
+    mock_compute.assert_called_once()
+    assert len(mock_compute.call_args.kwargs["times"]) == 192
+
+
+def test_trajectory_forecast_hours_over_d2_horizon():
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-02T11:00:00Z",
+            "forecast_hours": 73,
+            "height_agl": "500",
+        },
+    )
+    assert r.status_code == 400
+    assert "48" in r.json()["reason"]
+
+
+@patch("trajectories.api.compute_trajectories", return_value=TINY_GJ)
+def test_trajectory_forecast_hours_eu_120_ok(mock_compute):
+    r = client.get(
+        "/v1/trajectory",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_eu",
+            "time": "2026-08-02T11:00:00Z",
+            "forecast_hours": 120,
+            "height_agl": "500",
+        },
+    )
+    assert r.status_code == 200
+    assert mock_compute.call_args.kwargs["duration_h"] == 120
 
 
 def test_build_geojson_marker_start_time():
@@ -371,6 +428,8 @@ def test_wind_happy_path(mock_compute):
     assert kwargs["height_m"] == 550.0
     assert kwargs["height_ref"] == "agl"
     assert kwargs["backend"] == "http"
+    assert kwargs.get("times") is None
+    assert kwargs["time"] == "2026-08-02T11:00:00Z"
 
 
 @patch("trajectories.api.compute_point_wind", return_value=TINY_WIND)
@@ -391,6 +450,105 @@ def test_wind_amsl_unixtime(mock_compute):
     assert kwargs["time"] == 1754132400.0
     assert kwargs["height_ref"] == "amsl"
     assert kwargs["height_m"] == 1500.0
+    assert kwargs.get("times") is None
+
+
+TINY_WIND_BATCH = {
+    "latitude": 47.23,
+    "longitude": 15.82,
+    "height_reference": "agl",
+    "height_m": 550.0,
+    "times": [
+        "2026-08-26T11:00:00.000Z",
+        "2026-08-26T11:15:00.000Z",
+        "2026-08-26T11:30:00.000Z",
+    ],
+    "samples": [
+        {"time": "2026-08-26T11:00:00.000Z", "models": TINY_WIND["models"]},
+        {"time": "2026-08-26T11:15:00.000Z", "models": TINY_WIND["models"]},
+        {"time": "2026-08-26T11:30:00.000Z", "models": TINY_WIND["models"]},
+    ],
+}
+
+
+@patch("trajectories.api.compute_point_wind", return_value=TINY_WIND_BATCH)
+def test_wind_times_batch(mock_compute):
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_eu,icon_d2",
+            "times": "2026-08-26T11:00:00Z,2026-08-26T11:15:00Z,2026-08-26T11:30:00Z",
+            "height_agl": 550,
+            "backend": "om",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "time" not in body
+    assert len(body["times"]) == 3
+    assert len(body["samples"]) == 3
+    mock_compute.assert_called_once()
+    kwargs = mock_compute.call_args.kwargs
+    assert kwargs.get("time") is None
+    assert kwargs["times"] == [
+        "2026-08-26T11:00:00Z",
+        "2026-08-26T11:15:00Z",
+        "2026-08-26T11:30:00Z",
+    ]
+
+
+def test_wind_time_and_times_rejected():
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "time": "2026-08-26T11:00:00Z",
+            "times": "2026-08-26T11:00:00Z,2026-08-26T12:00:00Z",
+            "height_agl": 550,
+        },
+    )
+    assert r.status_code == 400
+    assert "exactly one" in r.json()["reason"]
+
+
+def test_wind_neither_time_nor_times():
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "height_agl": 550,
+        },
+    )
+    assert r.status_code == 400
+    assert "exactly one" in r.json()["reason"]
+
+
+def test_wind_times_over_cap():
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 8, 26, 0, 0, tzinfo=timezone.utc)
+    starts = ",".join(
+        (t0 + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M:%SZ") for i in range(193)
+    )
+    r = client.get(
+        "/v1/wind",
+        params={
+            "latitude": 47.23,
+            "longitude": 15.82,
+            "models": "icon_d2",
+            "times": starts,
+            "height_agl": 550,
+        },
+    )
+    assert r.status_code == 400
+    assert "at most" in r.json()["reason"]
+    assert "192" in r.json()["reason"]
 
 
 def test_openapi_has_wind_path():

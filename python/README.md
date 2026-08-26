@@ -96,7 +96,8 @@ curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
   --data-urlencode 'vertical_motion=height' \
   --data-urlencode 'backend=http'
 
-# Launch-window batch (mutually exclusive with `time`; max 49 starts):
+# Launch-window batch (mutually exclusive with `time`; at most 4× model
+# forecast horizon, e.g. 192 starts for ICON-D2):
 curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
   --data-urlencode 'latitude=47.23' \
   --data-urlencode 'longitude=15.82' \
@@ -113,6 +114,7 @@ Client example (server must be running):
 
 ```bash
 python python/examples/api_trajectory.py
+python python/examples/api_point_wind_times.py
 # local uvicorn: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
 ```
 

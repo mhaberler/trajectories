@@ -73,7 +73,14 @@ def test_icon_global_api_base_default():
     assert config.resolve_backend("icon_global", warn=False) == "http"
 
 
-def test_set_backend_rejects_unknown():
+def test_forecast_horizon_and_times_cap():
+    assert config.forecast_horizon_h("icon_d2") == 48
+    assert config.forecast_horizon_h("icon_eu") == 120
+    assert config.forecast_horizon_h("icon_global") == 180
+    assert config.max_times_points("icon_d2") == 192
+    assert config.max_times_points("icon_eu") == 480
+    assert config.max_times_points("icon_global") == 720
+    assert config.max_times_points_for_models(["icon_eu", "icon_d2"]) == 192
     with pytest.raises(ValueError):
         config.set_backend("s3")
 

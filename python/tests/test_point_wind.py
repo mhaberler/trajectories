@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -115,4 +116,60 @@ def test_point_wind_all_fail(mock_cls, _detect):
             height_m=550,
             height_ref="agl",
             backend="http",
+        )
+
+
+@patch("trajectories.compute.WindField.detect_w_variable", return_value="wind_w")
+@patch("trajectories.compute.WindField")
+def test_point_wind_times_one_init_three_samples(mock_cls, _detect):
+    mock_cls.return_value = _fake_wf()
+    times = [
+        "2026-08-26T11:00:00Z",
+        "2026-08-26T11:15:00Z",
+        "2026-08-26T11:30:00Z",
+    ]
+    out = compute_point_wind(
+        lat=47.23,
+        lon=15.82,
+        times=times,
+        models="icon_eu",
+        height_m=550,
+        height_ref="agl",
+        backend="http",
+    )
+    assert "time" not in out
+    assert out["times"] == [
+        "2026-08-26T11:00:00.000Z",
+        "2026-08-26T11:15:00.000Z",
+        "2026-08-26T11:30:00.000Z",
+    ]
+    assert len(out["samples"]) == 3
+    for sample, iso in zip(out["samples"], out["times"], strict=True):
+        assert sample["time"] == iso
+        assert sample["models"][0]["wind_u_ms"] == 1.2
+
+    wf = mock_cls.return_value
+    assert mock_cls.call_count == 1
+    wf.init.assert_called_once()
+    args = wf.init.call_args.args
+    t_lo_ms = datetime(2026, 8, 26, 11, 0, tzinfo=timezone.utc).timestamp() * 1000
+    t_hi_ms = datetime(2026, 8, 26, 11, 30, tzinfo=timezone.utc).timestamp() * 1000
+    assert args[3] == pytest.approx(t_lo_ms)
+    assert args[4] == pytest.approx(t_hi_ms)
+    assert wf.wind_at.call_count == 3
+    got_t = [c.args[3] for c in wf.wind_at.call_args_list]
+    assert got_t[0] == pytest.approx(t_lo_ms)
+    assert got_t[1] == pytest.approx(t_lo_ms + 15 * 60 * 1000)
+    assert got_t[2] == pytest.approx(t_hi_ms)
+
+
+def test_point_wind_time_and_times_rejected():
+    with pytest.raises(ValueError, match="exactly one"):
+        compute_point_wind(
+            lat=47.23,
+            lon=15.82,
+            time="2026-08-26T11:00:00Z",
+            times=["2026-08-26T11:15:00Z"],
+            models="icon_eu",
+            height_m=550,
         )

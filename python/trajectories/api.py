@@ -15,7 +15,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config
 from .compute import (
-    MAX_START_TIMES,
     compute_point_wind,
     compute_trajectories,
     parse_flight_profile,
@@ -37,7 +36,8 @@ app = FastAPI(
         "Query parameters follow Open-Meteo naming; successful trajectory responses "
         "are GeoJSON FeatureCollections (SimpleStyle). Trajectory LineStrings include "
         "properties.terrain_m (model orography m AMSL, parallel to coordinates). "
-        "Point wind samples are available at GET /v1/wind (flat JSON). "
+        "Point wind samples are available at GET /v1/wind (flat JSON; "
+        "exactly one of time or times). "
         "Optional kinematic AGL flight profiles via profile_time + profile_height. "
         "DEM elevation: POST /v1/elevation/point and /v1/elevation/line (GeoJSON); "
         "TRAJECTORIES_DEM_BACKEND=glo30|joerd|mapterhorn (default glo30)."
@@ -194,8 +194,6 @@ def _resolve_times_csv(raw: str | None, timeformat: str) -> list[str | float]:
         out.append(resolved)
     if not out:
         raise ValueError("Parameter times must contain at least one start")
-    if len(out) > MAX_START_TIMES:
-        raise ValueError(f"times accepts at most {MAX_START_TIMES} starts")
     return out
 
 
@@ -244,7 +242,8 @@ def trajectory(
         None,
         description=(
             "CSV of start times (same timeformat as time). Launch-window batch; "
-            "max 49 starts. Mutually exclusive with time."
+            "at most 4× the model forecast horizon (ICON-D2 192, ICON-EU 480, "
+            "ICON Global 720). Mutually exclusive with time."
         ),
         examples=["2026-08-02T11:00:00Z,2026-08-02T11:15:00Z"],
     ),
@@ -255,8 +254,7 @@ def trajectory(
     forecast_hours: float = Query(
         12,
         ge=1,
-        le=72,
-        description="Trajectory duration in hours (1–72)",
+        description="Trajectory duration in hours (1 to the model forecast horizon)",
     ),
     height_agl: str | None = Query(
         None,
@@ -342,9 +340,17 @@ def trajectory(
         if has_times:
             t0_list = _resolve_times_csv(times, timeformat)
             t0_single: str | float | None = None
+            cap = config.max_times_points(models)
+            if len(t0_list) > cap:
+                raise ValueError(f"times accepts at most {cap} starts")
         else:
             t0_single = _resolve_time(time, timeformat)
             t0_list = None
+        horizon = config.forecast_horizon_h(models)
+        if forecast_hours > horizon:
+            raise ValueError(
+                f"forecast_hours must be <= {horizon} for {models}"
+            )
         profile = None
         if has_profile_t:
             profile_ts = _parse_csv_floats(profile_time, name="profile_time")
@@ -492,13 +498,25 @@ def wind(
         description="Comma-separated Open-Meteo model ids (icon_d2, icon_eu, icon_global)",
         examples=["icon_eu", "icon_eu,icon_d2", "icon_global"],
     ),
-    time: str = Query(
-        ...,
-        description="Sample time: ISO-8601 (default) or unix seconds when timeformat=unixtime",
+    time: str | None = Query(
+        None,
+        description=(
+            "Single sample time: ISO-8601 (default) or unix seconds when "
+            "timeformat=unixtime. Mutually exclusive with times."
+        ),
+    ),
+    times: str | None = Query(
+        None,
+        description=(
+            "CSV of sample times (same timeformat as time). Launch-window batch; "
+            "at most 4× the shortest requested model forecast horizon. "
+            "Mutually exclusive with time."
+        ),
+        examples=["2026-08-26T11:00:00Z,2026-08-26T11:15:00Z,2026-08-26T11:30:00Z"],
     ),
     timeformat: TIMEFORMAT = Query(
         "iso8601",
-        description="How to interpret `time` (Open-Meteo-style)",
+        description="How to interpret `time` / `times` (Open-Meteo-style)",
     ),
     height_agl: float | None = Query(
         None,
@@ -526,9 +544,23 @@ def wind(
     if height_agl is None and height_amsl is None:
         return _om_error(400, "Specify height_agl or height_amsl")
 
+    has_time = time is not None and str(time).strip() != ""
+    has_times = times is not None and str(times).strip() != ""
+    if has_time == has_times:
+        return _om_error(400, "Specify exactly one of time or times")
+
     try:
-        t0 = _resolve_time(time, timeformat)
+        if has_times:
+            t0_list = _resolve_times_csv(times, timeformat)
+            t0_single: str | float | None = None
+        else:
+            t0_single = _resolve_time(time, timeformat)
+            t0_list = None
         model_list = _parse_csv_models(models)
+        if t0_list is not None:
+            cap = config.max_times_points_for_models(model_list)
+            if len(t0_list) > cap:
+                raise ValueError(f"times accepts at most {cap} starts")
     except ValueError as exc:
         return _om_error(400, str(exc))
 
@@ -543,7 +575,8 @@ def wind(
         models=model_list,
         lat=latitude,
         lon=longitude,
-        time=t0,
+        time=t0_single,
+        times=t0_list,
         height_m=height_m,
         height_ref=height_ref,
         backend=backend,
@@ -554,15 +587,26 @@ def wind(
         return cached
 
     try:
-        result = compute_point_wind(
-            lat=latitude,
-            lon=longitude,
-            time=t0,
-            models=model_list,
-            height_m=height_m,
-            height_ref=height_ref,
-            backend=backend,
-        )
+        if t0_list is not None:
+            result = compute_point_wind(
+                lat=latitude,
+                lon=longitude,
+                times=t0_list,
+                models=model_list,
+                height_m=height_m,
+                height_ref=height_ref,
+                backend=backend,
+            )
+        else:
+            result = compute_point_wind(
+                lat=latitude,
+                lon=longitude,
+                time=t0_single,
+                models=model_list,
+                height_m=height_m,
+                height_ref=height_ref,
+                backend=backend,
+            )
     except ValueError as exc:
         return _om_error(400, str(exc))
     except RuntimeError as exc:

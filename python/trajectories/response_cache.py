@@ -122,17 +122,22 @@ def wind_cache_key(
     models: list[str] | tuple[str, ...],
     lat: float,
     lon: float,
-    time: str | float,
+    time: str | float | None = None,
+    times: list[str | float] | tuple[str | float, ...] | None = None,
     height_m: float,
     height_ref: str,
     backend: str | None,
 ) -> str:
+    if times is not None and len(times) > 0:
+        time_part = "times:" + ",".join(str(t) for t in times)
+    else:
+        time_part = str(time)
     return "|".join([
         "wind",
         ",".join(models),
         f"{round(lat, 3):.3f}",
         f"{round(lon, 3):.3f}",
-        str(time),
+        time_part,
         str(height_m),
         height_ref,
         backend or "",

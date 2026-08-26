@@ -36,6 +36,7 @@ MODELS = {
         "grid": 0.02,
         "gridMeters": 2200,
         "nLevels": 65,
+        "forecast_horizon_h": 48,
         "bbox": {
             "latMin": 43.18,
             "latMax": 58.08,
@@ -50,6 +51,7 @@ MODELS = {
         "grid": 0.0625,
         "gridMeters": 6500,
         "nLevels": 74,
+        "forecast_horizon_h": 120,
         "bbox": {
             "latMin": 29.5,
             "latMax": 70.5,
@@ -73,6 +75,7 @@ MODELS = {
         "gridMeters": 28000,
         "nLevels": 120,
         "nHalfLevels": 121,
+        "forecast_horizon_h": 180,
         "bbox": {
             "latMin": -90,
             "latMax": 90,
@@ -104,6 +107,25 @@ METHODS = [
     {"key": "theta", "label": "isentrop", "color": "#e87ba4", "dash": "12 4 3 4"},
     {"key": "z3d", "label": "Modell-w (3D)", "color": "#eda100", "dash": "2 6"},
 ]
+
+
+def forecast_horizon_h(model_key: str) -> int:
+    """DWD/Open-Meteo forecast length in hours for a model."""
+    if model_key not in MODELS:
+        raise ValueError(f"Unknown model: {model_key}")
+    return int(MODELS[model_key]["forecast_horizon_h"])
+
+
+def max_times_points(model_key: str) -> int:
+    """Max ``times=`` starts: 15-minute grid over the model horizon (4× hours)."""
+    return 4 * forecast_horizon_h(model_key)
+
+
+def max_times_points_for_models(model_keys: list[str] | tuple[str, ...]) -> int:
+    """Cap for a multi-model request: shortest horizon among models."""
+    if not model_keys:
+        raise ValueError("At least one model required")
+    return min(max_times_points(m) for m in model_keys)
 
 
 def set_api_base(url: str | None) -> str:

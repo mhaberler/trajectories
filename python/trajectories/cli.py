@@ -28,7 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="icon_eu",
         help="Forecast model (default: icon_eu)",
     )
-    p.add_argument("--duration", type=float, default=12, help="Duration hours (1–72)")
+    p.add_argument(
+        "--duration",
+        type=float,
+        default=12,
+        help="Duration hours (1 to the model forecast horizon)",
+    )
     p.add_argument(
         "--height",
         type=float,

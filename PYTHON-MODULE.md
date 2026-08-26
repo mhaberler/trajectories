@@ -26,6 +26,7 @@ python/
     basic_trajectory.py   # library smoke
     api_trajectory.py     # HTTP client (default https://trajectory.mah.priv.at)
     api_point_wind.py     # GET /v1/wind client
+    api_point_wind_times.py  # GET /v1/wind with times= (3 starts)
     api_flight_profile.py # GET /v1/trajectory with AGL profile
   trajectories/
     config.py             # models, methods, API/OM backend resolution
@@ -78,6 +79,7 @@ python python/examples/basic_trajectory.py
 # HTTP client example (default base: https://trajectory.mah.priv.at):
 python python/examples/api_trajectory.py
 python python/examples/api_point_wind.py
+python python/examples/api_point_wind_times.py
 # local: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
 
 trajectories \
@@ -128,8 +130,8 @@ Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection 
 | `latitude`, `longitude` | start point |
 | `models` | `icon_d2` \| `icon_eu` |
 | `time` + `timeformat` | single start: ISO-8601 (default) or `unixtime` |
-| `times` | CSV of starts (same `timeformat`); mutually exclusive with `time`; max 49; one shared wind init |
-| `forecast_hours` | duration 1–72 h |
+| `times` | CSV of starts (same `timeformat`); mutually exclusive with `time`; at most 4× model forecast horizon (D2 192 / EU 480 / global 720); one shared wind init |
+| `forecast_hours` | duration 1 h through the model forecast horizon (D2 48 / EU 120 / global 180) |
 | `height_agl` / `height_amsl` | comma-separated metres |
 | `vertical_motion` | comma-list of methods |
 | `direction`, `marker_interval`, `met_extras`, `backend` | as CLI |
@@ -166,12 +168,14 @@ Single-point wind sample (flat JSON, not GeoJSON). No trajectory integration.
 | Query | Role |
 |-------|------|
 | `latitude`, `longitude` | sample point |
-| `models` | CSV: `icon_d2`, `icon_eu` |
-| `time` + `timeformat` | ISO-8601 (default) or `unixtime` |
+| `models` | CSV: `icon_d2`, `icon_eu`, `icon_global` |
+| `time` XOR `times` + `timeformat` | ISO-8601 (default) or `unixtime`. `times` is a CSV of starts (at most 4× the shortest requested model horizon) |
 | `height_agl` XOR `height_amsl` | single height (metres) |
 | `backend`, `format=json` | optional |
 
-Response: top-level lat/lon/time/height plus `models[]` with `wind_u_ms`, `wind_v_ms`, `wind_w_ms` (null if unavailable), speeds, met “from” direction, `z_amsl_m`, `terrain_m`. Multi-model requests may return per-model `{error, reason}` entries (HTTP 200) when at least one model succeeds.
+Single-`time` response: top-level lat/lon/time/height plus `models[]` with `wind_u_ms`, `wind_v_ms`, `wind_w_ms` (null if unavailable), speeds, met “from” direction, `z_amsl_m`, `terrain_m`. Multi-model requests may return per-model `{error, reason}` entries (HTTP 200) when at least one model succeeds.
+
+`times=` batch response: same envelope without top-level `time`; `times[]` lists the ISO stamps and `samples[]` is `{time, models[]}` per start. One WindField init spans the range.
 
 ```bash
 curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
@@ -179,6 +183,13 @@ curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
   --data-urlencode 'longitude=15.82' \
   --data-urlencode 'models=icon_eu,icon_d2' \
   --data-urlencode 'time=2026-08-02T11:00:00Z' \
+  --data-urlencode 'height_agl=550'
+
+curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
+  --data-urlencode 'latitude=47.23' \
+  --data-urlencode 'longitude=15.82' \
+  --data-urlencode 'models=icon_eu,icon_d2' \
+  --data-urlencode 'times=2026-08-26T11:00:00Z,2026-08-26T11:15:00Z,2026-08-26T11:30:00Z' \
   --data-urlencode 'height_agl=550'
 ```
 

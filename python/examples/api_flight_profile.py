@@ -26,7 +26,7 @@ PARAMS = {
     "latitude": 48.4375,
     "longitude": 15.6181,
     "models": "icon_eu",
-    "time": "2026-08-02T11:00:00Z",
+    "time": "2026-08-26T11:00:00Z",
     "timeformat": "iso8601",
     "forecast_hours": 2,
     "profile_time": "0,1200,3600,5400,7200",

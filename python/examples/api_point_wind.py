@@ -33,10 +33,10 @@ PARAMS = {
     "latitude": 47.23,
     "longitude": 15.82,
     "models": "icon_eu,icon_d2",
-    "time": "2026-08-02T11:00:00Z",
+    "time": "2026-08-26511:00:00Z",
     "timeformat": "iso8601",
     "height_agl": 550,
-    "backend": "http",
+    "backend": "om",
     "format": "json",
 }
 

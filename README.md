@@ -69,12 +69,14 @@ Methode (plus Strichlierung als Zweitkodierung), alle Methoden teilen sich
 ein Windfeld, und der Querschnitt zeigt die z(t)-Kurven in einem Streifen
 über dem Gelände des Referenzpfads (erste gewählte Methode).
 
-Der **Live-Modus** rechnet genau eine Trajektorie, die dem Höhenschieber
-folgt: Schieber bewegen → Neuberechnung (entprellt, ~200 ms). Das Windfeld
-samt Punkt-Cache bleibt dabei erhalten, solange Modell, Vertikaloption,
-Startzeit, Dauer und Richtung gleich bleiben — nach der ersten Bewegung
-kommt praktisch alles aus dem Cache und der Schieber reagiert flüssig.
-Ein geöffneter Querschnitt läuft live mit.
+Der **Live-Modus** rechnet lokal im Browser genau eine Trajektorie, die dem
+Höhenschieber folgt: Schieber bewegen → Neuberechnung (entprellt, ~200 ms).
+Beim Einschalten wird ein aktives Launch-Fenster auf die gewählte Timebar-
+Startzeit eingefroren (Fenster und API aus). Das Windfeld samt Punkt-Cache
+bleibt erhalten, solange Modell, Vertikaloption, Startzeit, Dauer und
+Richtung gleich bleiben — nach der ersten Bewegung kommt praktisch alles
+aus dem Cache und der Schieber reagiert flüssig. Ein geöffneter
+Querschnitt läuft live mit.
 
 Unter „Einstellungen → Zusatzparameter" lassen sich T, Td und RH an den
 Zeitmarken mitführen (Klick auf eine Marke öffnet das Detail-Popup; die Werte

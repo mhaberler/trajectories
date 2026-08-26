@@ -2666,7 +2666,52 @@ function liveRun() {
 
 const liveRunDebounced = debounce(liveRun, 200);
 
+function applyLiveLaunchUi() {
+  const live = el("livemode").checked;
+  const title = live
+    ? "Live-Modus: Startzeit eingefroren; Launch-Fenster aus"
+    : "0 = einzelne Startzeit; >0 = Launch-Fenster [T0, T0+Fenster]";
+  el("launchwindow").disabled = live;
+  el("launchstep").disabled = live;
+  el("launchwindow").title = title;
+  el("launchstep").title = live ? title : "";
+}
+
+/** Collapse Launch Window to the timebar playhead so Live can run locally. */
+function freezeLaunchForLive() {
+  const t0 = timebarPlayMs();
+  const winH = Math.max(0, +el("launchwindow").value || 0);
+  const hadLaunch = winH > 0 || !!state.launchWindow;
+  const hadApi = el("useapi").checked;
+
+  if (state.launchWindow?.samples?.length >= 2) {
+    const runs = computeMorphRuns(t0);
+    if (runs?.length) {
+      const prev = state.lastRuns;
+      state.lastRuns = {
+        runs,
+        modelKey: prev?.modelKey || el("model").value,
+        mode: prev?.mode || el("refmode").value,
+        t0Ms: t0,
+        duration: prev?.duration ?? (+el("duration").value || 12),
+        direction: prev?.direction ?? (+el("direction").value || 1),
+      };
+      morphAtStartMs(t0);
+    }
+  }
+
+  if (hadLaunch) {
+    el("launchwindow").value = "0";
+    clearLaunchWindow();
+    timebar?.setBand(t0);
+  }
+  if (hadApi) el("useapi").checked = false;
+
+  setStatus(`Live lokal · Start eingefroren ${fmtTime(t0)} · API/Launch aus`);
+}
+
 function applyModeUI() {
+  applyLiveLaunchUi();
   const live = el("livemode").checked;
   el("heightslabel").innerHTML = live
     ? 'Starthöhen <span class="hint">(Live: aktive Höhe folgt dem Balken)</span>'
@@ -2675,12 +2720,12 @@ function applyModeUI() {
 }
 
 el("livemode").addEventListener("change", () => {
-  if (el("livemode").checked && el("useapi").checked) {
-    el("useapi").checked = false; // Live-Scrub nur mit Browser-Rechnung
-  }
-  if (el("livemode").checked && el("flightprofile").checked) {
-    el("flightprofile").checked = false;
-    applyProfileUI();
+  if (el("livemode").checked) {
+    if (el("flightprofile").checked) {
+      el("flightprofile").checked = false;
+      applyProfileUI();
+    }
+    freezeLaunchForLive();
   }
   applyModeUI();
   state.live = null;
@@ -2695,6 +2740,7 @@ el("flightprofile").addEventListener("change", () => {
   if (el("flightprofile").checked && el("livemode").checked) {
     el("livemode").checked = false;
     state.live = null;
+    applyModeUI();
   }
   if (!el("flightprofile").checked) state.profileEdit = null;
   applyProfileUI();
@@ -2901,8 +2947,18 @@ for (const id of ["markerint", "direction", "duration", "launchwindow", "launchs
 }
 el("launchwindow").addEventListener("input", () => {
   timebar?.onLaunchWindowInput();
-  if (Math.max(0, +el("launchwindow").value || 0) <= 0) {
+  const w = Math.max(0, +el("launchwindow").value || 0);
+  if (w <= 0) {
     clearLaunchWindow();
+    return;
+  }
+  if (el("livemode").checked) {
+    el("livemode").checked = false;
+    state.live = null;
+    el("useapi").checked = true;
+    applyModeUI();
+    setStatus("Launch-Fenster braucht „API abrufen“; Live-Modus aus.");
+    persist();
   }
 });
 el("launchstep").addEventListener("input", () => {
@@ -2963,6 +3019,7 @@ el("unitheight").addEventListener("change", onUnitsChange);
 el("unitwind").addEventListener("change", onUnitsChange);
 
 if (saved.liveMode) el("livemode").checked = true;
+if (el("livemode").checked) el("launchwindow").value = "0";
 if (Array.isArray(saved.methods) && saved.methods.length) {
   for (const c of el("methodlist").querySelectorAll("input")) {
     c.checked = saved.methods.includes(c.value);
@@ -2978,12 +3035,15 @@ applyModeUI();
 if (saved.metExtras) el("metextras").checked = true;
 el("useapi").checked = saved.useApi !== false;
 if (el("useapi").checked && el("livemode").checked) {
-  el("useapi").checked = false; // Live-Scrub nur mit Browser-Rechnung
+  el("useapi").checked = false;
 }
+applyLiveLaunchUi();
 el("useapi").addEventListener("change", () => {
   if (el("useapi").checked && el("livemode").checked) {
     el("livemode").checked = false;
     state.live = null;
+    applyModeUI();
+    setStatus("API abrufen: Live-Modus aus (Live rechnet lokal).");
   }
   if (!el("useapi").checked && el("flightprofile").checked) {
     el("flightprofile").checked = false;
@@ -3246,6 +3306,7 @@ function initTimebar() {
     el,
     launchWindowH: () => Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
     setLaunchWindowH: (h) => {
+      if (el("livemode").checked && h > 0) return;
       el("launchwindow").value = String(Math.min(12, Math.max(0, Math.round(h * 4) / 4)));
     },
     launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
@@ -3324,6 +3385,7 @@ async function loadMeta() {
       tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : undefined,
       playMs: Number.isFinite(saved.playMs) ? saved.playMs : undefined,
     });
+    if (el("livemode").checked) timebar.setBand(timebar.playMs());
     // Clear one-shot restore so model switches keep the current playhead
     saved.tStartMs = timebar.startMs();
     saved.playMs = timebar.playMs();

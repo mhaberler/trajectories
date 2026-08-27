@@ -108,6 +108,34 @@ const KML = `<?xml version="1.0" encoding="UTF-8"?>
   check("kml: eine Spur", drafts.length === 1, `n=${drafts.length}`);
   check("kml: Name", drafts[0]?.name === "KmlLine", drafts[0]?.name);
   check("kml: Höhe", drafts[0]?.coords[0].z === 900, String(drafts[0]?.coords[0].z));
+  check("kml: ohne FlightPack keine Zeit", drafts[0]?.coords.every((c) => c.t == null));
+}
+
+{
+  const FP = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <description>Track created by Ultramagic FlightPack - Starting at time 13_08_2026 06_29_23 -
+      Sampling period is 3 seconds - Flight duration is 58 min</description>
+    <Placemark>
+      <name>FpLine</name>
+      <LineString>
+        <coordinates>
+          15.63343,48.44636,319
+          15.63342,48.44637,320
+          15.63341,48.44638,321
+        </coordinates>
+      </LineString>
+    </Placemark>
+  </Document>
+</kml>`;
+  const { drafts, warnings } = await parseOverlayFile(FP, "fp.kml");
+  const ts = drafts[0]?.coords.map((c) => c.t);
+  const t0 = Date.parse("2026-08-13T04:29:23Z");
+  check("flightpack: eine Spur", drafts.length === 1, `n=${drafts.length}`);
+  check("flightpack: keine Warnung", warnings.length === 0, warnings.join("; "));
+  check("flightpack: t0 CEST→UTC", ts?.[0] === t0, String(ts?.[0]));
+  check("flightpack: 3s Raster", ts?.[1] - ts?.[0] === 3000 && ts?.[2] - ts?.[1] === 3000);
 }
 
 {

@@ -25,11 +25,12 @@
     "@tmcw/togeojson": "^7.1.2",
     "@xmldom/xmldom": "^0.9.11",
     "cesium": "^1.144.0",
-    "fflate": "^0.8.3",
     "chroma-js": "^3.2.0",
     "d3-scale-chromatic": "^3.1.0",
     "dicopal": "^0.8.1",
+    "fflate": "^0.8.3",
     "leaflet": "1.9.4",
-    "pmtiles": "^4.5.0"
+    "pmtiles": "^4.5.0",
+    "tz-lookup": "^6.1.25"
   }
 }

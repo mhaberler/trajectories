@@ -8,6 +8,161 @@
  * @typedef {{ name: string, sourceName: string, coords: OverlayCoord[] }} OverlayDraft
  */
 
+const FLIGHTPACK_START_RE =
+  /Starting at time\s+(\d{2})_(\d{2})_(\d{4})\s+(\d{2})_(\d{2})_(\d{2})/i;
+const FLIGHTPACK_PERIOD_RE = /Sampling period is\s+(\d+(?:\.\d+)?)\s+seconds/i;
+
+/**
+ * @param {Document} doc
+ * @returns {string}
+ */
+function kmlDescriptionText(doc) {
+  const documents = doc.getElementsByTagName("Document");
+  const n = documents.length;
+  for (let i = 0; i < n; i++) {
+    const node = documents[i];
+    const descs = node.getElementsByTagName("description");
+    for (let j = 0; j < descs.length; j++) {
+      const el = descs[j];
+      const parent = el.parentNode;
+      const raw = parent && (parent.localName || parent.nodeName || "");
+      const parentName = String(raw).replace(/^.*:/, "").toLowerCase();
+      if (parentName === "document") {
+        return String(el.textContent || "").trim();
+      }
+    }
+    if (descs.length) return String(descs[0].textContent || "").trim();
+  }
+  const all = doc.getElementsByTagName("description");
+  return all.length ? String(all[0].textContent || "").trim() : "";
+}
+
+/**
+ * @param {string} desc
+ * @returns {{ day: number, month: number, year: number, hour: number, minute: number, second: number, periodSec: number }|null}
+ */
+function parseFlightPackClock(desc) {
+  if (!/Ultramagic\s+FlightPack/i.test(desc)) return null;
+  const start = desc.match(FLIGHTPACK_START_RE);
+  const period = desc.match(FLIGHTPACK_PERIOD_RE);
+  if (!start || !period) return null;
+  const day = +start[1];
+  const month = +start[2];
+  const year = +start[3];
+  const hour = +start[4];
+  const minute = +start[5];
+  const second = +start[6];
+  const periodSec = +period[1];
+  if (!(day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1000)) return null;
+  if (!(hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 60)) {
+    return null;
+  }
+  if (!(periodSec > 0) || !Number.isFinite(periodSec)) return null;
+  return { day, month, year, hour, minute, second, periodSec };
+}
+
+/**
+ * Offset of `timeZone` from UTC at `utcMs` (local − UTC).
+ * @param {number} utcMs
+ * @param {string} timeZone
+ */
+function tzOffsetMs(utcMs, timeZone) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const map = Object.create(null);
+  for (const p of dtf.formatToParts(new Date(utcMs))) {
+    if (p.type !== "literal") map[p.type] = p.value;
+  }
+  const asUtc = Date.UTC(
+    +map.year,
+    +map.month - 1,
+    +map.day,
+    +map.hour,
+    +map.minute,
+    +map.second,
+  );
+  return asUtc - utcMs;
+}
+
+/**
+ * Wall clock in `timeZone` → epoch ms.
+ * @param {{ year: number, month: number, day: number, hour: number, minute: number, second: number }} wall
+ * @param {string} timeZone
+ */
+function wallTimeToUtcMs(wall, timeZone) {
+  const wallAsUtc = Date.UTC(
+    wall.year,
+    wall.month - 1,
+    wall.day,
+    wall.hour,
+    wall.minute,
+    wall.second,
+  );
+  let utc = wallAsUtc - tzOffsetMs(wallAsUtc, timeZone);
+  utc = wallAsUtc - tzOffsetMs(utc, timeZone);
+  return utc;
+}
+
+/**
+ * @param {{ drafts: OverlayDraft[], warnings: string[] }} result
+ * @param {Document} doc
+ */
+async function applyFlightPackTimes(result, doc) {
+  const clock = parseFlightPackClock(kmlDescriptionText(doc));
+  if (!clock) return;
+
+  let first = null;
+  for (const d of result.drafts) {
+    if (d.coords?.length) {
+      first = d.coords[0];
+      break;
+    }
+  }
+  if (!first) return;
+
+  let timeZone;
+  try {
+    const mod = await import("tz-lookup");
+    const tzlookup = mod.default || mod;
+    timeZone = tzlookup(first.lat, first.lon);
+  } catch (err) {
+    result.warnings.push(`FlightPack-Zeitzone unbekannt: ${err.message || err}`);
+    return;
+  }
+  if (!timeZone || typeof timeZone !== "string") {
+    result.warnings.push("FlightPack-Zeitzone unbekannt.");
+    return;
+  }
+
+  let startUtcMs;
+  try {
+    startUtcMs = wallTimeToUtcMs(clock, timeZone);
+  } catch (err) {
+    result.warnings.push(`FlightPack-Startzeit ungültig: ${err.message || err}`);
+    return;
+  }
+  if (!Number.isFinite(startUtcMs)) {
+    result.warnings.push("FlightPack-Startzeit ungültig.");
+    return;
+  }
+
+  const step = clock.periodSec * 1000;
+  for (const d of result.drafts) {
+    if (d.coords.some((c) => c.t != null)) continue;
+    for (let i = 0; i < d.coords.length; i++) {
+      d.coords[i].t = startUtcMs + i * step;
+    }
+  }
+}
+
 /**
  * @param {unknown} v ISO string, epoch ms, or epoch seconds
  * @returns {number|null}
@@ -221,7 +376,9 @@ export async function parseOverlayFile(text, filename) {
     }
     try {
       const gj = looksGpx ? gpx(doc) : kml(doc);
-      return overlaysFromGeoJSON(gj, sourceName);
+      const result = overlaysFromGeoJSON(gj, sourceName);
+      if (looksKml) await applyFlightPackTimes(result, doc);
+      return result;
     } catch (err) {
       return { drafts: [], warnings: [`${looksGpx ? "GPX" : "KML"}-Konvertierung: ${err.message}`] };
     }

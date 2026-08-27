@@ -57,6 +57,7 @@ const cmap = mountColormapSelect(el("colormap-host"), {
   onChange(name) {
     settings.colormap = name;
     persist();
+    syncUi();
     redraw();
   },
 });

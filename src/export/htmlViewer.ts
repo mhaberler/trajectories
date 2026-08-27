@@ -172,7 +172,8 @@ function floatingPanel(map: any, position: string, title: string, body: HTMLElem
       const wrap = L.DomUtil.create("div", "gv-panel-body", d) as HTMLElement;
       wrap.appendChild(body);
       L.DomEvent.disableClickPropagation(d);
-      L.DomEvent.disableScrollPropagation(d);
+      // Scroll only on the body — the list must remain wheel-scrollable.
+      L.DomEvent.disableScrollPropagation(wrap);
       head.addEventListener("dblclick", (e) => {
         e.preventDefault();
         d.classList.toggle("collapsed");

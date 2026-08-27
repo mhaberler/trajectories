@@ -226,7 +226,8 @@ body {
 
 .gv-panel-body {
   padding: 4px 8px 6px;
-  max-height: 260px;
+  /* 8 Höhen + Overlay + Höhenprofil müssen ohne Abschneiden wählbar bleiben. */
+  max-height: min(70vh, 480px);
   overflow: auto;
 }
 

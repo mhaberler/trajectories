@@ -953,7 +953,7 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 .map-tracks-panel.collapsed .gv-panel-head { border-bottom: none; }
 .map-tracks-panel .gv-panel-body {
   padding: 4px 8px 6px;
-  max-height: 280px;
+  max-height: min(70vh, 480px);
   overflow: auto;
 }
 .map-tracks-panel .gv-row {

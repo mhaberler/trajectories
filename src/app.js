@@ -4906,7 +4906,7 @@ function ensureMapTracklistPanel() {
       const wrap = L.DomUtil.create("div", "gv-panel-body", d);
       wrap.appendChild(mapTracklistBody);
       L.DomEvent.disableClickPropagation(d);
-      L.DomEvent.disableScrollPropagation(d);
+      L.DomEvent.disableScrollPropagation(wrap);
       head.addEventListener("dblclick", (e) => {
         e.preventDefault();
         d.classList.toggle("collapsed");

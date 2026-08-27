@@ -90,4 +90,10 @@ function viewerBundle() {
 export default defineConfig({
   base: "/",
   plugins: [leafletImages(), viewerBundle(), cesium()],
+  // Do not crawl playground HTML (track-import, colormap) — those apps have
+  // their own vite.config aliases (@overlays, @colormap) and a separate
+  // `npm run dev:track-import` on port 5174.
+  optimizeDeps: {
+    entries: ["index.html"],
+  },
 });

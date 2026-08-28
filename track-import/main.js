@@ -169,7 +169,7 @@ function syncUi() {
     r.checked = r.value === settings.mode;
   }
   el("max-speed").value = String(settings.maxSpeed);
-  el("max-alt").value = String(settings.maxAlt);
+  el("max-alt").value = (settings.maxAlt / 1000).toFixed(1);
   el("fixed-color").value = settings.fixedColor;
   const scaled = settings.mode !== "fixed";
   el("scale-block").hidden = !scaled;
@@ -371,8 +371,8 @@ el("max-speed").addEventListener("change", () => {
   redraw();
 });
 el("max-alt").addEventListener("change", () => {
-  const v = +el("max-alt").value;
-  if (Number.isFinite(v) && v > 0) settings.maxAlt = v;
+  const km = +el("max-alt").value;
+  if (Number.isFinite(km) && km > 0) settings.maxAlt = Math.round(km * 1000);
   persist();
   syncUi();
   redraw();

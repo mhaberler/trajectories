@@ -54,10 +54,12 @@ export function mountScalePill(host, opts = {}) {
   return {
     root,
     /**
-     * @param {{ unit: string, max: number, gradientCss: string, ticks?: number[] }} s
+     * @param {{ unit: string, max: number, gradientCss: string, ticks?: number[], vertical?: boolean }} s
      */
     set(s) {
       const max = s.max > 0 ? s.max : 1;
+      const vertical = !!s.vertical;
+      root.classList.toggle("vertical", vertical);
       root.style.background = s.gradientCss || "#888";
       unitEl.textContent = s.unit || "";
       const ticks = Array.isArray(s.ticks) && s.ticks.length
@@ -69,7 +71,13 @@ export function mountScalePill(host, opts = {}) {
         t.className = "scale-pill-tick";
         t.textContent = formatTick(v);
         const frac = Math.min(1, Math.max(0, v / max));
-        t.style.left = `${frac * 100}%`;
+        t.style.left = "";
+        t.style.top = "";
+        if (vertical) {
+          t.style.top = `${(1 - frac) * 100}%`;
+        } else {
+          t.style.left = `${frac * 100}%`;
+        }
         if (frac < 0.08) t.classList.add("start");
         else if (frac > 0.92) t.classList.add("end");
         ticksEl.appendChild(t);

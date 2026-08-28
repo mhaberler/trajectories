@@ -75,6 +75,10 @@ export function mountColormapSelect(host, opts) {
     swatch.style.background = gradients[name] || "#ccc";
     label.textContent = name;
     menu.hidden = !open;
+    if (open) {
+      const r = trigger.getBoundingClientRect();
+      menu.style.maxHeight = `${Math.max(160, window.innerHeight - r.bottom - 12)}px`;
+    }
     for (const btn of menu.querySelectorAll(".option")) {
       btn.classList.toggle("active", btn.dataset.name === name);
     }

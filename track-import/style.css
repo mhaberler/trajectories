@@ -16,8 +16,7 @@ html, body {
   left: 10px;
   z-index: 1000;
   width: 320px;
-  max-height: calc(100% - 20px);
-  overflow-y: auto;
+  overflow: visible;
   background: rgba(252, 252, 251, 0.96);
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
@@ -83,8 +82,6 @@ button.secondary {
   padding: 0 4px;
 }
 
-.legend { margin: 8px 0 4px; }
-
 .colormap-select {
   position: relative;
   width: 100%;
@@ -103,7 +100,7 @@ button.secondary {
 .colormap-select .menu {
   position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
   background: #fff; border: 1px solid #ccc; border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: calc(100vh - 24px); overflow-y: auto;
   z-index: 20; padding: 4px 0;
 }
 .colormap-select .group-label {
@@ -161,12 +158,52 @@ button.secondary {
 .scale-pill-tick.start { transform: translate(0, -50%); }
 .scale-pill-tick.end { transform: translate(-100%, -50%); }
 
+.scale-pill.vertical {
+  flex-direction: column;
+  width: 36px;
+  min-width: 36px;
+  height: min(280px, 45vh);
+}
+.scale-pill.vertical.compact {
+  width: 28px;
+  min-width: 28px;
+  height: 148px;
+  margin: 0 auto;
+}
+.scale-pill.vertical .scale-pill-unit {
+  padding: 8px 2px 4px;
+  text-align: center;
+}
+.scale-pill.vertical.compact .scale-pill-unit { padding: 6px 1px 2px; }
+.scale-pill.vertical .scale-pill-ticks {
+  width: 100%;
+  margin-right: 0;
+  margin-bottom: 10px;
+}
+.scale-pill.vertical.compact .scale-pill-ticks { margin-bottom: 8px; }
+.scale-pill.vertical .scale-pill-tick {
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+.scale-pill.vertical .scale-pill-tick.start { transform: translate(-50%, -100%); }
+.scale-pill.vertical .scale-pill-tick.end { transform: translate(-50%, 0); }
+
 .leaflet-control.scale-pill-ctl {
   margin: 0 12px 18px 0;
   background: none;
   border: none;
   box-shadow: none;
 }
+.leaflet-control.scale-pill-ctl.vertical {
+  margin: 0 12px 28px 0;
+}
+
+.orient-toggle {
+  display: flex;
+  gap: 10px;
+  font-weight: 400;
+}
+.orient-toggle .radio { margin: 0; }
 
 #scale-block[hidden], #fixed-row[hidden], #max-speed-row[hidden], #max-alt-row[hidden] {
   display: none !important;

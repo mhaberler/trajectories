@@ -41,7 +41,13 @@
         <span>Max. Höhe <span class="hint">(m)</span></span>
         <input type="number" id="max-alt" min="1" step="10" />
       </label>
-      <div class="legend" id="legend-host"></div>
+      <label class="row" id="legend-orient-row">
+        <span>Legende</span>
+        <span class="orient-toggle">
+          <label class="radio"><input type="radio" name="legend-orient" value="horizontal" /> quer</label>
+          <label class="radio"><input type="radio" name="legend-orient" value="vertical" /> hoch</label>
+        </span>
+      </label>
     </div>
 
     <label class="row" id="fixed-row">

@@ -9,6 +9,7 @@ const DEFAULTS = {
   maxSpeed: 80,
   maxAlt: 4000,
   fixedColor: "#c45c26",
+  legendOrient: "horizontal",
 };
 
 const FALLBACK = "#888888";
@@ -73,7 +74,6 @@ const ScalePillControl = L.Control.extend({
   },
 });
 const mapPillCtl = new ScalePillControl({ position: "bottomright" }).addTo(map);
-const panelPill = mountScalePill(el("legend-host"), { compact: true });
 const mapPill = mountScalePill(mapPillCtl._host, { compact: false });
 
 function loadSettings() {
@@ -87,6 +87,7 @@ function loadSettings() {
       maxSpeed: Number.isFinite(+s.maxSpeed) && +s.maxSpeed > 0 ? +s.maxSpeed : DEFAULTS.maxSpeed,
       maxAlt: Number.isFinite(+s.maxAlt) && +s.maxAlt > 0 ? +s.maxAlt : DEFAULTS.maxAlt,
       fixedColor: typeof s.fixedColor === "string" ? s.fixedColor : DEFAULTS.fixedColor,
+      legendOrient: s.legendOrient === "vertical" ? "vertical" : DEFAULTS.legendOrient,
     };
   } catch {
     return { ...DEFAULTS };
@@ -172,14 +173,21 @@ function syncUi() {
   el("fixed-row").hidden = scaled;
   el("max-speed-row").hidden = settings.mode !== "speed";
   el("max-alt-row").hidden = settings.mode !== "altitude";
+  for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
+    r.checked = r.value === settings.legendOrient;
+  }
   cmap.setName(settings.colormap);
   cmap.setDomain(currentDomain());
-  const gradientCss = `linear-gradient(to right, ${colorStops(settings.colormap, 16).join(",")})`;
-  const payload = { ...scaleDisplay(), gradientCss };
-  panelPill.set(payload);
+  const vertical = settings.legendOrient === "vertical";
+  const dir = vertical ? "to top" : "to right";
+  const gradientCss = `linear-gradient(${dir}, ${colorStops(settings.colormap, 16).join(",")})`;
+  const payload = { ...scaleDisplay(), gradientCss, vertical };
   mapPill.set(payload);
   const mapBox = mapPillCtl.getContainer();
-  if (mapBox) mapBox.style.display = scaled ? "" : "none";
+  if (mapBox) {
+    mapBox.style.display = scaled ? "" : "none";
+    mapBox.classList.toggle("vertical", vertical);
+  }
 }
 
 function renderList() {
@@ -329,6 +337,15 @@ for (const r of document.querySelectorAll('input[name="color-mode"]')) {
     persist();
     syncUi();
     redraw();
+  });
+}
+
+for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
+  r.addEventListener("change", () => {
+    if (!r.checked) return;
+    settings.legendOrient = r.value === "vertical" ? "vertical" : "horizontal";
+    persist();
+    syncUi();
   });
 }
 

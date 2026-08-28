@@ -1,5 +1,6 @@
 import { parseOverlayBytes } from "@overlays";
 import { mountColormapSelect, colorStops } from "./colormapSelect.js";
+import { mountScalePill, niceTicks } from "./scalePill.js";
 
 const STORAGE_KEY = "track-import:v1";
 const DEFAULTS = {
@@ -62,6 +63,19 @@ const cmap = mountColormapSelect(el("colormap-host"), {
   },
 });
 
+const ScalePillControl = L.Control.extend({
+  onAdd() {
+    const div = L.DomUtil.create("div", "leaflet-control scale-pill-ctl");
+    this._host = div;
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    return div;
+  },
+});
+const mapPillCtl = new ScalePillControl({ position: "bottomright" }).addTo(map);
+const panelPill = mountScalePill(el("legend-host"), { compact: true });
+const mapPill = mountScalePill(mapPillCtl._host, { compact: false });
+
 function loadSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -96,8 +110,14 @@ function currentMax() {
   return settings.mode === "altitude" ? settings.maxAlt : settings.maxSpeed;
 }
 
-function currentMaxUnit() {
-  return settings.mode === "altitude" ? "m" : "km/h";
+/** Pill domain: km for altitude, km/h for speed. Coloring still uses metres. */
+function scaleDisplay() {
+  const max = currentMax();
+  if (settings.mode === "altitude") {
+    const maxKm = max / 1000;
+    return { unit: "km", max: maxKm, ticks: niceTicks(0, maxKm, 4) };
+  }
+  return { unit: "km/h", max, ticks: niceTicks(0, max, 4) };
 }
 
 function setStatus(msg, isError = false) {
@@ -154,9 +174,12 @@ function syncUi() {
   el("max-alt-row").hidden = settings.mode !== "altitude";
   cmap.setName(settings.colormap);
   cmap.setDomain(currentDomain());
-  const stops = colorStops(settings.colormap, 16);
-  el("legend-bar").style.background = `linear-gradient(to right, ${stops.join(",")})`;
-  el("legend-max").textContent = `${currentMax()} ${currentMaxUnit()}`;
+  const gradientCss = `linear-gradient(to right, ${colorStops(settings.colormap, 16).join(",")})`;
+  const payload = { ...scaleDisplay(), gradientCss };
+  panelPill.set(payload);
+  mapPill.set(payload);
+  const mapBox = mapPillCtl.getContainer();
+  if (mapBox) mapBox.style.display = scaled ? "" : "none";
 }
 
 function renderList() {

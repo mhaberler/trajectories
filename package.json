@@ -7,13 +7,15 @@
   "scripts": {
     "dev": "vite",
     "dev:track-import": "vite --config track-import/vite.config.js",
+    "build:track-import": "vite --config track-import/vite.config.js build",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "bun test/integrator.test.mjs && bun test/profileExpand.test.mjs && bun test/exportHtml.test.mjs && bun test/exportRaw.test.mjs && bun test/overlaysParse.test.mjs && bun test/htmlUrl.test.mjs && bun test/filename.test.mjs && bun test/geocodeLocality.test.mjs && bun test/shareGithub.test.mjs",
     "test:live": "bun test/live-smoke.mjs",
     "deploy": "bash scripts/deploy-hetzner.sh",
-    "deploy:vps": "bash scripts/deploy-vps.sh"
+    "deploy:vps": "bash scripts/deploy-vps.sh",
+    "deploy:vps:coloring": "bash scripts/deploy-vps-coloring.sh"
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.22",

@@ -12,7 +12,8 @@ bun install
 bun run dev        # Entwicklungsserver (Vite)
 bun test           # Integrator-Tests (synthetische Windfelder, offline)
 bun run test:live  # Live-Test gegen den Server
-bun run deploy:vps # Build → https://vps.mah.priv.at/trajectories/ (Caddy Basic Auth)
+bun run deploy:vps          # Build → https://vps.mah.priv.at/trajectories/ (Caddy Basic Auth)
+bun run deploy:vps:coloring # Track-import → https://vps.mah.priv.at/trajectories/coloring/
 ```
 
 Die 2D-App ist ESM und kann ohne Build aus dem Projektwurzelverzeichnis

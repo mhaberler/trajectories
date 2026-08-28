@@ -27,10 +27,10 @@ fi
 
 echo "==> Synchronisiere dist/ → ${DEST}/ ..."
 if mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
-  rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/dist/" "$DEST/"
+  rsync -a --delete --exclude=.DS_Store --exclude=coloring --exclude=coloring/ "$PROJECT_DIR/dist/" "$DEST/"
 else
   sudo mkdir -p "$DEST"
-  sudo rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/dist/" "$DEST/"
+  sudo rsync -a --delete --exclude=.DS_Store --exclude=coloring --exclude=coloring/ "$PROJECT_DIR/dist/" "$DEST/"
 fi
 
 echo "==> Fertig: https://vps.mah.priv.at/trajectories/"

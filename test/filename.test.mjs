@@ -57,6 +57,18 @@ function check(name, cond, detail) {
 }
 
 {
+  const ctx = {
+    t0Ms: Date.UTC(2026, 7, 20, 9, 0),
+    place: "x",
+    durationH: 120,
+    direction: 1,
+    modelLabel: "ICON-EU",
+  };
+  const base = buildExportBasename("{duration}", ctx);
+  check("duration 120h not capped at 72", base === "120h-fwd", base);
+}
+
+{
   check("bump 1", bumpedFilename("a", "html", 1) === "a.html");
   check("bump 2", bumpedFilename("a", "html", 2) === "a-2.html");
 }

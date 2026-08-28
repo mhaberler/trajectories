@@ -18,6 +18,7 @@ const DBLCLICK_MS = 450;
  * @param {() => number} opts.launchStepMin
  * @param {() => number} [opts.durationH]
  * @param {(h: number) => void} [opts.setDurationH]
+ * @param {() => number} [opts.maxDurationH]
  * @param {() => number} [opts.direction]
  * @param {(ms: number) => string} opts.fmtTime
  * @param {() => void} [opts.onPlay]
@@ -29,6 +30,7 @@ export function createTimebar(opts) {
     el, launchWindowH, setLaunchWindowH, launchStepMin,
     durationH = () => 12,
     setDurationH = () => {},
+    maxDurationH = () => 72,
     direction = () => 1,
     fmtTime, onPlay, onBandCommit, onChange,
   } = opts;
@@ -78,6 +80,11 @@ export function createTimebar(opts) {
 
   function snapDurH(h) {
     return Math.max(0.25, Math.round(h * 4) / 4);
+  }
+
+  function clampDurH(h) {
+    const cap = Math.max(0.25, +maxDurationH() || 72);
+    return snapDurH(Math.min(cap, Math.max(0.25, h)));
   }
 
   function windowMs() {
@@ -214,7 +221,7 @@ export function createTimebar(opts) {
   function renderShades() {
     placeShade(metaShade(), m.meta0, m.meta1);
 
-    const durH = Math.min(72, Math.max(0.25, +durationH() || 12));
+    const durH = clampDurH(+durationH() || 12);
     const dir = +direction() === -1 ? -1 : 1;
     const durMs = durH * HOUR_MS;
     const reach0 = dir > 0 ? m.playMs : m.playMs - durMs;
@@ -249,7 +256,7 @@ export function createTimebar(opts) {
 
   function renderTips() {
     const showWin = launchWindowH() > 0 && windowMs() >= minBandMs() * 0.5;
-    const durH = Math.min(72, Math.max(0.25, +durationH() || 12));
+    const durH = clampDurH(+durationH() || 12);
     const dir = +direction() === -1 ? -1 : 1;
     const durEnd = m.playMs + dir * durH * HOUR_MS;
 
@@ -483,7 +490,7 @@ export function createTimebar(opts) {
       tStart0: m.tStart,
       tEnd0: m.tEnd,
       play0: m.playMs,
-      dur0: Math.min(72, Math.max(0.25, +durationH() || 12)),
+      dur0: clampDurH(+durationH() || 12),
       v0: m.v0,
       v1: m.v1,
       moved: false,
@@ -587,7 +594,7 @@ export function createTimebar(opts) {
       const tip0 = drag.play0 + dir * drag.dur0 * HOUR_MS;
       const tip = tip0 + dMs;
       let h = dir > 0 ? (tip - m.playMs) / HOUR_MS : (m.playMs - tip) / HOUR_MS;
-      h = snapDurH(Math.min(72, Math.max(0.25, h)));
+      h = clampDurH(h);
       writeDurationField(h);
       render();
       emitChange();

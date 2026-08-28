@@ -27,6 +27,13 @@ export function modelForecastUrl(model) {
   return `${modelApiBase(model)}${modelApiPath(model)}`;
 }
 
+/** Max trajectory duration (h); matches Python `forecast_horizon_h`. */
+export function modelForecastHorizonH(modelOrKey) {
+  const model = typeof modelOrKey === "string" ? MODELS[modelOrKey] : modelOrKey;
+  const h = Number(model?.forecastHorizonH);
+  return Number.isFinite(h) && h > 0 ? h : 72;
+}
+
 // Levelzählung der API: N=1 oberstes, N=nLevels unterstes Modelllevel (~10 m AGL).
 export const MODELS = {
   icon_d2: {
@@ -36,6 +43,7 @@ export const MODELS = {
     grid: 0.02,
     gridMeters: 2200,
     nLevels: 65,
+    forecastHorizonH: 48,
     bbox: { latMin: 43.18, latMax: 58.08, lonMin: -3.94, lonMax: 20.34 },
   },
   icon_eu: {
@@ -45,6 +53,7 @@ export const MODELS = {
     grid: 0.0625,
     gridMeters: 6500,
     nLevels: 74,
+    forecastHorizonH: 120,
     bbox: { latMin: 29.5, latMax: 70.5, lonMin: -23.5, lonMax: 62.5 },
   },
   // HTTP on open-meteo-temp — see open-meteo/examples/wind_w_profile.py
@@ -59,6 +68,7 @@ export const MODELS = {
     gridMeters: 28000,
     nLevels: 120,
     nHalfLevels: 121,
+    forecastHorizonH: 180,
     bbox: { latMin: -90, latMax: 90, lonMin: -180, lonMax: 179.75 },
   },
 };

@@ -1,5 +1,6 @@
 import {
-  TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, SERIES_COLORS, DEFAULT_HEIGHTS,
+  TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, modelForecastHorizonH,
+  SERIES_COLORS, DEFAULT_HEIGHTS,
   HEIGHT_MIN, HEIGHT_MAX, MARKER_INTERVALS, METHODS,
   OM_PUBLIC_FORECAST, OM_PRESSURE_LEVELS_HPA,
 } from "./config.js";
@@ -35,6 +36,23 @@ console.log(
 
 const el = (id) => document.getElementById(id);
 
+function durationCapH() {
+  return modelForecastHorizonH(el("model")?.value);
+}
+
+function durationHours() {
+  return Math.min(durationCapH(), Math.max(0.25, +el("duration").value || 12));
+}
+
+function syncDurationMax() {
+  const inp = el("duration");
+  if (!inp) return;
+  const cap = durationCapH();
+  inp.max = String(cap);
+  const snapped = Math.round(durationHours() * 4) / 4;
+  if (+inp.value !== snapped) inp.value = String(snapped);
+}
+
 /** @type {ReturnType<typeof createTimebar> | null} */
 let timebar = null;
 /** @type {ReturnType<typeof setTimeout> | null} */
@@ -67,7 +85,7 @@ function persist() {
     model: el("model").value,
     refmode: el("refmode").value,
     markerIntervalSec: +el("markerint").value || 600,
-    duration: +el("duration").value || 12,
+    duration: durationHours(),
     launchWindowH: liveUiStash
       ? liveUiStash.launchWindowH
       : Math.min(12, Math.max(0, +el("launchwindow").value || 0)),
@@ -407,7 +425,7 @@ const FP_PRESETS = {
 };
 
 function profileDurationHours() {
-  return Math.min(72, Math.max(0.25, +el("duration").value || 12));
+  return durationHours();
 }
 
 function profileDurationSec() {
@@ -2230,7 +2248,7 @@ async function runProfileRedraw() {
     return;
   }
   const direction = +el("direction").value;
-  const duration = Math.min(72, Math.max(0.25, +el("duration").value || 12));
+  const duration = durationHours();
   const t0Ms = state.profileEdit?.t0Ms ?? timebarStartMs();
   const markerIntervalSec = +el("markerint").value;
   const gen = ++state.profileRedrawGen;
@@ -2993,6 +3011,7 @@ if (MODELS[saved.model]) el("model").value = saved.model;
 if (["agl", "amsl"].includes(saved.refmode)) el("refmode").value = saved.refmode;
 if (["1", "-1"].includes(saved.direction)) el("direction").value = saved.direction;
 if (Number.isFinite(saved.duration)) el("duration").value = saved.duration;
+syncDurationMax();
 if (Number.isFinite(saved.launchWindowH) || Number.isFinite(saved.takeoffWindowH)) {
   const raw = Number.isFinite(saved.launchWindowH)
     ? saved.launchWindowH
@@ -3005,6 +3024,7 @@ if (Number.isFinite(saved.launchStepMin) || Number.isFinite(saved.ensembleStepMi
     : saved.ensembleStepMin;
 }
 updateDirectionLabels();
+el("duration").addEventListener("change", syncDurationMax);
 for (const id of ["markerint", "direction", "duration", "launchwindow", "launchstep"]) {
   el(id).addEventListener("change", persist);
 }
@@ -3387,9 +3407,10 @@ function initTimebar() {
       el("launchwindow").value = String(Math.min(12, Math.max(0, Math.round(h * 4) / 4)));
     },
     launchStepMin: () => Math.max(5, +el("launchstep").value || 15),
-    durationH: () => Math.min(72, Math.max(0.25, +el("duration").value || 12)),
+    durationH: () => durationHours(),
+    maxDurationH: () => durationCapH(),
     setDurationH: (h) => {
-      el("duration").value = String(Math.min(72, Math.max(0.25, Math.round(h * 4) / 4)));
+      el("duration").value = String(Math.min(durationCapH(), Math.max(0.25, Math.round(h * 4) / 4)));
     },
     direction: () => (+el("direction").value === -1 ? -1 : 1),
     fmtTime,
@@ -3501,7 +3522,7 @@ function updateReachHint() {
   const box = el("reachhint");
   if (!state.meta) { box.textContent = ""; box.classList.remove("error"); return; }
   const dir = +el("direction").value;
-  const dur = Math.min(72, Math.max(0.25, +el("duration").value || 12));
+  const dur = durationHours();
   const t0Ms = timebarStartMs();
   const back = dir === -1;
   const edgeMs = (back ? state.meta.t0 : state.meta.t1) * 1000;
@@ -3523,10 +3544,13 @@ el("direction").addEventListener("change", () => {
   timebar?.render();
 });
 el("model").addEventListener("change", () => {
+  syncDurationMax();
   persist();
   loadMeta();
   updateWDetection();
   fetchStartElevation(); // Modellorographie + Level-Carets je Modell
+  timebar?.render();
+  updateReachHint();
 });
 // Beim Wechsel des Höhenbezugs die vorhandenen Höhen physisch beibehalten:
 // AGL→AMSL addiert die Geländehöhe, AMSL→AGL zieht sie ab (gerundet auf die
@@ -4109,7 +4133,7 @@ async function runTrajectories() {
     return setStatus("Bitte mindestens eine Methode wählen.", true);
   }
   const direction = +el("direction").value;
-  const duration = Math.min(72, Math.max(0.25, +el("duration").value || 12));
+  const duration = durationHours();
   const t0Ms = timebarStartMs();
 
   if (!profileOn && !activeHeights.length) {

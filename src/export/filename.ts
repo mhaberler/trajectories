@@ -13,7 +13,7 @@ export interface FilenameCtx {
   place?: string | null;
   lat?: number;
   lon?: number;
-  /** Stunden (1–72). */
+  /** Stunden (ganzzahlig im Dateinamen, ≥1). */
   durationH: number;
   /** +1 vorwärts, −1 rückwärts. */
   direction: number;
@@ -57,7 +57,7 @@ function placeToken(ctx: FilenameCtx): string {
 }
 
 function durationToken(ctx: FilenameCtx): string {
-  const h = Math.min(72, Math.max(1, Math.round(Number(ctx.durationH) || 12)));
+  const h = Math.min(999, Math.max(1, Math.round(Number(ctx.durationH) || 12)));
   const dir = Number(ctx.direction) < 0 ? "back" : "fwd";
   return `${h}h-${dir}`;
 }

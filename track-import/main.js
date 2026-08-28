@@ -6,6 +6,7 @@ const STORAGE_KEY = "track-import:v1";
 const DEFAULTS = {
   mode: "speed",
   colormap: "viridis",
+  cmapReverse: false,
   maxSpeed: 80,
   maxAlt: 4000,
   fixedColor: "#c45c26",
@@ -55,6 +56,7 @@ const el = (id) => document.getElementById(id);
 
 const cmap = mountColormapSelect(el("colormap-host"), {
   name: settings.colormap,
+  reverse: settings.cmapReverse,
   domain: currentDomain(),
   onChange(name) {
     settings.colormap = name;
@@ -84,6 +86,7 @@ function loadSettings() {
     return {
       mode: ["speed", "altitude", "fixed"].includes(s.mode) ? s.mode : DEFAULTS.mode,
       colormap: typeof s.colormap === "string" ? s.colormap : DEFAULTS.colormap,
+      cmapReverse: s.cmapReverse === true,
       maxSpeed: Number.isFinite(+s.maxSpeed) && +s.maxSpeed > 0 ? +s.maxSpeed : DEFAULTS.maxSpeed,
       maxAlt: Number.isFinite(+s.maxAlt) && +s.maxAlt > 0 ? +s.maxAlt : DEFAULTS.maxAlt,
       fixedColor: typeof s.fixedColor === "string" ? s.fixedColor : DEFAULTS.fixedColor,
@@ -176,11 +179,15 @@ function syncUi() {
   for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
     r.checked = r.value === settings.legendOrient;
   }
+  el("cmap-reverse").checked = settings.cmapReverse;
   cmap.setName(settings.colormap);
+  cmap.setReverse(settings.cmapReverse);
   cmap.setDomain(currentDomain());
   const vertical = settings.legendOrient === "vertical";
   const dir = vertical ? "to top" : "to right";
-  const gradientCss = `linear-gradient(${dir}, ${colorStops(settings.colormap, 16).join(",")})`;
+  const stops = colorStops(settings.colormap, 16);
+  if (settings.cmapReverse) stops.reverse();
+  const gradientCss = `linear-gradient(${dir}, ${stops.join(",")})`;
   const payload = { ...scaleDisplay(), gradientCss, vertical };
   mapPill.set(payload);
   const mapBox = mapPillCtl.getContainer();
@@ -348,6 +355,13 @@ for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
     syncUi();
   });
 }
+
+el("cmap-reverse").addEventListener("change", () => {
+  settings.cmapReverse = el("cmap-reverse").checked;
+  persist();
+  syncUi();
+  redraw();
+});
 
 el("max-speed").addEventListener("change", () => {
   const v = +el("max-speed").value;

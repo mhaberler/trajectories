@@ -1,3 +1,4 @@
+import chroma from "chroma-js";
 import { GROUPS, colorStops, buildScale } from "@colormap";
 
 /**
@@ -16,7 +17,13 @@ export function mountColormapSelect(host, opts) {
 
   let name = opts.name || "viridis";
   let domain = opts.domain || [0, 1];
+  let reverse = !!opts.reverse;
   let open = false;
+
+  function stops(n) {
+    const s = colorStops(name, n);
+    return reverse ? s.slice().reverse() : s;
+  }
 
   const root = document.createElement("div");
   root.className = "colormap-select";
@@ -72,7 +79,7 @@ export function mountColormapSelect(host, opts) {
   host.replaceChildren(root);
 
   function sync() {
-    swatch.style.background = gradients[name] || "#ccc";
+    swatch.style.background = `linear-gradient(to right, ${stops(16).join(",")})`;
     label.textContent = name;
     menu.hidden = !open;
     if (open) {
@@ -108,11 +115,15 @@ export function mountColormapSelect(host, opts) {
     setDomain(d) {
       domain = d;
     },
+    setReverse(r) {
+      reverse = !!r;
+      sync();
+    },
     scale() {
-      return buildScale(name, domain);
+      return chroma.scale(stops(256)).mode("lab").domain(domain);
     },
     gradientCss() {
-      return gradients[name] || "";
+      return `linear-gradient(to right, ${stops(16).join(",")})`;
     },
     destroy() {
       document.removeEventListener("click", onDocClick);

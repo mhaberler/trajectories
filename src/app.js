@@ -18,6 +18,8 @@ import { createTimebar } from "./timebar.js";
 import {
   computeMorphRuns as computeMorphRunsAt,
 } from "./launchMorph.js";
+import { createCanvasTrack } from "./overlays/canvasTrack.js";
+import { mountTrackInspect } from "./overlays/inspectControl.js";
 
 // Konsolen-Monitor: ?debug=1 an der URL oder localStorage.trajDebug = "1".
 const DEBUG = new URLSearchParams(location.search).has("debug") ||
@@ -396,6 +398,11 @@ const state = {
   /** Ortsname von Geocode-Auswahl (kurz); null = Kartenklick / unbekannt. */
   startPlace: null,
 };
+
+const overlayInspect = mountTrackInspect(map, {
+  bindClick: false,
+  getTracks: () => state.overlays.filter((o) => o.visible !== false),
+});
 
 // --- Höhen-Auswahl: Höhenbalken mit anklickbaren Punkten --------------------
 // Map Höhe(m) -> Farbe. Eine Höhe behält ihre Farbe, solange sie am Balken
@@ -3195,7 +3202,10 @@ updateHeightContext();
 settingsReady = true;
 
 // --- Startpunkt per Klick / Marker ziehen -----------------------------------
-map.on("click", (e) => setStart(e.latlng.lat, e.latlng.lng));
+map.on("click", (e) => {
+  if (overlayInspect.handleClick(e)) return;
+  setStart(e.latlng.lat, e.latlng.lng);
+});
 
 function setStart(lat, lon, opts = {}) {
   state.start = { lat, lon };
@@ -5083,23 +5093,18 @@ function redrawOverlayMap() {
     const latlngs = o.coords.map((c) => [c.lat, c.lon]);
     const bounds = L.latLngBounds(latlngs);
     const group = L.layerGroup();
-    const line = L.polyline(latlngs, {
+    const line = createCanvasTrack(o.coords, {
       color: o.color,
       weight: 3.5,
       opacity: 0.9,
       dashArray: "6 4",
-    }).bindTooltip(o.name, { sticky: true });
-    if (o.note) {
-      const esc = (s) => String(s).replace(/[<>&]/g, (ch) =>
-        ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
-      line.bindPopup(`<strong>${esc(o.name)}</strong>` +
-        `<div style="margin-top:4px;white-space:pre-wrap">${esc(o.note)}</div>`);
-    }
+    });
     line.addTo(group);
     o._mapLayer = group;
     o._bounds = bounds;
     if (o.visible !== false) group.addTo(state.overlayLayers);
   }
+  overlayInspect.refresh();
   refreshMapTracklist();
 }
 

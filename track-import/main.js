@@ -1,4 +1,6 @@
 import { parseOverlayBytes } from "@overlays";
+import { createCanvasTrack, segmentValue } from "../src/overlays/canvasTrack.js";
+import { mountTrackInspect } from "../src/overlays/inspectControl.js";
 import { mountColormapSelect, colorStops } from "./colormapSelect.js";
 import { mountScalePill, niceTicks } from "./scalePill.js";
 
@@ -51,6 +53,9 @@ baseLayers["OpenStreetMap"].addTo(map);
 L.control.layers(baseLayers, null, { position: "topleft" }).addTo(map);
 
 const trackLayer = L.layerGroup().addTo(map);
+const inspect = mountTrackInspect(map, {
+  getTracks: () => tracks.filter((t) => t.visible !== false),
+});
 
 const el = (id) => document.getElementById(id);
 
@@ -130,23 +135,6 @@ function setStatus(msg, isError = false) {
   s.classList.toggle("error", !!isError);
 }
 
-function haversineM(a, b) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lon - a.lon);
-  const x = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
-}
-
-function speedKmh(a, b) {
-  if (a.t == null || b.t == null) return null;
-  const dt = (b.t - a.t) / 1000;
-  if (!(dt > 0)) return null;
-  return (haversineM(a, b) / dt) * 3.6;
-}
-
 function segmentAlt(a, b) {
   const z = b.z ?? a.z;
   return z != null && Number.isFinite(z) ? z : null;
@@ -224,6 +212,7 @@ function renderList() {
       if (i >= 0) tracks.splice(i, 1);
       renderList();
       redraw();
+      inspect.refresh();
     });
     row.append(vis, name, rm);
     host.appendChild(row);
@@ -242,34 +231,30 @@ function redraw() {
   for (const t of tracks) {
     if (!t.visible || t.coords.length < 2) continue;
     if (settings.mode === "fixed") {
-      L.polyline(t.coords.map((c) => [c.lat, c.lon]), {
+      createCanvasTrack(t.coords, {
         color: settings.fixedColor,
         weight: 3.5,
         opacity: 0.9,
-      }).bindTooltip(t.name, { sticky: true }).addTo(trackLayer);
+      }).addTo(trackLayer);
       continue;
     }
 
-    for (let i = 1; i < t.coords.length; i++) {
-      const a = t.coords[i - 1];
-      const b = t.coords[i];
+    const colorForSegment = (i, a, b) => {
       segs++;
       let v = null;
       if (settings.mode === "speed") {
-        v = speedKmh(a, b);
+        v = segmentValue("speed", a, b);
         if (v == null) missingSpeed++;
       } else {
         v = segmentAlt(a, b);
         if (v == null) missingAlt++;
       }
-      const color = v == null ? FALLBACK : colorForValue(scale, v, max);
-      L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
-        color,
-        weight: 3.5,
-        opacity: 0.9,
-      }).addTo(trackLayer);
-    }
+      return v == null ? FALLBACK : colorForValue(scale, v, max);
+    };
+    createCanvasTrack(t.coords, { colorForSegment, weight: 3.5, opacity: 0.9 }).addTo(trackLayer);
   }
+
+  inspect.refresh();
 
   if (settings.mode === "speed" && missingSpeed && segs) {
     setStatus(`${missingSpeed} Segment(e) ohne Zeitstempel — grau.`);

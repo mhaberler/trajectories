@@ -1,6 +1,7 @@
 /**
- * Import GPX / KML / KMZ / GeoJSON flight tracks → overlay drafts (line geometry only).
- * Uses @tmcw/togeojson for XML formats; GeoJSON via JSON.parse; KMZ via fflate unzip.
+ * Import GPX / KML / KMZ / GeoJSON / IGC flight tracks → overlay drafts (line geometry only).
+ * Uses @tmcw/togeojson for XML formats; GeoJSON via JSON.parse; KMZ via fflate unzip;
+ * IGC via igc-parser (Turbo87).
  */
 
 /**
@@ -335,6 +336,103 @@ export async function kmlFromKmz(buffer) {
   return { kmlText: strFromU8(files[preferred]), kmlPath: preferred };
 }
 
+const MAX_IGC_PARSE_ERRORS = 3;
+
+/**
+ * @param {string} text
+ * @param {string} filename
+ */
+function looksIgc(text, filename) {
+  if (String(filename || "").toLowerCase().endsWith(".igc")) return true;
+  return /HFDTE/i.test(text) && /^B/m.test(text);
+}
+
+/**
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function finiteOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : +v;
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * @param {string} text
+ */
+function normalizeIgcText(text) {
+  // igc-parser's HFDTEDATE regex does not allow a space after the colon.
+  let out = String(text || "").replace(/^HFDTEDATE:\s+/im, "HFDTEDATE:");
+  // A record is mandatory; some loggers omit it (e.g. igc_lib middle-landing fixture).
+  if (!/^A/m.test(out)) out = `AXXXUNK\n${out}`;
+  return out;
+}
+
+/**
+ * IGC B-records → one OverlayDraft. GPS height, then pressure; drop invalid (V) fixes.
+ * @param {string} text
+ * @param {string} sourceName
+ * @returns {Promise<{ drafts: OverlayDraft[], warnings: string[] }>}
+ */
+export async function overlaysFromIgc(text, sourceName) {
+  const drafts = [];
+  const warnings = [];
+  let IGCParser;
+  try {
+    const mod = await import("igc-parser");
+    IGCParser = mod.default ?? mod;
+  } catch (err) {
+    return { drafts, warnings: [`IGC-Parser nicht geladen: ${err.message || err}`] };
+  }
+
+  let flight;
+  try {
+    flight = IGCParser.parse(normalizeIgcText(text), { lenient: true });
+  } catch (err) {
+    return { drafts, warnings: [`IGC-Parsefehler: ${err.message || err}`] };
+  }
+
+  const errs = Array.isArray(flight?.errors) ? flight.errors : [];
+  if (errs.length) {
+    const shown = errs.slice(0, MAX_IGC_PARSE_ERRORS).map((e) => e.message || String(e));
+    const extra = errs.length > MAX_IGC_PARSE_ERRORS
+      ? ` (+${errs.length - MAX_IGC_PARSE_ERRORS} weitere)`
+      : "";
+    warnings.push(`IGC: ${shown.join("; ")}${extra}`);
+  }
+
+  const fixes = Array.isArray(flight?.fixes) ? flight.fixes : [];
+  let droppedV = 0;
+  const coords = [];
+  for (const fix of fixes) {
+    if (!fix || fix.valid === false) {
+      droppedV += 1;
+      continue;
+    }
+    const lat = finiteOrNull(fix.latitude);
+    const lon = finiteOrNull(fix.longitude);
+    if (lat == null || lon == null) continue;
+    const gps = finiteOrNull(fix.gpsAltitude);
+    const pressure = finiteOrNull(fix.pressureAltitude);
+    const z = gps ?? pressure;
+    const t = finiteOrNull(fix.timestamp);
+    /** @type {OverlayCoord} */
+    const p = { lat, lon, z };
+    if (t != null) p.t = t;
+    coords.push(p);
+  }
+  if (droppedV) {
+    warnings.push(`${droppedV} ungültige GPS-Fixes weggelassen`);
+  }
+
+  const name = String(
+    flight?.registration || flight?.callsign || flight?.pilot || sourceName,
+  ).trim() || sourceName;
+  pushLine(drafts, name, sourceName, coords);
+  if (!drafts.length) warnings.push("Keine Linienzüge (LineString) gefunden.");
+  return { drafts, warnings };
+}
+
 /**
  * @param {string} text
  * @param {string} filename
@@ -351,6 +449,10 @@ export async function parseOverlayFile(text, filename) {
   }
   const trimmed = String(text || "").trim();
   if (!trimmed) return { drafts: [], warnings: ["Datei ist leer."] };
+
+  if (looksIgc(trimmed, sourceName)) {
+    return overlaysFromIgc(trimmed, sourceName);
+  }
 
   const looksJson = trimmed.startsWith("{") || trimmed.startsWith("[")
     || lower.endsWith(".geojson") || lower.endsWith(".json");
@@ -389,7 +491,7 @@ export async function parseOverlayFile(text, filename) {
   } catch {
     /* fall through */
   }
-  return { drafts: [], warnings: ["Format nicht erkannt (GPX, KML, KMZ oder GeoJSON)."] };
+  return { drafts: [], warnings: ["Format nicht erkannt (GPX, KML, KMZ, GeoJSON oder IGC)."] };
 }
 
 /**

@@ -1,3 +1,6 @@
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { lineCoords, overlaysFromGeoJSON, parseOverlayFile } from "../src/overlays/parse.js";
 import { buildPayload, HTML_EXPORT_DEFAULTS } from "../src/export/htmlPayload.ts";
 
@@ -212,6 +215,118 @@ const KML = `<?xml version="1.0" encoding="UTF-8"?>
   check("kmz: eine Spur", drafts.length === 1, `n=${drafts.length}`);
   check("kmz: Name", drafts[0]?.name === "KmzLine", drafts[0]?.name);
   check("kmz: Höhe", drafts[0]?.coords[0].z === 900, String(drafts[0]?.coords[0].z));
+}
+
+const IGC_HAPPY = [
+  "AXXXABC",
+  "HFDTE150717",
+  "HFPLTPILOTINCHARGE:Test Pilot",
+  "HFGIDGLIDERID:D-TEST",
+  "B1026555103888N00703115EA0065700751",
+  "B1026565103890N00703120EA0065800752",
+  "B1026575103892N00703125EA0065900753",
+].join("\n");
+
+{
+  const { drafts, warnings } = await parseOverlayFile(IGC_HAPPY, "flight.igc");
+  check("igc: eine Spur", drafts.length === 1, `n=${drafts.length}`);
+  check("igc: Name aus GID", drafts[0]?.name === "D-TEST", drafts[0]?.name);
+  check("igc: 3 Punkte", drafts[0]?.coords.length === 3);
+  check("igc: GPS-Höhe", drafts[0]?.coords[0].z === 751, String(drafts[0]?.coords[0].z));
+  check("igc: t in ms", drafts[0]?.coords[0].t === Date.parse("2017-07-15T10:26:55Z"));
+  check("igc: 1s Abstand", drafts[0]?.coords[1].t - drafts[0]?.coords[0].t === 1000);
+  check("igc: sniff ohne Extra-Warnung", warnings.length === 0, warnings.join("; "));
+}
+
+{
+  const igc = [
+    "AXXXABC",
+    "HFDTE150717",
+    "B1026555103888N00703115EA0065700751",
+    "B1026565103890N00703120EV0065800752",
+    "B1026575103892N00703125EA0065900753",
+  ].join("\n");
+  const { drafts, warnings } = await parseOverlayFile(igc, "dropv.igc");
+  check("igc V: 2 gültige Punkte", drafts[0]?.coords.length === 2);
+  check("igc V: Warnung", warnings.some((w) => /ungültige GPS-Fixes/i.test(w)), warnings.join("; "));
+  check("igc V: GPS-Höhen der A-Fixes", drafts[0]?.coords[0].z === 751 && drafts[0]?.coords[1].z === 753);
+}
+
+{
+  const igc = [
+    "AXXXABC",
+    "HFDTE150717",
+    "B1026555103888N00703115EA0065700000",
+    "B1026565103890N00703120EA0065800000",
+  ].join("\n");
+  const { drafts } = await parseOverlayFile(igc, "press.igc");
+  check("igc GPS00000: Druckhöhe", drafts[0]?.coords[0].z === 657 && drafts[0]?.coords[1].z === 658);
+}
+
+{
+  const igc = [
+    "AXXXABC",
+    "HFDTE150717",
+    "B2359005103888N00703115EA0065700751",
+    "B0000015103890N00703120EA0065800752",
+  ].join("\n");
+  const { drafts } = await parseOverlayFile(igc, "wrap.igc");
+  const t0 = drafts[0]?.coords[0].t;
+  const t1 = drafts[0]?.coords[1].t;
+  check("igc midnight: erster Tag", t0 === Date.parse("2017-07-15T23:59:00Z"));
+  check("igc midnight: +1 Tag", t1 === Date.parse("2017-07-16T00:00:01Z"), String(t1));
+}
+
+{
+  const igc = [
+    "AXXXABC",
+    "HFDTE150717",
+    "B1026555103888N00703115EV0065700751",
+    "B1026565103890N00703120EV0065800752",
+  ].join("\n");
+  const { drafts, warnings } = await parseOverlayFile(igc, "allv.igc");
+  check("igc all-V: keine Spur", drafts.length === 0);
+  check("igc all-V: Warnung Linien", warnings.some((w) => /Keine Linienzüge/i.test(w)), warnings.join("; "));
+}
+
+{
+  const { drafts, warnings } = await parseOverlayFile(
+    '{"type":"Point","coordinates":[1,2]}',
+    "n.igc",
+  );
+  check("igc Dateiname: nicht als GeoJSON", drafts.length === 0);
+  check(
+    "igc Dateiname: IGC-Fehler",
+    warnings.some((w) => /IGC-Parsefehler/i.test(w)),
+    warnings.join("; "),
+  );
+}
+
+{
+  const { drafts } = await parseOverlayFile(IGC_HAPPY, "unnamed.txt");
+  check("igc sniff ohne .igc", drafts.length === 1 && drafts[0]?.coords.length === 3);
+}
+
+{
+  const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures/igc");
+  const files = (await readdir(fixtureDir)).filter((f) => f.toLowerCase().endsWith(".igc")).sort();
+  check("igc fixtures: Dateien vorhanden", files.length >= 12, `n=${files.length}`);
+  for (const f of files) {
+    const text = await readFile(join(fixtureDir, f), "utf8");
+    const { drafts, warnings } = await parseOverlayFile(text, f);
+    const n = drafts[0]?.coords?.length ?? 0;
+    const c0 = drafts[0]?.coords?.[0];
+    check(
+      `igc fixture ${f}: Spur mit ≥2 Punkten`,
+      drafts.length === 1 && n >= 2,
+      `drafts=${drafts.length} pts=${n} ${warnings[0] || ""}`,
+    );
+    check(
+      `igc fixture ${f}: lat/lon/t`,
+      Number.isFinite(c0?.lat) && Number.isFinite(c0?.lon) && Number.isFinite(c0?.t),
+      `lat=${c0?.lat} lon=${c0?.lon} t=${c0?.t}`,
+    );
+  }
 }
 
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle Overlay-Tests bestanden.");

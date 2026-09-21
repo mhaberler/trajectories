@@ -1,4 +1,6 @@
-export const API_BASE = "https://open-meteo.mah.priv.at";
+export const DEFAULT_API_BASE = "https://open-meteo.mah.priv.at";
+/** Compiled default Open-Meteo host (not the live override). */
+export const API_BASE = DEFAULT_API_BASE;
 
 /** Public Open-Meteo (pressure-level / geopotential vars not on private hosts). */
 export const OM_PUBLIC_FORECAST = "https://api.open-meteo.com/v1/forecast";
@@ -8,15 +10,60 @@ export const OM_PRESSURE_LEVELS_HPA = [
   1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30,
 ];
 
-/** FastAPI trajectories service (GeoJSON). Used when „API abrufen“ is checked. */
-export const TRAJECTORY_API = "https://trajectory.mah.priv.at";
+export const DEFAULT_TRAJECTORY_API = "https://trajectory.mah.priv.at";
+/** Compiled default FastAPI origin (not the live override). */
+export const TRAJECTORY_API = DEFAULT_TRAJECTORY_API;
+
+/**
+ * Absolute http(s) origin, no trailing slash. Path kept if present.
+ * Empty or invalid → null.
+ */
+export function normalizeApiOrigin(s) {
+  const t = String(s ?? "").trim();
+  if (!t) return null;
+  let u;
+  try {
+    u = new URL(t);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const path = u.pathname.replace(/\/+$/, "");
+  const origin = `${u.protocol}//${u.host}`;
+  return path && path !== "/" ? `${origin}${path}` : origin;
+}
+
+let trajectoryApiOverride = "";
+let apiBaseOverride = "";
+
+/** Apply user-chosen origins. Empty/invalid clears that override. */
+export function setApiEndpoints({ trajectoryApi, apiBase } = {}) {
+  if (trajectoryApi !== undefined) {
+    const n = normalizeApiOrigin(trajectoryApi);
+    trajectoryApiOverride = n && n !== DEFAULT_TRAJECTORY_API ? n : "";
+  }
+  if (apiBase !== undefined) {
+    const n = normalizeApiOrigin(apiBase);
+    apiBaseOverride = n && n !== DEFAULT_API_BASE ? n : "";
+  }
+}
+
+/** Live FastAPI origin for /v1/trajectory and DEM. */
+export function trajectoryApi() {
+  return trajectoryApiOverride || DEFAULT_TRAJECTORY_API;
+}
+
+/** Live default Open-Meteo host (models with their own ``apiBase`` ignore this). */
+export function omApiBase() {
+  return apiBaseOverride || DEFAULT_API_BASE;
+}
 
 /** Open-Meteo base URL for a model (optional per-model ``apiBase``). */
 export function modelApiBase(model) {
-  return String(model?.apiBase || API_BASE).replace(/\/$/, "");
+  return String(model?.apiBase || omApiBase()).replace(/\/$/, "");
 }
 
-/** Forecast API path (ICON global uses ``/v1/dwd-icon``; default ``/v1/forecast``). */
+/** Forecast API path (default ``/v1/forecast``). */
 export function modelApiPath(model) {
   const p = model?.apiPath || "/v1/forecast";
   return p.startsWith("/") ? p : `/${p}`;
@@ -56,13 +103,10 @@ export const MODELS = {
     forecastHorizonH: 120,
     bbox: { latMin: 29.5, latMax: 70.5, lonMin: -23.5, lonMax: 62.5 },
   },
-  // HTTP on open-meteo-temp — see open-meteo/examples/wind_w_profile.py
-  // (endpoint /v1/dwd-icon; W on half levels 1..nHalfLevels).
+  // Same OM host/path as D2/EU; W on half levels (nHalfLevels).
   icon_global: {
     apiModel: "icon_global",
     dataset: "dwd_icon",
-    apiBase: "https://open-meteo-temp.mah.priv.at",
-    apiPath: "/v1/dwd-icon",
     label: "ICON Global (~28 km)",
     grid: 0.25,
     gridMeters: 28000,

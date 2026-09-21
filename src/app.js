@@ -1,8 +1,10 @@
 import {
-  TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, modelForecastHorizonH,
+  DEFAULT_TRAJECTORY_API, DEFAULT_API_BASE,
+  MODELS, modelApiBase, modelForecastUrl, modelForecastHorizonH,
   SERIES_COLORS, DEFAULT_HEIGHTS,
   HEIGHT_MIN, HEIGHT_MAX, MARKER_INTERVALS, METHODS,
   OM_PUBLIC_FORECAST, OM_PRESSURE_LEVELS_HPA,
+  normalizeApiOrigin, setApiEndpoints, trajectoryApi, omApiBase,
 } from "./config.js";
 import { WindField } from "./windfield.js";
 import { computeTrajectory } from "./integrator.js";
@@ -74,6 +76,10 @@ function loadSettings() {
 }
 
 const saved = loadSettings();
+setApiEndpoints({
+  trajectoryApi: saved.trajectoryApi,
+  apiBase: saved.omApiBase,
+});
 setUnits(saved.units || {});
 let settingsReady = false; // erst nach vollständiger Wiederherstellung speichern
 /** @type {number|null} CSS `right` inset of #view3d (null = fill beside panel) */
@@ -131,6 +137,8 @@ function persist() {
     xsecHeight,
     xsecRight,
     downloadFmt: el("downloadfmt").value,
+    trajectoryApi: trajectoryApi(),
+    omApiBase: omApiBase(),
     exportOpts,
     exportOptsRev: EXPORT_OPTS_REV,
     filenamePattern,
@@ -1191,7 +1199,7 @@ async function fetchElevationLine(pts, intervalSec, signal) {
     })),
     interval_sec: Math.max(15, intervalSec),
   };
-  const resp = await fetch(`${TRAJECTORY_API}/v1/elevation/line`, {
+  const resp = await fetch(`${trajectoryApi()}/v1/elevation/line`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
@@ -3139,6 +3147,34 @@ el("useapi").checked = saved.useApi !== false;
 if (el("useapi").checked && el("livemode").checked) {
   el("useapi").checked = false;
 }
+el("trajectoryapi").value = trajectoryApi();
+el("omapibase").value = omApiBase();
+el("trajectoryapi").placeholder = DEFAULT_TRAJECTORY_API;
+el("omapibase").placeholder = DEFAULT_API_BASE;
+
+function commitApiField(id, kind) {
+  const raw = el(id).value.trim();
+  if (!raw) {
+    if (kind === "traj") setApiEndpoints({ trajectoryApi: "" });
+    else setApiEndpoints({ apiBase: "" });
+    el(id).value = kind === "traj" ? DEFAULT_TRAJECTORY_API : DEFAULT_API_BASE;
+    persist();
+    return;
+  }
+  const n = normalizeApiOrigin(raw);
+  if (!n) {
+    el(id).value = kind === "traj" ? trajectoryApi() : omApiBase();
+    return;
+  }
+  if (kind === "traj") setApiEndpoints({ trajectoryApi: n });
+  else setApiEndpoints({ apiBase: n });
+  el(id).value = kind === "traj" ? trajectoryApi() : omApiBase();
+  persist();
+}
+for (const [id, kind] of [["trajectoryapi", "traj"], ["omapibase", "om"]]) {
+  el(id).addEventListener("change", () => commitApiField(id, kind));
+  el(id).addEventListener("blur", () => commitApiField(id, kind));
+}
 applyLiveLaunchUi();
 el("useapi").addEventListener("change", () => {
   if (el("useapi").checked && el("livemode").checked) {
@@ -3817,7 +3853,7 @@ function buildTrajectoryApiParams({
 }
 
 async function fetchTrajectoryApi(params, { timeoutMs = 120000 } = {}) {
-  const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
+  const url = `${trajectoryApi()}/v1/trajectory?${params}`;
   if (DEBUG) console.debug("[traj] API", url);
   const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   const body = await resp.text();

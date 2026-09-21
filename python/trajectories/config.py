@@ -7,7 +7,6 @@ import warnings
 from pathlib import Path
 
 _DEFAULT_API = "https://open-meteo.mah.priv.at"
-_DEFAULT_ICON_GLOBAL_API = "https://open-meteo-temp.mah.priv.at"
 API_BASE = os.environ.get("TRAJECTORIES_API_BASE", _DEFAULT_API)
 
 _DEFAULT_OM_CANDIDATE = Path("/open-meteo")
@@ -59,16 +58,11 @@ MODELS = {
             "lonMax": 62.5,
         },
     },
-    # HTTP on open-meteo-temp — mirror open-meteo/examples/wind_w_profile.py
-    # (``/v1/dwd-icon``; W on half levels 1..nHalfLevels). preferHttp: do not
+    # Same OM host/path as D2/EU; W on half levels. preferHttp: do not
     # auto-pick a local dwd_icon tree if present.
     "icon_global": {
         "apiModel": "icon_global",
         "dataset": "dwd_icon",
-        "apiBase": os.environ.get(
-            "TRAJECTORIES_ICON_GLOBAL_API_BASE", _DEFAULT_ICON_GLOBAL_API
-        ),
-        "apiPath": "/v1/dwd-icon",
         "preferHttp": True,
         "label": "ICON Global (~28 km)",
         "grid": 0.25,
@@ -146,7 +140,7 @@ def model_api_base(model_key: str | dict) -> str:
 
 
 def model_api_path(model_key: str | dict) -> str:
-    """Forecast path (e.g. ``/v1/dwd-icon`` for ICON global; default ``/v1/forecast``)."""
+    """Forecast path (default ``/v1/forecast``)."""
     cfg = MODELS[model_key] if isinstance(model_key, str) else model_key
     p = str(cfg.get("apiPath") or "/v1/forecast")
     return p if p.startswith("/") else f"/{p}"

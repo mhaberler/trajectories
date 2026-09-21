@@ -66,9 +66,10 @@ def test_backend_auto_falls_back_without_root():
 
 def test_icon_global_api_base_default():
     assert "icon_global" in config.MODELS
-    assert config.model_api_base("icon_global").startswith("https://")
-    assert config.model_api_path("icon_global") == "/v1/dwd-icon"
-    assert config.model_forecast_url("icon_global").endswith("/v1/dwd-icon")
+    assert config.model_api_base("icon_global") == config.API_BASE.rstrip("/")
+    assert config.model_api_base("icon_global") == config.model_api_base("icon_d2")
+    assert config.model_api_path("icon_global") == "/v1/forecast"
+    assert config.model_forecast_url("icon_global").endswith("/v1/forecast")
     assert config.MODELS["icon_global"].get("nHalfLevels") == 121
     assert config.resolve_backend("icon_global", warn=False) == "http"
 

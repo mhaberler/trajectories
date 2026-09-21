@@ -2,15 +2,14 @@
 """Query ICON global / EU / D2 for a few model-level vars over HTTP.
 
 Uses each model's configured Open-Meteo base + path from ``trajectories.config``
-(icon_global → open-meteo-temp ``/v1/dwd-icon``; D2/EU → main ``/v1/forecast``).
+(shared ``TRAJECTORIES_API_BASE`` and ``/v1/forecast`` for D2, EU, and Global).
 
 Usage (from repo root):
   source python/.venv/bin/activate
   python python/examples/compare_icon_models.py [lat] [lon]
 
 Env:
-  TRAJECTORIES_API_BASE              default host for D2/EU
-  TRAJECTORIES_ICON_GLOBAL_API_BASE  host for icon_global
+  TRAJECTORIES_API_BASE  Open-Meteo host for all ICON models
 """
 
 from __future__ import annotations

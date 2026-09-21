@@ -1035,6 +1035,17 @@ body.fp-side-resizing { cursor: ns-resize; user-select: none; }
 
 #settings { margin-top: 8px; }
 #settings summary { cursor: pointer; font-weight: 600; padding: 2px 0; }
+#settings input[type="url"] {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 3px 6px;
+  margin: 2px 0 6px;
+  border: 1px solid #c9c8c2;
+  border-radius: 5px;
+  background: #fff;
+}
 
 .footer { margin-top: 10px; font-size: 11px; color: #52514e; line-height: 1.5; }
 

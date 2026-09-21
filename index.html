@@ -397,8 +397,16 @@
     <details id="settings">
       <summary>Einstellungen</summary>
       <label class="row">
-        <span class="label">API abrufen <span class="hint">(trajectory.mah.priv.at statt Browser-Rechnung)</span></span>
+        <span class="label">API abrufen <span class="hint">(Server statt Browser-Rechnung)</span></span>
         <input type="checkbox" id="useapi" checked />
+      </label>
+      <label>Trajectory-API <span class="hint">(CORS am Host nötig)</span>
+        <input type="url" id="trajectoryapi" spellcheck="false" autocomplete="off"
+               placeholder="https://trajectory.mah.priv.at" />
+      </label>
+      <label>Open-Meteo <span class="hint">(ICON D2/EU/Global)</span>
+        <input type="url" id="omapibase" spellcheck="false" autocomplete="off"
+               placeholder="https://open-meteo.mah.priv.at" />
       </label>
       <label class="row">
         <span class="label">Zusatzparameter <span class="hint">(T, Td, RH an den Marken)</span></span>

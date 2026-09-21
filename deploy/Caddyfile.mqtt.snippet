@@ -1,0 +1,20 @@
+# Sketch for mqtt.wetterheidi.de in /etc/caddy/Caddyfile
+# Requires Mosquitto WebSocket listener on 127.0.0.1:1884 (see mosquitto-websockets.conf.example).
+# After editing: sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+
+mqtt.wetterheidi.de {
+	log {
+		output file /var/log/caddy/mqtt.log
+	}
+
+	@mqtt_ws path /ws /ws/* /mqtt /mqtt/*
+	handle @mqtt_ws {
+		reverse_proxy 127.0.0.1:1884 {
+			header_up Host {host}
+			header_up Upgrade {http.request.header.Upgrade}
+			header_up Connection {http.request.header.Connection}
+		}
+	}
+
+	tls haberlerm@gmail.com
+}

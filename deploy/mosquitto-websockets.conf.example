@@ -1,6 +1,10 @@
-# Install: sudo cp deploy/mosquitto-websockets.conf.example /etc/mosquitto/conf.d/websockets.conf
-#          sudo systemctl restart mosquitto
-# Caddy terminates TLS and proxies /ws and /mqtt to this listener.
+# Install listeners + auth (see also Caddyfile.mqtt.snippet):
+#   sudo cp deploy/mosquitto-websockets.conf.example /etc/mosquitto/conf.d/listeners.conf
+#   sudo cp deploy/mosquitto-auth.conf.example /etc/mosquitto/conf.d/auth.conf
+#   sudo mosquitto_passwd -c /etc/mosquitto/pwfile YOUR_USER
+#   sudo chmod 600 /etc/mosquitto/pwfile && sudo systemctl restart mosquitto
+
+listener 1883 127.0.0.1
 
 listener 1884 127.0.0.1
 protocol websockets

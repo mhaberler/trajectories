@@ -1,0 +1,6 @@
+# Install: sudo cp deploy/mosquitto-auth.conf.example /etc/mosquitto/conf.d/auth.conf
+# Users: sudo mosquitto_passwd -c /etc/mosquitto/pwfile USER   (or -b for batch; prefer interactive)
+#        sudo chown root:mosquitto /etc/mosquitto/pwfile && sudo chmod 640 /etc/mosquitto/pwfile
+
+allow_anonymous false
+password_file /etc/mosquitto/pwfile

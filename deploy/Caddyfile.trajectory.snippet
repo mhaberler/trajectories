@@ -1,7 +1,8 @@
 # Sketch for /etc/caddy/Caddyfile — domain already points at this VPS.
-# After editing: sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Production (meteo): trajectory.wetterheidi.de (spelling: wetterheidi, not wtterheidi).
+# After editing: sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy
 
-trajectory.mah.priv.at {
+trajectory.mah.priv.at, trajectory.wetterheidi.de {
 	reverse_proxy 127.0.0.1:8010 {
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto {scheme}

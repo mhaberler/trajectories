@@ -31,9 +31,10 @@ The trajectory HTTP API stays on `trajectory.mah.priv.at` (no Basic Auth); the U
 
 ---
 
-## Trajectories API (`trajectory.mah.priv.at`)
+## Trajectories API (`trajectory.mah.priv.at` / `trajectory.wetterheidi.de`)
 
-Domain: `trajectory.mah.priv.at` → reverse-proxy to uvicorn on `127.0.0.1:8010`.
+Domains → reverse-proxy to uvicorn on `127.0.0.1:8010`. On the meteo VPS the public name is
+`trajectory.wetterheidi.de` (Caddy site label must match DNS exactly — a typo breaks TLS).
 
 ## 1. App deps
 

@@ -301,6 +301,20 @@ body.panel-resizing #map { pointer-events: none; }
 }
 
 .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 8px 0 4px; }
+.timehead-right { display: flex; align-items: center; gap: 8px; }
+.timebar-now {
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  border: 1px solid #c8c8c4;
+  border-radius: 4px;
+  background: #f7f7f5;
+  color: #333;
+  cursor: pointer;
+}
+.timebar-now:hover { background: #eee; }
 .label { font-weight: 600; }
 .hint { font-weight: 400; color: #52514e; font-size: 12px; }
 .mono { font-variant-numeric: tabular-nums; }

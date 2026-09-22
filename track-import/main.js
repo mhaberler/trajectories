@@ -2,6 +2,7 @@ import { parseOverlayBytes } from "@overlays";
 import { createCanvasTrack, segmentValue } from "../src/overlays/canvasTrack.js";
 import { mountTrackInspect } from "../src/overlays/inspectControl.js";
 import { mountColormapSelect, colorStops } from "./colormapSelect.js";
+import { isWindy, windyKmh, windyColors } from "@colormap";
 import { mountScalePill, niceTicks } from "./scalePill.js";
 
 const STORAGE_KEY = "track-import:v1";
@@ -147,9 +148,25 @@ function clamp01(v, max) {
   return v;
 }
 
-function colorForValue(scale, v, max) {
+function colorForValue(scale, v, max, { clamp = true } = {}) {
   if (v == null) return FALLBACK;
-  return scale(clamp01(v, max)).hex();
+  const x = clamp ? clamp01(v, max) : Math.max(0, v);
+  return scale(x).hex();
+}
+
+function windySpeedMode() {
+  return settings.mode === "speed" && isWindy(settings.colormap);
+}
+
+/** Legend labels on Windy anchors, sparse enough not to collide. */
+function windyTickLabels(kmh) {
+  const max = kmh[kmh.length - 1];
+  const out = [kmh[0]];
+  for (const v of kmh) {
+    if ((v - out[out.length - 1]) / max >= 0.08) out.push(v);
+  }
+  if (out[out.length - 1] !== max) out.push(max);
+  return out;
 }
 
 function syncUi() {
@@ -162,7 +179,7 @@ function syncUi() {
   const scaled = settings.mode !== "fixed";
   el("scale-block").hidden = !scaled;
   el("fixed-row").hidden = scaled;
-  el("max-speed-row").hidden = settings.mode !== "speed";
+  el("max-speed-row").hidden = settings.mode !== "speed" || isWindy(settings.colormap);
   el("max-alt-row").hidden = settings.mode !== "altitude";
   for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
     r.checked = r.value === settings.legendOrient;
@@ -173,10 +190,22 @@ function syncUi() {
   cmap.setDomain(currentDomain());
   const vertical = settings.legendOrient === "vertical";
   const dir = vertical ? "to top" : "to right";
-  const stops = colorStops(settings.colormap, 16);
-  if (settings.cmapReverse) stops.reverse();
-  const gradientCss = `linear-gradient(${dir}, ${stops.join(",")})`;
-  const payload = { ...scaleDisplay(), gradientCss, vertical };
+  let gradientCss;
+  let payload;
+  if (windySpeedMode()) {
+    const kmh = windyKmh();
+    const max = kmh[kmh.length - 1];
+    const cols = windyColors().slice();
+    if (settings.cmapReverse) cols.reverse();
+    const parts = kmh.map((v, i) => `${cols[i]} ${(v / max) * 100}%`);
+    gradientCss = `linear-gradient(${dir}, ${parts.join(", ")})`;
+    payload = { unit: "km/h", max, ticks: windyTickLabels(kmh), gradientCss, vertical };
+  } else {
+    const stops = colorStops(settings.colormap, 16);
+    if (settings.cmapReverse) stops.reverse();
+    gradientCss = `linear-gradient(${dir}, ${stops.join(",")})`;
+    payload = { ...scaleDisplay(), gradientCss, vertical };
+  }
   mapPill.set(payload);
   const mapBox = mapPillCtl.getContainer();
   if (mapBox) {
@@ -249,7 +278,7 @@ function redraw() {
         v = segmentAlt(a, b);
         if (v == null) missingAlt++;
       }
-      return v == null ? FALLBACK : colorForValue(scale, v, max);
+      return v == null ? FALLBACK : colorForValue(scale, v, max, { clamp: !windySpeedMode() });
     };
     createCanvasTrack(t.coords, { colorForSegment, weight: 3.5, opacity: 0.9 }).addTo(trackLayer);
   }

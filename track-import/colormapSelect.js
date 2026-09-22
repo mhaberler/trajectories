@@ -1,5 +1,5 @@
 import chroma from "chroma-js";
-import { GROUPS, colorStops, buildScale } from "@colormap";
+import { GROUPS, colorStops, buildScale, isWindy, windyKmh } from "@colormap";
 
 /**
  * Vanilla colormap dropdown (port of colormap/src/components/ColormapSelector.vue).
@@ -120,6 +120,11 @@ export function mountColormapSelect(host, opts) {
       sync();
     },
     scale() {
+      if (isWindy(name)) {
+        const colors = colorStops(name);
+        const cols = reverse ? colors.slice().reverse() : colors.slice();
+        return chroma.scale(cols).mode("lab").domain(windyKmh());
+      }
       return chroma.scale(stops(256)).mode("lab").domain(domain);
     },
     gradientCss() {

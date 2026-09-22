@@ -211,18 +211,22 @@ button.secondary {
 
 .leaflet-top.leaflet-left { margin-left: 330px; }
 
-.inspect-hud {
+.leaflet-tooltip.inspect-hud {
   min-width: 160px;
   max-width: 240px;
   padding: 8px 10px;
   background: rgba(252, 252, 251, 0.96);
+  border: none;
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
   font-size: 12px;
   line-height: 1.45;
   color: #0b0b0b;
+  white-space: normal;
 }
-.inspect-hud[hidden] { display: none !important; }
+.leaflet-tooltip.inspect-hud::before {
+  border-top-color: rgba(252, 252, 251, 0.96);
+}
 .inspect-hud-name {
   font-weight: 650;
   margin-bottom: 4px;
@@ -233,12 +237,21 @@ button.secondary {
 .inspect-hud div span { color: #52514e; margin-right: 8px; }
 .inspect-hud div b { font-weight: 650; }
 .inspect-chevron-wrap { background: none !important; border: none !important; }
+.inspect-pin {
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 2px solid #111;
+  border-radius: 50%;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .inspect-chevron {
   width: 0;
   height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 14px solid #111;
-  margin: 2px auto 0;
-  filter: drop-shadow(0 0 1px #fff);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 11px solid #111;
 }

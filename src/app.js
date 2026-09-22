@@ -5226,7 +5226,7 @@ async function importOverlayFiles(fileList) {
     const added = state.overlays.filter((o) => newIds.includes(o.id));
     const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-    await openOrRefresh3d({ flyToOverlayIds: newIds });
+    refreshOverlays3d();
     setStatus(`${newIds.length} Flugspur(en) geladen`);
   } else {
     setStatus(warnings[0] || "Keine Flugspuren in der Datei.", true);

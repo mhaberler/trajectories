@@ -3201,10 +3201,9 @@ updateHeightContext();
 
 settingsReady = true;
 
-// --- Startpunkt per Klick / Marker ziehen -----------------------------------
+// --- Startpunkt nur per Marker ziehen (Kartenklick setzt ihn nicht) ----------
 map.on("click", (e) => {
-  if (overlayInspect.handleClick(e)) return;
-  setStart(e.latlng.lat, e.latlng.lng);
+  overlayInspect.handleClick(e);
 });
 
 function setStart(lat, lon, opts = {}) {
@@ -3212,7 +3211,7 @@ function setStart(lat, lon, opts = {}) {
   if (Object.prototype.hasOwnProperty.call(opts, "placeName")) {
     state.startPlace = opts.placeName ? String(opts.placeName).trim() || null : null;
   } else {
-    // Kartenklick / Marker ziehen: kein Geocode-Text mehr gültig.
+    // Marker ziehen / neuer Punkt ohne Ortsname: Geocode-Text ungültig.
     state.startPlace = null;
     reversePlaceKey = null;
   }

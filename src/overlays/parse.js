@@ -239,14 +239,34 @@ export function lineCoords(coords, times) {
 }
 
 /**
+ * Drop a repeated fix (same position and timestamp). A later timestamp at the
+ * same position stays, so a hover still has a zero-speed sample.
+ * @param {OverlayCoord[]} coords
+ * @returns {OverlayCoord[]}
+ */
+function collapseSameFix(coords) {
+  const out = [];
+  for (const p of coords) {
+    const prev = out[out.length - 1];
+    if (prev && prev.lat === p.lat && prev.lon === p.lon && prev.t === p.t) {
+      if (prev.z == null && p.z != null) prev.z = p.z;
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+/**
  * @param {OverlayDraft[]} out
  * @param {string} name
  * @param {string} sourceName
  * @param {OverlayCoord[]} coords
  */
 function pushLine(out, name, sourceName, coords) {
-  if (coords.length < 2) return;
-  out.push({ name, sourceName, coords });
+  const kept = collapseSameFix(coords);
+  if (kept.length < 2) return;
+  out.push({ name, sourceName, coords: kept });
 }
 
 /**

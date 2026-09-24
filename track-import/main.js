@@ -57,11 +57,18 @@ L.control.layers(baseLayers, null, { position: "topleft" }).addTo(map);
 const trackLayer = L.layerGroup().addTo(map);
 const inspect = mountTrackInspect(map, {
   getTracks: () => tracks.filter((t) => t.visible !== false),
+  onPin(trackId, index) {
+    globe?.showAt(trackId, index);
+  },
 });
 
-/** @type {{ setTracks: (tracks: object[], opts?: { fly?: boolean }) => void }|null} */
+/** @type {{ setTracks: (tracks: object[], opts?: { fly?: boolean }) => void, showAt: (trackId: string|null, index: number|null) => void }|null} */
 let globe = null;
-mountTrackGlobe(document.getElementById("globe")).then((g) => {
+mountTrackGlobe(document.getElementById("globe"), {
+  onPin(trackId, index) {
+    inspect.showAt(trackId, index);
+  },
+}).then((g) => {
   globe = g;
   globe.setTracks(tracks);
   map.invalidateSize();

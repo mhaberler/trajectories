@@ -8,7 +8,7 @@ export const INSPECT_MAX_PX = 32;
 
 /**
  * @param {import("leaflet").Map} map
- * @param {{ getTracks: () => object[], bindClick?: boolean }} opts
+ * @param {{ getTracks: () => object[], bindClick?: boolean, onPin?: (trackId: string|null, index: number|null) => void }} opts
  */
 export function mountTrackInspect(map, opts) {
   const pinLayer = L.layerGroup().addTo(map);
@@ -59,14 +59,21 @@ export function mountTrackInspect(map, opts) {
   }
 
   /** @returns {boolean} true if a track was pinned */
+  function showAt(trackId, index) {
+    pin = trackId == null || index == null ? null : { trackId, index };
+    renderPin();
+  }
+
   function handleClick(e) {
     const hit = nearestTrackPoint(opts.getTracks(), e.latlng, map, INSPECT_MAX_PX);
     if (!hit) {
       clear();
+      opts.onPin?.(null, null);
       return false;
     }
     pin = { trackId: hit.track.id, index: hit.index };
     renderPin();
+    opts.onPin?.(pin.trackId, pin.index);
     return true;
   }
 
@@ -76,6 +83,7 @@ export function mountTrackInspect(map, opts) {
   return {
     clear,
     refresh: renderPin,
+    showAt,
     handleClick,
     destroy() {
       if (bound) map.off("click", handleClick);

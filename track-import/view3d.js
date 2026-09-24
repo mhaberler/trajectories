@@ -7,11 +7,14 @@ import { cardinalFromDeg, metricsAt } from "../src/overlays/sample.js";
 import { INSPECT_MAX_PX } from "../src/overlays/inspectControl.js";
 
 const COLORS = ["#c45c26", "#2a6fdb", "#1f8a4c", "#8a3ffc", "#b45309", "#0f766e"];
+/** Same quantized-mesh DEM as the trajectories 3D view (ellipsoid heights). */
+const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
 
 /**
  * @param {HTMLElement} container
+ * @param {{ onPin?: (trackId: string|null, index: number|null) => void }} [opts]
  */
-export async function mountTrackGlobe(container) {
+export async function mountTrackGlobe(container, opts = {}) {
   const Cesium = await import("cesium");
   import("cesium/Build/Cesium/Widgets/widgets.css").catch(() => {});
 
@@ -32,6 +35,17 @@ export async function mountTrackGlobe(container) {
   viewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
     url: "https://tile.openstreetmap.org/",
   }));
+  viewer.scene.globe.depthTestAgainstTerrain = true;
+  let terrainKind = "flat";
+  /** GPS height is above the geoid; the mesh is ellipsoid height. */
+  let zOffset = 0;
+  let calKey = "";
+  try {
+    viewer.terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(REEARTH_TERRAIN_URL);
+    terrainKind = "reearth";
+  } catch (err) {
+    console.warn("Gelände nicht verfügbar — Darstellung flach.", err);
+  }
   const fit = () => {
     viewer.resize();
     viewer.scene.requestRender();
@@ -54,8 +68,35 @@ export async function mountTrackGlobe(container) {
   let tracks = [];
 
   function cartesian(c) {
-    const z = c.z != null && Number.isFinite(c.z) ? c.z : 0;
+    const hasZ = c.z != null && Number.isFinite(c.z);
+    const z = hasZ ? c.z + zOffset : 0;
     return Cesium.Cartesian3.fromDegrees(c.lon, c.lat, z);
+  }
+
+  function firstHeight(list) {
+    for (const track of list) {
+      if (track.visible === false) continue;
+      for (const c of track.coords || []) {
+        if (c.z != null && Number.isFinite(c.z)) return c;
+      }
+    }
+    return null;
+  }
+
+  async function calibrate(list) {
+    const c = firstHeight(list);
+    const key = c ? `${c.lat},${c.lon},${c.z}` : "";
+    if (key === calKey) return;
+    calKey = key;
+    zOffset = 0;
+    if (!c || terrainKind !== "reearth") return;
+    try {
+      const pos = [Cesium.Cartographic.fromDegrees(c.lon, c.lat)];
+      await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, pos);
+      if (Number.isFinite(pos[0].height)) zOffset = pos[0].height - c.z;
+    } catch {
+      /* Track stays at the GPS height if the mesh sample fails. */
+    }
   }
 
   function trackById(id) {
@@ -115,11 +156,18 @@ export async function mountTrackGlobe(container) {
     return best;
   }
 
+  function showAt(trackId, index) {
+    pin = trackId == null || index == null ? null : { trackId, index };
+    placePin();
+    viewer.scene.requestRender();
+  }
+
   viewer.screenSpaceEventHandler.setInputAction((click) => {
     const hit = nearest(click.position);
     pin = hit ? { trackId: hit.track.id, index: hit.index } : null;
     placePin();
     viewer.scene.requestRender();
+    opts.onPin?.(pin ? pin.trackId : null, pin ? pin.index : null);
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   viewer.scene.preRender.addEventListener(placePin);
@@ -157,9 +205,13 @@ export async function mountTrackGlobe(container) {
       }
     }
     if (!Number.isFinite(west)) return;
-    const pad = Math.max(0.02, (east - west) * 0.15, (north - south) * 0.15);
-    viewer.camera.flyTo({
-      destination: Cesium.Rectangle.fromDegrees(west - pad, south - pad, east + pad, north + pad),
+    const lon = (west + east) / 2;
+    const lat = (south + north) / 2;
+    const span = Math.max(east - west, north - south, 0.02);
+    const range = Math.max(8000, span * 111000 * 1.6);
+    const center = Cesium.Cartesian3.fromDegrees(lon, lat, 1200);
+    viewer.camera.flyToBoundingSphere(new Cesium.BoundingSphere(center, range * 0.25), {
+      offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), range),
     });
   }
 
@@ -168,13 +220,15 @@ export async function mountTrackGlobe(container) {
      * @param {object[]} next
      * @param {{ fly?: boolean }} [opts]
      */
-    setTracks(next, opts = {}) {
+    async setTracks(next, trackOpts = {}) {
       tracks = next || [];
       if (pin && !trackById(pin.trackId)) pin = null;
+      await calibrate(tracks);
       draw(tracks);
       placePin();
-      if (opts.fly) flyTo(tracks);
+      if (trackOpts.fly) flyTo(tracks);
     },
+    showAt,
   };
 }
 

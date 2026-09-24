@@ -3785,16 +3785,29 @@ function initTimebar() {
 }
 
 // --- Zeitschieber aus meta.json des gewählten Modells -----------------------
+let spanSeq = 0;
+
+async function loadSpan(modelKey) {
+  const resp = await fetch(`${TRAJECTORY_API}/v1/span?models=${encodeURIComponent(modelKey)}`);
+  if (!resp.ok) return null;
+  const body = await resp.json();
+  const row = (body.models || []).find((m) => m.model === modelKey);
+  if (!row || !Number.isFinite(row.history_start) || !Number.isFinite(row.data_end)) return null;
+  return row;
+}
+
 async function loadMeta() {
-  const model = MODELS[el("model").value];
+  const modelKey = el("model").value;
+  const model = MODELS[modelKey];
+  const seq = ++spanSeq;
   el("status").textContent = "Lade Modelllauf-Info …";
   el("status").className = "";
   try {
     const meta = await (await fetch(
       `${modelApiBase(model)}/data/${model.dataset}/static/meta.json`,
     )).json();
-    // Der Server hält mehrere Tage Archiv (geprüft ≥5 d) — für Rückwärts-
-    // trajektorien großzügiger Vorlauf; die echte Kante meldet der Integrator.
+    // Erst das gewohnte Fenster (72 h vor dem Lauf). Die Archivgrenze kommt
+    // danach von /v1/span und zieht die Leiste nach links, ohne den Zoom zu sprengen.
     const t0 = meta.last_run_initialisation_time - PAST_HOURS * 3600;
     const t1 = meta.data_end_time;
     state.meta = {
@@ -3803,12 +3816,27 @@ async function loadMeta() {
       runMs: Number.isFinite(meta.last_run_initialisation_time)
         ? meta.last_run_initialisation_time * 1000
         : null,
+      forecastEndMs: null,
     };
     if (!timebar) initTimebar();
+    timebar.setLimits(null);
     timebar.setMeta(t0, t1, {
       tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : undefined,
       playMs: Number.isFinite(saved.playMs) ? saved.playMs : undefined,
     });
+    void loadSpan(modelKey).then((span) => {
+      if (seq !== spanSeq || !span || !state.meta) return;
+      state.meta.t0 = span.history_start;
+      state.meta.t1 = span.data_end;
+      state.meta.runMs = span.run * 1000;
+      state.meta.forecastEndMs = span.forecast_end * 1000;
+      timebar.widenDomain(span.history_start, span.data_end);
+      timebar.setLimits({
+        runMs: state.meta.runMs,
+        forecastEndMs: state.meta.forecastEndMs,
+      });
+      updateReachHint();
+    }).catch(() => { /* 72 h Fenster bleibt */ });
     if (el("livemode").checked) timebar.setBand(timebar.playMs());
     // Clear one-shot restore so model switches keep the current playhead
     saved.tStartMs = timebar.startMs();

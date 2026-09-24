@@ -41,6 +41,8 @@ export function createTimebar(opts) {
     v0: 0, v1: 1,
     tStart: 0, tEnd: 0,
     playMs: 0,
+    runMs: null,
+    forecastEndMs: null,
   };
 
   let ready = false;
@@ -58,6 +60,13 @@ export function createTimebar(opts) {
   const needle = () => el("timebar-needle");
   const ticks = () => el("timebar-ticks");
   const metaShade = () => el("timebar-meta-shade");
+  const historyShade = () => el("timebar-history-shade");
+  const forecastShade = () => el("timebar-forecast-shade");
+  const runTick = () => el("timebar-run-tick");
+  const historyLabel = () => el("timebar-history-label");
+  const forecastLabel = () => el("timebar-forecast-label");
+  const edgeLeft = () => el("timebar-edge-left");
+  const edgeRight = () => el("timebar-edge-right");
   const reachShade = () => el("timebar-reach-shade");
   const tipWinStart = () => el("timebar-tip-win-start");
   const tipWinEnd = () => el("timebar-tip-win-end");
@@ -241,6 +250,64 @@ export function createTimebar(opts) {
     const reach0 = dir > 0 ? m.playMs : m.playMs - durMs;
     const reach1 = dir > 0 ? m.playMs + durMs : m.playMs;
     placeShade(reachShade(), reach0, reach1);
+    renderLimits();
+  }
+
+  function shortDay(ms) {
+    const d = new Date(ms);
+    const mon = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+    return `${d.getUTCDate()}. ${mon[d.getUTCMonth()]}`;
+  }
+
+  function hideLimit(node) {
+    if (node) node.hidden = true;
+  }
+
+  /** Archiv bis zum Lauf, Lauf bis zum Vorhersageende. Kanten ausserhalb des Zooms als Hinweis. */
+  function renderLimits() {
+    const hist = historyShade();
+    const fore = forecastShade();
+    const tick = runTick();
+    const hLab = historyLabel();
+    const fLab = forecastLabel();
+    const left = edgeLeft();
+    const right = edgeRight();
+    hideLimit(hist);
+    hideLimit(fore);
+    hideLimit(tick);
+    hideLimit(hLab);
+    hideLimit(fLab);
+    hideLimit(left);
+    hideLimit(right);
+    if (!Number.isFinite(m.runMs) || !Number.isFinite(m.forecastEndMs)) return;
+
+    placeShade(hist, m.meta0, m.runMs);
+    placeShade(fore, m.runMs, m.forecastEndMs);
+
+    const inside = (ms) => ms >= m.v0 && ms <= m.v1;
+    if (inside(m.runMs) && tick) {
+      tick.hidden = false;
+      tick.style.left = `${msToFrac(m.runMs) * 100}%`;
+    }
+    const hours = Math.max(0, Math.round((m.forecastEndMs - m.runMs) / HOUR_MS));
+    if (inside(m.meta0) && hLab) {
+      hLab.hidden = false;
+      hLab.textContent = shortDay(m.meta0);
+      hLab.style.left = `${msToFrac(m.meta0) * 100}%`;
+      hLab.style.right = "auto";
+    } else if (m.meta0 < m.v0 && left) {
+      left.hidden = false;
+      left.textContent = `← ${shortDay(m.meta0)}`;
+    }
+    if (inside(m.forecastEndMs) && fLab) {
+      fLab.hidden = false;
+      fLab.textContent = `${hours} h`;
+      fLab.style.left = "auto";
+      fLab.style.right = `${(1 - msToFrac(m.forecastEndMs)) * 100}%`;
+    } else if (m.forecastEndMs > m.v1 && right) {
+      right.hidden = false;
+      right.textContent = `${hours} h →`;
+    }
   }
 
   function stackedTipHtml(timeOrDur, sub) {
@@ -479,6 +546,38 @@ export function createTimebar(opts) {
     ensureVisibleBand();
     render();
     emitChange();
+  }
+
+  /**
+   * Archivgrenze nachziehen, ohne die aktuelle Ansicht auf die ganze Spanne zu ziehen.
+   * Sekunden, wie setMeta.
+   */
+  function widenDomain(meta0Sec, meta1Sec) {
+    if (!ready) {
+      setMeta(meta0Sec, meta1Sec);
+      return;
+    }
+    const v0 = m.v0;
+    const v1 = m.v1;
+    m.meta0 = meta0Sec * 1000;
+    m.meta1 = meta1Sec * 1000;
+    if (m.meta1 <= m.meta0) m.meta1 = m.meta0 + HOUR_MS;
+    m.v0 = clamp(v0, m.meta0, m.meta1);
+    m.v1 = clamp(v1, m.meta0, m.meta1);
+    if (m.v1 - m.v0 < MIN_VIEWPORT_MS) {
+      m.v1 = Math.min(m.meta1, m.v0 + MIN_VIEWPORT_MS);
+      m.v0 = Math.max(m.meta0, m.v1 - MIN_VIEWPORT_MS);
+    }
+    m.tStart = clampSnapStart(m.tStart);
+    syncWindowFromInputs();
+    m.playMs = clampSnapStart(m.playMs, m.tStart, m.tEnd || m.tStart);
+    render();
+  }
+
+  function setLimits(limits) {
+    m.runMs = Number.isFinite(limits?.runMs) ? limits.runMs : null;
+    m.forecastEndMs = Number.isFinite(limits?.forecastEndMs) ? limits.forecastEndMs : null;
+    if (ready) render();
   }
 
   function startMs() { return m.tStart; }
@@ -750,6 +849,8 @@ export function createTimebar(opts) {
 
   return {
     setMeta,
+    widenDomain,
+    setLimits,
     startMs,
     playMs,
     endMs,

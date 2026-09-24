@@ -90,6 +90,14 @@ curl -sS -D - -o /dev/null -H 'Accept-Encoding: gzip, deflate, br, zstd' \
 # Expect: Content-Encoding: gzip  or  zstd
 ```
 
+Archive and forecast bounds (unix seconds; no point or time):
+
+```bash
+curl -sG 'https://trajectory.mah.priv.at/v1/span' \
+  --data-urlencode 'models=icon_d2'
+# models[].history_start, run, forecast_end, data_end
+```
+
 Point wind (flat JSON):
 
 ```bash

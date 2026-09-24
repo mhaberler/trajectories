@@ -384,6 +384,42 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
 /* Höhenbalken: vertikale Skala 0…10 km, Höhenpunkte per Klick/Ziehen. */
 /* Der Balken füllt die zweite Spalte senkrecht aus (siehe #panelcol-side);
    224px ist nur noch die Untergrenze für sehr flache Fenster. */
+#hp-panel { margin: 4px 0 2px; }
+.hp-save-row, .hp-knobs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: end;
+  margin-bottom: 4px;
+}
+.hp-save-row input, .hp-save-row select { min-width: 0; flex: 1 1 5rem; }
+.hp-knobs label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.hp-knobs input { width: 4.2rem; font: inherit; padding: 2px 4px; }
+#hp-floor-hint { margin: 0 0 2px; text-align: center; }
+#hp-marker-track {
+  position: relative;
+  flex: none;
+  width: 14px;
+  align-self: stretch;
+  cursor: pointer;
+  touch-action: none;
+}
+#hp-marker-handle {
+  position: absolute;
+  left: 0;
+  width: 14px;
+  height: 10px;
+  margin-bottom: -5px;
+  border-radius: 2px;
+  background: #1c5cab;
+  box-shadow: 0 0 0 1px #fff;
+}
 #heightbar-wrap {
   display: flex;
   gap: 4px;

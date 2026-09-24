@@ -12,7 +12,7 @@ const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid"
 
 /**
  * @param {HTMLElement} container
- * @param {{ onPin?: (trackId: string|null, index: number|null) => void }} [opts]
+ * @param {{ onPin?: (trackId: string|null, index: number|null) => void, hudExtra?: () => string }} [opts]
  */
 export async function mountTrackGlobe(container, opts = {}) {
   const CesiumLib = await import("cesium");
@@ -125,15 +125,11 @@ export async function mountTrackGlobe(container, opts = {}) {
       hudEl.hidden = true;
       return;
     }
-    const camDeg = CesiumLib.Math.toDegrees(viewer.camera.heading);
-    const chevron = m.headingDeg != null && Number.isFinite(m.headingDeg)
-      ? `<div class="inspect-chevron" style="transform:rotate(${m.headingDeg - camDeg}deg)"></div>`
-      : "";
-    pinEl.innerHTML = `<div class="inspect-pin">${chevron}</div>`;
+    pinEl.innerHTML = `<div class="inspect-pin"></div>`;
     pinEl.hidden = false;
     pinEl.style.left = `${win.x}px`;
     pinEl.style.top = `${win.y}px`;
-    hudEl.innerHTML = formatHud(track.name, m);
+    hudEl.innerHTML = formatHud(track.name, m, opts.hudExtra?.() || "", "hindcast");
     hudEl.hidden = false;
     hudEl.style.left = `${win.x}px`;
     hudEl.style.top = `${win.y}px`;
@@ -253,13 +249,26 @@ export async function mountTrackGlobe(container, opts = {}) {
   };
 }
 
-function formatHud(name, m) {
+function formatHud(name, m, extra, layout) {
   const rows = [`<div class="inspect-hud-name">${esc(name || "Spur")}</div>`];
   if (m.t != null) rows.push(`<div><span>Zeit</span><b>${esc(fmtTime(m.t))}</b></div>`);
-  rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
-  rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
-  rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  if (layout === "hindcast") {
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>flight</span><b>${esc(fmtSpeedDir(m))}</b></div>`);
+  } else {
+    rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  }
+  if (extra) rows.push(extra);
   return rows.join("");
+}
+
+function fmtSpeedDir(m) {
+  const spd = fmtSpeed(m.speedKmh);
+  const dir = fmtHeading(m);
+  if (spd === "—" && dir === "—") return "—";
+  return `${spd} · ${dir}`;
 }
 
 function fmtTime(t) {

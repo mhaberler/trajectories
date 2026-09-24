@@ -17,7 +17,9 @@
   <div id="panel">
     <div id="panelhead">
       <h1>Track-Import</h1>
+      <button type="button" id="panel-toggle" aria-expanded="true" aria-controls="panelbody" title="Eingaben einklappen">Einklappen</button>
     </div>
+    <div id="panelbody">
 
     <div class="label">Flugspuren <span class="hint">(GPX / KML / KMZ / GeoJSON / IGC)</span></div>
     <div class="row">
@@ -63,6 +65,7 @@
     </label>
 
     <div id="status"></div>
+    </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"

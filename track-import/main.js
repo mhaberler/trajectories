@@ -5,6 +5,8 @@ import { mountColormapSelect, colorStops } from "./colormapSelect.js";
 import { isWindy } from "@colormap";
 import { mountScalePill, niceTicks } from "./scalePill.js";
 import { mountTrackGlobe } from "./view3d.js";
+import { canSampleWind, fetchPointWind, modelRowsHtml } from "./hindcast.js";
+import { metricsAt } from "../src/overlays/sample.js";
 
 const STORAGE_KEY = "track-import:v1";
 const DEFAULTS = {
@@ -55,9 +57,48 @@ baseLayers["OpenStreetMap"].addTo(map);
 L.control.layers(baseLayers, null, { position: "topleft" }).addTo(map);
 
 const trackLayer = L.layerGroup().addTo(map);
+let windHtml = "";
+let windSeq = 0;
+
+function hudExtra() {
+  return windHtml;
+}
+
+function applyWind(html) {
+  windHtml = html;
+  inspect.refresh();
+}
+
+function loadWind(trackId, index) {
+  const seq = ++windSeq;
+  if (trackId == null || index == null) {
+    applyWind("");
+    return;
+  }
+  const track = tracks.find((t) => t.id === trackId);
+  const c = track?.coords?.[index];
+  const flight = metricsAt(track?.coords, index);
+  if (!canSampleWind(c)) {
+    applyWind(modelRowsHtml(null));
+    return;
+  }
+  applyWind(modelRowsHtml("loading"));
+  fetchPointWind(c).then((models) => {
+    if (seq !== windSeq) return;
+    applyWind(modelRowsHtml(models, flight));
+  }).catch((err) => {
+    if (seq !== windSeq) return;
+    console.warn("Hindcast:", err);
+    applyWind(modelRowsHtml(null));
+  });
+}
+
 const inspect = mountTrackInspect(map, {
   getTracks: () => tracks.filter((t) => t.visible !== false),
+  hudExtra,
+  hudLayout: "hindcast",
   onPin(trackId, index) {
+    loadWind(trackId, index);
     globe?.showAt(trackId, index);
   },
 });
@@ -65,7 +106,9 @@ const inspect = mountTrackInspect(map, {
 /** @type {{ setTracks: (tracks: object[], opts?: { fly?: boolean }) => void, showAt: (trackId: string|null, index: number|null) => void }|null} */
 let globe = null;
 mountTrackGlobe(document.getElementById("globe"), {
+  hudExtra,
   onPin(trackId, index) {
+    loadWind(trackId, index);
     inspect.showAt(trackId, index);
   },
 }).then((g) => {
@@ -422,6 +465,15 @@ el("fixed-color").addEventListener("input", () => {
   settings.fixedColor = el("fixed-color").value;
   persist();
   redraw();
+});
+
+el("panel-toggle").addEventListener("click", () => {
+  const panel = el("panel");
+  const collapsed = panel.classList.toggle("collapsed");
+  const btn = el("panel-toggle");
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  btn.textContent = collapsed ? "Ausklappen" : "Einklappen";
+  btn.title = collapsed ? "Eingaben ausklappen" : "Eingaben einklappen";
 });
 
 syncUi();

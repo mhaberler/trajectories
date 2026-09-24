@@ -8,7 +8,7 @@ export const INSPECT_MAX_PX = 32;
 
 /**
  * @param {import("leaflet").Map} map
- * @param {{ getTracks: () => object[], bindClick?: boolean, onPin?: (trackId: string|null, index: number|null) => void }} opts
+ * @param {{ getTracks: () => object[], bindClick?: boolean, onPin?: (trackId: string|null, index: number|null) => void, hudExtra?: () => string, hudLayout?: "default"|"hindcast" }} opts
  */
 export function mountTrackInspect(map, opts) {
   const pinLayer = L.layerGroup().addTo(map);
@@ -48,7 +48,7 @@ export function mountTrackInspect(map, opts) {
       keyboard: false,
       zIndexOffset: 800,
     }).addTo(pinLayer);
-    marker.bindTooltip(formatHud(track.name, m), {
+    marker.bindTooltip(formatHud(track.name, m, opts.hudExtra?.() || "", opts.hudLayout), {
       permanent: true,
       direction: "top",
       offset: [0, -12],
@@ -93,16 +93,29 @@ export function mountTrackInspect(map, opts) {
   };
 }
 
-function formatHud(name, m) {
+function formatHud(name, m, extra, layout) {
   const rows = [];
   rows.push(`<div class="inspect-hud-name">${esc(name || "Spur")}</div>`);
   if (m.t != null) {
     rows.push(`<div><span>Zeit</span><b>${esc(fmtTime(m.t))}</b></div>`);
   }
-  rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
-  rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
-  rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  if (layout === "hindcast") {
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>flight</span><b>${esc(fmtSpeedDir(m))}</b></div>`);
+  } else {
+    rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  }
+  if (extra) rows.push(extra);
   return rows.join("");
+}
+
+function fmtSpeedDir(m) {
+  const spd = fmtSpeed(m.speedKmh);
+  const dir = fmtHeading(m);
+  if (spd === "—" && dir === "—") return "—";
+  return `${spd} · ${dir}`;
 }
 
 function fmtTime(t) {

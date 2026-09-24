@@ -3797,7 +3797,13 @@ async function loadMeta() {
     // trajektorien großzügiger Vorlauf; die echte Kante meldet der Integrator.
     const t0 = meta.last_run_initialisation_time - PAST_HOURS * 3600;
     const t1 = meta.data_end_time;
-    state.meta = { t0, t1 };
+    state.meta = {
+      t0,
+      t1,
+      runMs: Number.isFinite(meta.last_run_initialisation_time)
+        ? meta.last_run_initialisation_time * 1000
+        : null,
+    };
     if (!timebar) initTimebar();
     timebar.setMeta(t0, t1, {
       tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : undefined,
@@ -5774,6 +5780,7 @@ function filenameCtxSync() {
     durationH: state.lastRuns?.duration ?? (+el("duration")?.value || 12),
     direction: state.lastRuns?.direction ?? (+el("direction")?.value || 1),
     modelLabel: model?.label || modelKey,
+    runMs: state.meta?.runMs,
   };
 }
 
@@ -5838,6 +5845,28 @@ async function buildDownloadFilename(ext) {
   return buildExportFilename(filenamePattern, filenameCtxSync(), ext);
 }
 
+for (const help of document.querySelectorAll(".ex-token-help")) {
+  const pop = help.querySelector(".ex-token-help-pop");
+  const btn = help.querySelector(".ex-token-help-btn");
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    pop.style.display = "block";
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    let left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  };
+  const hide = () => { pop.style.display = ""; };
+  help.addEventListener("mouseenter", place);
+  help.addEventListener("focusin", place);
+  help.addEventListener("mouseleave", hide);
+  help.addEventListener("focusout", (e) => {
+    if (!help.contains(e.relatedTarget)) hide();
+  });
+}
 el("exportcfg").addEventListener("click", openExportModal);
 el("ex-modal-close").addEventListener("click", closeExportModal);
 el("ex-modal").addEventListener("click", (e) => {
@@ -5961,6 +5990,7 @@ function exportCtx(key) {
         visible: true,
         coords: o.coords.map((c) => [c.lat, c.lon, c.z]),
       })),
+    filename: filenameCtxSync(),
     launchWindow: state.launchWindow?.samples?.length >= 2
       ? {
         tStartMs: state.launchWindow.tStartMs,

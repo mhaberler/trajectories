@@ -7,6 +7,7 @@
  */
 
 import type { LastRuns, Run, TerrainSeries, XsecData } from "../types";
+import { expandLegendTokens, type FilenameCtx } from "./filename";
 
 /** Eine Zeile im Marker-Popup (aus `kmlMarkerFields` des Hauptprogramms). */
 export interface PopupRow {
@@ -58,6 +59,8 @@ export interface ExportCtx {
   overlays?: PayloadOverlay[];
   /** Nur für Tests/Reproduzierbarkeit; sonst „jetzt". */
   now?: number;
+  /** Tokens in `opts.legendHtml` (`{run}`, `{ymd}`, …). */
+  filename?: FilenameCtx;
   /**
    * Launch-Fenster-Samples (App-Form). Wenn ≥2 Samples, wird `launchWindow`
    * in die Nutzlast geschrieben (Tracks + xsec je Sample).
@@ -205,6 +208,9 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     throw new Error("Kein Querschnitt-Zustand — bitte Trajektorien neu berechnen.");
   }
   const opts: HtmlExportOpts = { ...HTML_EXPORT_DEFAULTS, ...ctx.opts };
+  if (ctx.filename && opts.legendHtml) {
+    opts.legendHtml = expandLegendTokens(opts.legendHtml, ctx.filename);
+  }
   if (opts.defaultView !== "3d") opts.defaultView = "2d";
   if (!(opts.exaggeration >= 1)) opts.exaggeration = HTML_EXPORT_DEFAULTS.exaggeration;
   if (opts.defaultImagery !== "osm" && opts.defaultImagery !== "opentopo") {

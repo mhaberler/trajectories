@@ -286,7 +286,27 @@
               <input type="number" id="ex-html-exaggeration" min="1" max="10" step="0.1" />
             </label>
           </div>
-          <label class="label" for="ex-html-legend">Legende <span class="hint">(HTML erlaubt, leer = aus)</span></label>
+          <div class="label">
+            <label for="ex-html-legend">Legende</label>
+            <span class="ex-token-help">
+              <button type="button" class="ex-token-help-btn" aria-label="Token-Hilfe">?</button>
+              <span class="ex-token-help-pop" role="tooltip">
+                <table>
+                  <thead><tr><th>Token</th><th>Bedeutung</th><th>Dateiname</th><th>Legende</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>{ymd}</code></td><td>Startzeit, Datum (UTC)</td><td><code>20260925</code></td><td><code>2026-09-25</code></td></tr>
+                    <tr><td><code>{hm}</code></td><td>Startzeit, Uhrzeit (UTC)</td><td><code>0500</code></td><td><code>05:00</code></td></tr>
+                    <tr><td><code>{place}</code></td><td>Ort, sonst Koordinaten</td><td><code>Kirchberg_T</code></td><td><code>Kirchberg/T</code></td></tr>
+                    <tr><td><code>{duration}</code></td><td>Dauer und Richtung</td><td><code>2h-fwd</code></td><td><code>2 h vorwärts</code></td></tr>
+                    <tr><td><code>{model}</code></td><td>Modell, ohne Klammerzusatz</td><td><code>ICON-D2</code></td><td><code>ICON-D2</code></td></tr>
+                    <tr><td><code>{run}</code></td><td>Initialisierung des Modelllaufs</td><td><code>20260925_0300</code></td><td><code>2026-09-25 03:00Z</code></td></tr>
+                  </tbody>
+                </table>
+                <p>Im Dateinamen werden unsichere Zeichen zu <code>_</code>. Fehlt der Modelllauf, bleibt <code>{run}</code> in der Legende stehen.</p>
+              </span>
+            </span>
+            <span class="hint">(HTML erlaubt, leer = aus)</span>
+          </div>
           <textarea id="ex-html-legend" rows="3" placeholder="z. B. Windtrajektorien&lt;br&gt;Lauf 12Z"></textarea>
         </div>
 
@@ -331,10 +351,29 @@
         </div>
 
         <div class="ex-filename-block">
-          <label class="label" for="ex-filename-pattern">Dateiname <span class="hint">(alle Formate)</span></label>
+          <div class="label">
+            <label for="ex-filename-pattern">Dateiname</label>
+            <span class="ex-token-help ex-token-help-up">
+              <button type="button" class="ex-token-help-btn" aria-label="Token-Hilfe">?</button>
+              <span class="ex-token-help-pop" role="tooltip">
+                <table>
+                  <thead><tr><th>Token</th><th>Bedeutung</th><th>Dateiname</th><th>Legende</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>{ymd}</code></td><td>Startzeit, Datum (UTC)</td><td><code>20260925</code></td><td><code>2026-09-25</code></td></tr>
+                    <tr><td><code>{hm}</code></td><td>Startzeit, Uhrzeit (UTC)</td><td><code>0500</code></td><td><code>05:00</code></td></tr>
+                    <tr><td><code>{place}</code></td><td>Ort, sonst Koordinaten</td><td><code>Kirchberg_T</code></td><td><code>Kirchberg/T</code></td></tr>
+                    <tr><td><code>{duration}</code></td><td>Dauer und Richtung</td><td><code>2h-fwd</code></td><td><code>2 h vorwärts</code></td></tr>
+                    <tr><td><code>{model}</code></td><td>Modell, ohne Klammerzusatz</td><td><code>ICON-D2</code></td><td><code>ICON-D2</code></td></tr>
+                    <tr><td><code>{run}</code></td><td>Initialisierung des Modelllaufs</td><td><code>20260925_0300</code></td><td><code>2026-09-25 03:00Z</code></td></tr>
+                  </tbody>
+                </table>
+                <p>Im Dateinamen werden unsichere Zeichen zu <code>_</code>. Fehlt der Modelllauf, bleibt <code>{run}</code> in der Legende stehen.</p>
+              </span>
+            </span>
+            <span class="hint">(alle Formate)</span>
+          </div>
           <input type="text" id="ex-filename-pattern" spellcheck="false"
                  placeholder="{ymd}_{hm}Z_{place}_{duration}_{model}" />
-          <p class="hint">Tokens: <code>{ymd}</code> <code>{hm}</code> <code>{place}</code> <code>{duration}</code> <code>{model}</code> · Trenner <code>_</code></p>
           <p id="ex-filename-preview" class="hint mono" aria-live="polite"></p>
         </div>
 

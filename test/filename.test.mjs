@@ -6,6 +6,7 @@ import {
   allocateUniqueFilename,
   buildExportBasename,
   buildExportFilename,
+  expandLegendTokens,
   bumpedFilename,
   sanitizeFilenamePart,
   shortModelLabel,
@@ -69,6 +70,20 @@ function check(name, cond, detail) {
 }
 
 {
+  const ctx = {
+    t0Ms: Date.UTC(2026, 7, 20, 9, 0),
+    place: "Innsbruck",
+    durationH: 12,
+    direction: 1,
+    modelLabel: "ICON-D2",
+    runMs: Date.UTC(2026, 8, 24, 12, 0),
+  };
+  check("run token", buildExportBasename("{run}_{model}", ctx) === "20260924_1200_ICON-D2");
+  const missing = { ...ctx, runMs: null };
+  check("run missing stays token", buildExportBasename("x_{run}", missing) === "x_run");
+}
+
+{
   check("bump 1", bumpedFilename("a", "html", 1) === "a.html");
   check("bump 2", bumpedFilename("a", "html", 2) === "a-2.html");
 }
@@ -77,6 +92,30 @@ function check(name, cond, detail) {
   const taken = new Set(["x.html", "x-2.html"]);
   const name = await allocateUniqueFilename("x", "html", (f) => taken.has(f));
   check("allocate skips to -3", name === "x-3.html", name);
+}
+
+{
+  const ctx = {
+    t0Ms: Date.UTC(2026, 8, 25, 5, 0),
+    place: "Kirchberg/T",
+    durationH: 2,
+    direction: 1,
+    modelLabel: "ICON-D2 (~2,2 km)",
+    runMs: Date.UTC(2026, 8, 25, 3, 0),
+  };
+  const html = expandLegendTokens(
+    "Kirchberg/T {ymd} {hm}Z<br>{duration} {model}<br>Lauf {run}",
+    ctx,
+  );
+  check(
+    "legend expands run",
+    html === "Kirchberg/T 2026-09-25 05:00Z<br>2 h vorwärts ICON-D2<br>Lauf 2026-09-25 03:00Z",
+    html,
+  );
+  check(
+    "legend keeps unknown and missing run",
+    expandLegendTokens("Lauf {run} {nope}", { ...ctx, runMs: null }) === "Lauf {run} {nope}",
+  );
 }
 
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle filename-Tests bestanden.");

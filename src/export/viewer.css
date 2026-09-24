@@ -220,6 +220,19 @@ body {
   border-bottom: 1px solid #e8e7e3;
   user-select: none;
 }
+.gv-panel-title { flex: 1 1 auto; }
+.gv-panel-toggle {
+  flex: none;
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  line-height: 1;
+  color: #52514e;
+  cursor: pointer;
+}
+.gv-panel-toggle:hover { color: #0b0b0b; }
 
 .gv-panel.collapsed .gv-panel-body { display: none; }
 .gv-panel.collapsed .gv-panel-head { border-bottom: none; }

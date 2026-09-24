@@ -5,7 +5,7 @@
 
 const HOUR_MS = 3600e3;
 const START_STEP_MS = 30 * 60e3;
-const MIN_VIEWPORT_MS = 6 * HOUR_MS;
+const MIN_VIEWPORT_MS = 12 * HOUR_MS;
 const BAND_GRAB_PX = 40;
 const MAX_LAUNCH_WINDOW_H = 12;
 const DRAG_THRESHOLD_PX = 5;
@@ -438,8 +438,13 @@ export function createTimebar(opts) {
 
   function ensureVisiblePlay() {
     if (m.playMs >= m.v0 && m.playMs <= m.v1) return;
+    centerViewport(m.playMs);
+  }
+
+  /** Startzeit in die Mitte der sichtbaren Leiste, Zoom bleibt. */
+  function centerViewport(ms) {
     const span = Math.max(MIN_VIEWPORT_MS, m.v1 - m.v0);
-    m.v0 = clamp(m.playMs - span / 2, m.meta0, Math.max(m.meta0, m.meta1 - span));
+    m.v0 = clamp(ms - span / 2, m.meta0, Math.max(m.meta0, m.meta1 - span));
     m.v1 = Math.min(m.meta1, m.v0 + span);
     if (m.v1 - m.v0 < span) m.v0 = Math.max(m.meta0, m.v1 - span);
   }
@@ -458,8 +463,8 @@ export function createTimebar(opts) {
       m.tEnd = t;
       m.playMs = t;
     }
-    ensureVisiblePlay();
     ensureVisibleBand();
+    centerViewport(m.playMs);
     render();
     onPlay?.();
     emitChange();

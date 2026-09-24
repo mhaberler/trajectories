@@ -15,7 +15,8 @@
     "test:live": "bun test/live-smoke.mjs",
     "deploy": "bash scripts/deploy-hetzner.sh",
     "deploy:vps": "bash scripts/deploy-vps.sh",
-    "deploy:vps:coloring": "bash scripts/deploy-vps-coloring.sh"
+    "deploy:vps:coloring": "bash scripts/deploy-vps-coloring.sh",
+    "deploy:vps:track-import": "bash scripts/deploy-vps-track-import.sh"
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.22",

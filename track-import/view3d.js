@@ -15,12 +15,12 @@ const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid"
  * @param {{ onPin?: (trackId: string|null, index: number|null) => void }} [opts]
  */
 export async function mountTrackGlobe(container, opts = {}) {
-  const Cesium = await import("cesium");
+  const CesiumLib = await import("cesium");
   import("cesium/Build/Cesium/Widgets/widgets.css").catch(() => {});
 
-  const viewer = new Cesium.Viewer(container, {
+  const viewer = new CesiumLib.Viewer(container, {
     baseLayer: false,
-    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+    terrainProvider: new CesiumLib.EllipsoidTerrainProvider(),
     baseLayerPicker: false,
     geocoder: false,
     homeButton: false,
@@ -32,7 +32,7 @@ export async function mountTrackGlobe(container, opts = {}) {
     infoBox: false,
     selectionIndicator: false,
   });
-  viewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({
+  viewer.imageryLayers.addImageryProvider(new CesiumLib.OpenStreetMapImageryProvider({
     url: "https://tile.openstreetmap.org/",
   }));
   viewer.scene.globe.depthTestAgainstTerrain = true;
@@ -41,7 +41,7 @@ export async function mountTrackGlobe(container, opts = {}) {
   let zOffset = 0;
   let calKey = "";
   try {
-    viewer.terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(REEARTH_TERRAIN_URL);
+    viewer.terrainProvider = await CesiumLib.CesiumTerrainProvider.fromUrl(REEARTH_TERRAIN_URL);
     terrainKind = "reearth";
   } catch (err) {
     console.warn("Gelände nicht verfügbar — Darstellung flach.", err);
@@ -72,7 +72,7 @@ export async function mountTrackGlobe(container, opts = {}) {
   function cartesian(c) {
     const hasZ = c.z != null && Number.isFinite(c.z);
     const z = hasZ ? c.z + zOffset : 0;
-    return Cesium.Cartesian3.fromDegrees(c.lon, c.lat, z);
+    return CesiumLib.Cartesian3.fromDegrees(c.lon, c.lat, z);
   }
 
   function firstHeight(list) {
@@ -93,8 +93,8 @@ export async function mountTrackGlobe(container, opts = {}) {
     zOffset = 0;
     if (!c || terrainKind !== "reearth") return;
     try {
-      const pos = [Cesium.Cartographic.fromDegrees(c.lon, c.lat)];
-      await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, pos);
+      const pos = [CesiumLib.Cartographic.fromDegrees(c.lon, c.lat)];
+      await CesiumLib.sampleTerrainMostDetailed(viewer.terrainProvider, pos);
       if (Number.isFinite(pos[0].height)) zOffset = pos[0].height - c.z;
     } catch {
       /* Track stays at the GPS height if the mesh sample fails. */
@@ -119,13 +119,13 @@ export async function mountTrackGlobe(container, opts = {}) {
       hudEl.hidden = true;
       return;
     }
-    const win = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian(m));
+    const win = CesiumLib.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian(m));
     if (!win) {
       pinEl.hidden = true;
       hudEl.hidden = true;
       return;
     }
-    const camDeg = Cesium.Math.toDegrees(viewer.camera.heading);
+    const camDeg = CesiumLib.Math.toDegrees(viewer.camera.heading);
     const chevron = m.headingDeg != null && Number.isFinite(m.headingDeg)
       ? `<div class="inspect-chevron" style="transform:rotate(${m.headingDeg - camDeg}deg)"></div>`
       : "";
@@ -145,7 +145,7 @@ export async function mountTrackGlobe(container, opts = {}) {
       if (track.visible === false) continue;
       const coords = track.coords || [];
       for (let i = 0; i < coords.length; i++) {
-        const win = Cesium.SceneTransforms.worldToWindowCoordinates(
+        const win = CesiumLib.SceneTransforms.worldToWindowCoordinates(
           viewer.scene,
           cartesian(coords[i]),
         );
@@ -170,7 +170,7 @@ export async function mountTrackGlobe(container, opts = {}) {
     placePin();
     viewer.scene.requestRender();
     opts.onPin?.(pin ? pin.trackId : null, pin ? pin.index : null);
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  }, CesiumLib.ScreenSpaceEventType.LEFT_CLICK);
 
   viewer.scene.preRender.addEventListener(placePin);
 
@@ -180,7 +180,7 @@ export async function mountTrackGlobe(container, opts = {}) {
       polyline: {
         positions,
         width: 4,
-        material: Cesium.Color.fromCssColorString(color),
+        material: CesiumLib.Color.fromCssColorString(color),
         clampToGround: false,
       },
     });
@@ -229,9 +229,9 @@ export async function mountTrackGlobe(container, opts = {}) {
     const lat = (south + north) / 2;
     const span = Math.max(east - west, north - south, 0.02);
     const range = Math.max(8000, span * 111000 * 1.6);
-    const center = Cesium.Cartesian3.fromDegrees(lon, lat, 1200);
-    viewer.camera.flyToBoundingSphere(new Cesium.BoundingSphere(center, range * 0.25), {
-      offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), range),
+    const center = CesiumLib.Cartesian3.fromDegrees(lon, lat, 1200);
+    viewer.camera.flyToBoundingSphere(new CesiumLib.BoundingSphere(center, range * 0.25), {
+      offset: new CesiumLib.HeadingPitchRange(0, CesiumLib.Math.toRadians(-40), range),
     });
   }
 

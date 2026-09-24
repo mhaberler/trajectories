@@ -110,6 +110,14 @@ curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
 
 Exactly one of `time` or `times` is required. Multi-start responses are still one GeoJSON FeatureCollection; group features by `properties.start_time` (present on trajectories and markers).
 
+Archive bounds (no point or time; unix seconds):
+
+```bash
+curl -sG 'http://127.0.0.1:8000/v1/span' \
+  --data-urlencode 'models=icon_d2'
+# models[].history_start, run, forecast_end, data_end
+```
+
 Client example (server must be running):
 
 ```bash

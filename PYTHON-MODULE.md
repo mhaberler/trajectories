@@ -6,7 +6,7 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 ## Goals
 
 - Functional parity with the browser app (`src/windfield.js`, `src/integrator.js`, `src/app.js` export).
-- Library API (`compute_trajectories`, `compute_point_wind`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`, `GET /v1/wind`).
+- Library API (`compute_trajectories`, `compute_point_wind`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`, `GET /v1/wind`, `GET /v1/span`).
 - GeoJSON FeatureCollection with SimpleStyle (`stroke` / `marker-color`) for Placemark tools.
 - Trajectory features include `properties.terrain_m` (model orography m AMSL, parallel to coordinates) for Querschnitt / 3D after API fetch.
 - Tests that prove the port: unit (offline), near-exact vs web UI, rough vs Windy.
@@ -36,6 +36,7 @@ python/
     compute.py            # height × method orchestration → FeatureCollection
     geojson_export.py     # port of web buildGeoJSON
     api.py                # FastAPI app (OpenAPI / Swagger)
+    span.py               # GET /v1/span archive and forecast bounds
     cli.py / __main__.py
   tests/
     test_integrator_unit.py   # fake-wind Petterssen (always on)
@@ -193,6 +194,30 @@ curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
   --data-urlencode 'height_agl=550'
 ```
 
+## HTTP API (`GET /v1/span`)
+
+Archive and forecast bounds for the time bar. No latitude or time. Reads the local OM dataset: the oldest `chunk_*.om` of one wind component, then the first hour in that file that still has a finite value (leading hours in a chunk can be empty).
+
+| Query | Role |
+|-------|------|
+| `models` | optional CSV (`icon_d2`, `icon_eu`, `icon_global`). Default: every configured model |
+
+Each row in `models[]` is unix seconds, same clock as `meta.json`:
+
+| Field | Role |
+|-------|------|
+| `history_start` | oldest hour that still has wind |
+| `run` | `last_run_initialisation_time` |
+| `forecast_end` | earlier of `data_end` and the run plus the model horizon (D2 48 / EU 120 / global 180 h) |
+| `data_end` | `data_end_time`, the right edge of what is on disk |
+
+A model that has no dataset is listed in `partial` and omitted from `models`. Unknown model id → HTTP 400. No model at all → HTTP 503. The web time bar pans from `history_start` through `data_end` and draws the forecast band up to `forecast_end`.
+
+```bash
+curl -sG 'https://trajectory.mah.priv.at/v1/span' \
+  --data-urlencode 'models=icon_d2'
+```
+
 ### Production on this VPS (`trajectory.mah.priv.at`)
 
 Artifacts under [`deploy/`](deploy/) (full steps also in [`deploy/README.md`](deploy/README.md)):
@@ -231,7 +256,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-**Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`, `/v1/wind`.  
+**Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`, `/v1/wind`, `/v1/span`.  
 Client example defaults to that host (`TRAJECTORIES_API_URL`).
 
 ## Accelerating answer processing

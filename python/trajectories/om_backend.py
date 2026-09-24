@@ -182,6 +182,40 @@ class OmBackend:
         level = self.model["nLevels"] - 5
         return (self.dataset / f"wind_w_level{level}").is_dir()
 
+    def first_finite_wind_unix(self) -> int | None:
+        """Oldest hour in the local archive that still has a finite wind component.
+
+        Chunk files can begin with empty hours, so the lowest chunk index is
+        not itself the history edge.
+        """
+        level = self.model["nLevels"]
+        var_dir = self.dataset / f"wind_u_component_level{level}"
+        indexed: list[tuple[int, Path]] = []
+        for path in var_dir.glob("chunk_*.om"):
+            tail = path.stem.rsplit("_", 1)[-1]
+            if not tail.isdigit():
+                continue
+            indexed.append((int(tail), path))
+        indexed.sort()
+        if not indexed:
+            return None
+        y = max(0, self.ny // 2)
+        x = max(0, self.nx // 2)
+        for idx, path in indexed:
+            times = self._chunk_times(idx)
+            try:
+                data = np.asarray(
+                    self._readers.read_array(str(path), (y, x, slice(None))),
+                    dtype=np.float64,
+                ).reshape(-1)
+            except Exception:
+                continue
+            n = min(len(times), len(data))
+            for i in range(n):
+                if math.isfinite(float(data[i])):
+                    return int(np.datetime64(times[i], "s").astype(np.int64))
+        return None
+
     def _xy(self, lat: float, lon: float):
         key = (round(lat, 5), round(lon, 5))
         hit = self._xy_cache.get(key)

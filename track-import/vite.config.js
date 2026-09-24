@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
+import cesium from "vite-plugin-cesium";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -8,6 +9,7 @@ const repo = resolve(here, "..");
 export default defineConfig({
   root: here,
   publicDir: false,
+  plugins: [cesium()],
   resolve: {
     alias: {
       "@overlays": resolve(repo, "src/overlays/parse.js"),

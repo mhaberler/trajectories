@@ -163,36 +163,79 @@ function buildTracks(map: any, data: Payload, runs: PayloadRun[]): Track[] {
 }
 
 /** Schwebender Kasten mit Kopfzeile: verschiebbar, per Doppelklick einklappbar. */
-function floatingPanel(map: any, position: string, title: string, body: HTMLElement) {
+function floatingPanel(map: any, position: string, title: string, body: HTMLElement, opts: { toggle?: boolean } = {}) {
   const Ctl = L.Control.extend({
     onAdd() {
       const d = L.DomUtil.create("div", "gv-panel") as HTMLElement;
       const head = L.DomUtil.create("div", "gv-panel-head", d) as HTMLElement;
-      head.textContent = title;
+      const label = L.DomUtil.create("span", "gv-panel-title", head) as HTMLElement;
+      label.textContent = title;
       const wrap = L.DomUtil.create("div", "gv-panel-body", d) as HTMLElement;
       wrap.appendChild(body);
       L.DomEvent.disableClickPropagation(d);
       // Scroll only on the body — the list must remain wheel-scrollable.
       L.DomEvent.disableScrollPropagation(wrap);
+      const setCollapsed = (collapsed: boolean) => {
+        d.classList.toggle("collapsed", collapsed);
+        if (!btn) return;
+        btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        btn.textContent = collapsed ? "▸" : "▾";
+        btn.title = collapsed ? `${title} einblenden` : `${title} ausblenden`;
+      };
+      let btn: HTMLButtonElement | null = null;
+      if (opts.toggle) {
+        btn = L.DomUtil.create("button", "gv-panel-toggle", head) as HTMLButtonElement;
+        btn.type = "button";
+        btn.setAttribute("aria-expanded", "true");
+        btn.textContent = "▾";
+        btn.title = `${title} ausblenden`;
+        const onToggle = (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setCollapsed(!d.classList.contains("collapsed"));
+        };
+        btn.addEventListener("click", onToggle);
+        btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+        btn.addEventListener("dblclick", (e) => e.stopPropagation());
+      }
       head.addEventListener("dblclick", (e) => {
         e.preventDefault();
-        d.classList.toggle("collapsed");
+        setCollapsed(!d.classList.contains("collapsed"));
       });
       // Ziehen per Pointer; Leaflet-Panning bleibt dabei aus.
-      let drag: { dx: number; dy: number } | null = null;
+      // Ein Klick oder Doppelklick (Ein-/Ausklappen) darf die Ecke nicht
+      // losreißen — erst ab ein paar Pixeln auf die Stelle pinnen, an der
+      // das Panel gerade liegt.
+      let drag: { dx: number; dy: number; x: number; y: number; pinned: boolean } | null = null;
       head.addEventListener("pointerdown", (e) => {
+        if ((e.target as HTMLElement).closest?.(".gv-panel-toggle")) return;
         const r = d.getBoundingClientRect();
-        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        drag = {
+          dx: e.clientX - r.left,
+          dy: e.clientY - r.top,
+          x: e.clientX,
+          y: e.clientY,
+          pinned: d.style.position === "fixed",
+        };
         head.setPointerCapture(e.pointerId);
-        d.style.position = "fixed";
-        d.style.margin = "0";
       });
       head.addEventListener("pointermove", (e) => {
         if (!drag) return;
+        if (!drag.pinned) {
+          if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
+          const r = d.getBoundingClientRect();
+          d.style.position = "fixed";
+          d.style.margin = "0";
+          d.style.left = `${r.left}px`;
+          d.style.top = `${r.top}px`;
+          d.style.right = "auto";
+          d.style.bottom = "auto";
+          drag.dx = e.clientX - r.left;
+          drag.dy = e.clientY - r.top;
+          drag.pinned = true;
+        }
         d.style.left = `${e.clientX - drag.dx}px`;
         d.style.top = `${e.clientY - drag.dy}px`;
-        d.style.right = "auto";
-        d.style.bottom = "auto";
       });
       head.addEventListener("pointerup", (e) => {
         drag = null;
@@ -324,7 +367,7 @@ function buildLegend(map: any, html: string, generated: string) {
   foot.className = "gv-foot";
   foot.textContent = `Erzeugt ${generated.slice(0, 16).replace("T", " ")}Z · Windtrajektorien`;
   body.appendChild(foot);
-  floatingPanel(map, "topleft", "Legende", body);
+  floatingPanel(map, "topleft", "Legende", body, { toggle: true });
 }
 
 /**

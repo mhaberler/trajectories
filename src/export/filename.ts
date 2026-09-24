@@ -5,7 +5,7 @@
 
 export const DEFAULT_FILENAME_PATTERN = "{ymd}_{hm}Z_{place}_{duration}_{model}";
 
-export const FILENAME_TOKENS = ["ymd", "hm", "place", "duration", "model"] as const;
+export const FILENAME_TOKENS = ["ymd", "hm", "place", "duration", "model", "run"] as const;
 
 export interface FilenameCtx {
   t0Ms: number;
@@ -19,6 +19,8 @@ export interface FilenameCtx {
   direction: number;
   /** Anzeigename Modell, z. B. „ICON-D2“. */
   modelLabel: string;
+  /** Modelllauf-Initialisierung (UTC ms). Fehlt → `{run}` bleibt unersetzt. */
+  runMs?: number | null;
 }
 
 /** ASCII-Dateinamenstück; Umlaute grob ersetzen, Rest → `_`. */
@@ -69,6 +71,35 @@ function timeParts(t0Ms: number): { ymd: string; hm: string } {
   return { ymd, hm };
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Dieselben Tokens wie im Dateinamen, aber lesbar und ohne den Rest
+ * des Textes anzufassen — die Legende ist HTML, kein Dateiname.
+ * Fehlt der Modelllauf, bleibt `{run}` stehen.
+ */
+export function expandLegendTokens(text: string, ctx: FilenameCtx): string {
+  const iso = new Date(ctx.t0Ms).toISOString();
+  const h = Math.min(999, Math.max(1, Math.round(Number(ctx.durationH) || 12)));
+  const dir = Number(ctx.direction) < 0 ? "rückwärts" : "vorwärts";
+  const place = String(ctx.place || "").trim() || placeToken(ctx);
+  const map: Record<string, string> = {
+    ymd: iso.slice(0, 10),
+    hm: iso.slice(11, 16),
+    place,
+    duration: `${h} h ${dir}`,
+    model: shortModelLabel(ctx.modelLabel, "model"),
+  };
+  if (Number.isFinite(ctx.runMs)) {
+    const runIso = new Date(ctx.runMs as number).toISOString();
+    map.run = `${runIso.slice(0, 16).replace("T", " ")}Z`;
+  }
+  return String(text || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (full, key: string) =>
+    Object.prototype.hasOwnProperty.call(map, key) ? escapeHtml(map[key]) : full);
+}
+
 /**
  * Baut den Dateinamen-Stamm (ohne Endung) aus dem Muster.
  * Unbekannte `{…}`-Tokens bleiben stehen; leeres Muster → Default.
@@ -83,6 +114,10 @@ export function buildExportBasename(pattern: string, ctx: FilenameCtx): string {
     duration: durationToken(ctx),
     model: sanitizeFilenamePart(shortModelLabel(ctx.modelLabel, "model"), 40),
   };
+  if (Number.isFinite(ctx.runMs)) {
+    const run = timeParts(ctx.runMs as number);
+    map.run = `${run.ymd}_${run.hm}`;
+  }
   let out = pat.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key: string) =>
     Object.prototype.hasOwnProperty.call(map, key) ? map[key] : `{${key}}`);
   out = sanitizeFilenamePart(out.replace(/_+/g, "_"), 120);

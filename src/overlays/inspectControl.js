@@ -8,37 +8,20 @@ export const INSPECT_MAX_PX = 32;
 
 /**
  * @param {import("leaflet").Map} map
- * @param {{ getTracks: () => object[], hudHost?: HTMLElement | null, bindClick?: boolean }} opts
+ * @param {{ getTracks: () => object[], bindClick?: boolean, onPin?: (trackId: string|null, index: number|null) => void, hudExtra?: () => string, hudLayout?: "default"|"hindcast" }} opts
  */
 export function mountTrackInspect(map, opts) {
   const pinLayer = L.layerGroup().addTo(map);
   let pin = null; // { trackId, index }
 
-  const Hud = L.Control.extend({
-    onAdd() {
-      const div = L.DomUtil.create("div", "leaflet-control inspect-hud");
-      L.DomEvent.disableClickPropagation(div);
-      L.DomEvent.disableScrollPropagation(div);
-      this._el = div;
-      div.hidden = true;
-      return div;
-    },
-  });
-  const hudCtl = new Hud({ position: "topright" }).addTo(map);
-  const hudEl = opts.hudHost || hudCtl._el;
-
   function clear() {
     pin = null;
     pinLayer.clearLayers();
-    if (hudEl) {
-      hudEl.hidden = true;
-      hudEl.innerHTML = "";
-    }
   }
 
   function renderPin() {
     pinLayer.clearLayers();
-    if (!pin || !hudEl) return;
+    if (!pin) return;
     const tracks = opts.getTracks() || [];
     const track = tracks.find((t) => t.id === pin.trackId);
     if (!track || track.visible === false) {
@@ -50,37 +33,47 @@ export function mountTrackInspect(map, opts) {
       clear();
       return;
     }
-    L.circleMarker([m.lat, m.lon], {
-      radius: 7,
-      color: "#111",
-      weight: 2,
-      fillColor: "#fff",
-      fillOpacity: 1,
+    const heading = m.headingDeg != null && Number.isFinite(m.headingDeg)
+      ? `<div class="inspect-chevron" style="transform:rotate(${m.headingDeg}deg)"></div>`
+      : "";
+    const icon = L.divIcon({
+      className: "inspect-chevron-wrap",
+      html: `<div class="inspect-pin">${heading}</div>`,
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    });
+    const marker = L.marker([m.lat, m.lon], {
+      icon,
       interactive: false,
-      pane: "markerPane",
+      keyboard: false,
+      zIndexOffset: 800,
     }).addTo(pinLayer);
-    if (m.headingDeg != null) {
-      const icon = L.divIcon({
-        className: "inspect-chevron-wrap",
-        html: `<div class="inspect-chevron" style="transform:rotate(${m.headingDeg}deg)"></div>`,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9],
-      });
-      L.marker([m.lat, m.lon], { icon, interactive: false, keyboard: false }).addTo(pinLayer);
-    }
-    hudEl.hidden = false;
-    hudEl.innerHTML = formatHud(track.name, m);
+    marker.bindTooltip(formatHud(track.name, m, opts.hudExtra?.() || "", opts.hudLayout), {
+      permanent: true,
+      direction: "top",
+      offset: [0, -12],
+      opacity: 1,
+      className: "inspect-hud",
+      interactive: false,
+    }).openTooltip();
   }
 
   /** @returns {boolean} true if a track was pinned */
+  function showAt(trackId, index) {
+    pin = trackId == null || index == null ? null : { trackId, index };
+    renderPin();
+  }
+
   function handleClick(e) {
     const hit = nearestTrackPoint(opts.getTracks(), e.latlng, map, INSPECT_MAX_PX);
     if (!hit) {
       clear();
+      opts.onPin?.(null, null);
       return false;
     }
     pin = { trackId: hit.track.id, index: hit.index };
     renderPin();
+    opts.onPin?.(pin.trackId, pin.index);
     return true;
   }
 
@@ -90,26 +83,39 @@ export function mountTrackInspect(map, opts) {
   return {
     clear,
     refresh: renderPin,
+    showAt,
     handleClick,
     destroy() {
       if (bound) map.off("click", handleClick);
       clear();
-      map.removeControl(hudCtl);
       map.removeLayer(pinLayer);
     },
   };
 }
 
-function formatHud(name, m) {
+function formatHud(name, m, extra, layout) {
   const rows = [];
   rows.push(`<div class="inspect-hud-name">${esc(name || "Spur")}</div>`);
   if (m.t != null) {
     rows.push(`<div><span>Zeit</span><b>${esc(fmtTime(m.t))}</b></div>`);
   }
-  rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
-  rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
-  rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  if (layout === "hindcast") {
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>flight</span><b>${esc(fmtSpeedDir(m))}</b></div>`);
+  } else {
+    rows.push(`<div><span>Geschw.</span><b>${fmtSpeed(m.speedKmh)}</b></div>`);
+    rows.push(`<div><span>Höhe</span><b>${fmtAlt(m.z)}</b></div>`);
+    rows.push(`<div><span>Richtung</span><b>${fmtHeading(m)}</b></div>`);
+  }
+  if (extra) rows.push(extra);
   return rows.join("");
+}
+
+function fmtSpeedDir(m) {
+  const spd = fmtSpeed(m.speedKmh);
+  const dir = fmtHeading(m);
+  if (spd === "—" && dir === "—") return "—";
+  return `${spd} · ${dir}`;
 }
 
 function fmtTime(t) {
@@ -127,7 +133,6 @@ function fmtSpeed(v) {
 
 function fmtAlt(z) {
   if (z == null || !Number.isFinite(z)) return "—";
-  if (Math.abs(z) >= 1000) return `${(z / 1000).toFixed(2)} km`;
   return `${Math.round(z)} m`;
 }
 

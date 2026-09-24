@@ -2,7 +2,11 @@ import { parseOverlayBytes } from "@overlays";
 import { createCanvasTrack, segmentValue } from "../src/overlays/canvasTrack.js";
 import { mountTrackInspect } from "../src/overlays/inspectControl.js";
 import { mountColormapSelect, colorStops } from "./colormapSelect.js";
+import { isWindy } from "@colormap";
 import { mountScalePill, niceTicks } from "./scalePill.js";
+import { mountTrackGlobe } from "./view3d.js";
+import { canSampleWind, fetchPointWind, modelRowsHtml } from "./hindcast.js";
+import { metricsAt } from "../src/overlays/sample.js";
 
 const STORAGE_KEY = "track-import:v1";
 const DEFAULTS = {
@@ -53,9 +57,72 @@ baseLayers["OpenStreetMap"].addTo(map);
 L.control.layers(baseLayers, null, { position: "topleft" }).addTo(map);
 
 const trackLayer = L.layerGroup().addTo(map);
+let windHtml = "";
+let windSeq = 0;
+
+function hudExtra() {
+  return windHtml;
+}
+
+function applyWind(html) {
+  windHtml = html;
+  inspect.refresh();
+}
+
+function loadWind(trackId, index) {
+  const seq = ++windSeq;
+  if (trackId == null || index == null) {
+    applyWind("");
+    return;
+  }
+  const track = tracks.find((t) => t.id === trackId);
+  const c = track?.coords?.[index];
+  const flight = metricsAt(track?.coords, index);
+  if (!canSampleWind(c)) {
+    applyWind(modelRowsHtml(null));
+    return;
+  }
+  applyWind(modelRowsHtml("loading"));
+  fetchPointWind(c).then((models) => {
+    if (seq !== windSeq) return;
+    applyWind(modelRowsHtml(models, flight));
+  }).catch((err) => {
+    if (seq !== windSeq) return;
+    console.warn("Hindcast:", err);
+    applyWind(modelRowsHtml(null));
+  });
+}
+
 const inspect = mountTrackInspect(map, {
   getTracks: () => tracks.filter((t) => t.visible !== false),
+  hudExtra,
+  hudLayout: "hindcast",
+  onPin(trackId, index) {
+    loadWind(trackId, index);
+    globe?.showAt(trackId, index);
+  },
 });
+
+/** @type {{ setTracks: (tracks: object[], opts?: { fly?: boolean }) => void, showAt: (trackId: string|null, index: number|null) => void }|null} */
+let globe = null;
+mountTrackGlobe(document.getElementById("globe"), {
+  hudExtra,
+  onPin(trackId, index) {
+    loadWind(trackId, index);
+    inspect.showAt(trackId, index);
+  },
+}).then((g) => {
+  globe = g;
+  globe.setTracks(tracks, { colorForSegment: segmentColor });
+  map.invalidateSize();
+}).catch((err) => {
+  const host = document.getElementById("globe");
+  host.textContent = err?.message || String(err);
+  host.style.color = "#fff";
+  host.style.padding = "16px";
+  console.error(err);
+});
+window.addEventListener("resize", () => map.invalidateSize());
 
 const el = (id) => document.getElementById(id);
 
@@ -147,10 +214,28 @@ function clamp01(v, max) {
   return v;
 }
 
-function colorForValue(scale, v, max) {
+function colorForValue(scale, v, max, { clamp = true } = {}) {
   if (v == null) return FALLBACK;
-  return scale(clamp01(v, max)).hex();
+  const x = clamp ? clamp01(v, max) : Math.max(0, v);
+  return scale(x).hex();
 }
+
+/** Same hex the 2D canvas uses for the segment from a to b. */
+function segmentColor(a, b) {
+  if (settings.mode === "fixed") return settings.fixedColor;
+  cmap.setDomain(currentDomain());
+  const scale = cmap.scale();
+  const max = currentMax();
+  const v = settings.mode === "speed" ? segmentValue("speed", a, b) : segmentAlt(a, b);
+  return v == null ? FALLBACK : colorForValue(scale, v, max, { clamp: !windySpeedMode() });
+}
+
+function windySpeedMode() {
+  return settings.mode === "speed" && isWindy(settings.colormap);
+}
+
+/** On-map Windy bar: these km/h sit at equal widths; colors come from the full scale. */
+const WINDY_LEGEND_TICKS = [0, 10, 20, 35, 55, 70, 100];
 
 function syncUi() {
   for (const r of document.querySelectorAll('input[name="color-mode"]')) {
@@ -162,7 +247,7 @@ function syncUi() {
   const scaled = settings.mode !== "fixed";
   el("scale-block").hidden = !scaled;
   el("fixed-row").hidden = scaled;
-  el("max-speed-row").hidden = settings.mode !== "speed";
+  el("max-speed-row").hidden = settings.mode !== "speed" || isWindy(settings.colormap);
   el("max-alt-row").hidden = settings.mode !== "altitude";
   for (const r of document.querySelectorAll('input[name="legend-orient"]')) {
     r.checked = r.value === settings.legendOrient;
@@ -173,10 +258,22 @@ function syncUi() {
   cmap.setDomain(currentDomain());
   const vertical = settings.legendOrient === "vertical";
   const dir = vertical ? "to top" : "to right";
-  const stops = colorStops(settings.colormap, 16);
-  if (settings.cmapReverse) stops.reverse();
-  const gradientCss = `linear-gradient(${dir}, ${stops.join(",")})`;
-  const payload = { ...scaleDisplay(), gradientCss, vertical };
+  let gradientCss;
+  let payload;
+  if (windySpeedMode()) {
+    const ticks = WINDY_LEGEND_TICKS;
+    const scale = cmap.scale();
+    const last = ticks.length - 1;
+    const parts = ticks.map((v, i) => `${scale(v).hex()} ${(i / last) * 100}%`);
+    const tickFracs = ticks.map((_, i) => i / last);
+    gradientCss = `linear-gradient(${dir}, ${parts.join(", ")})`;
+    payload = { unit: "km/h", max: ticks[last], ticks, tickFracs, gradientCss, vertical };
+  } else {
+    const stops = colorStops(settings.colormap, 16);
+    if (settings.cmapReverse) stops.reverse();
+    gradientCss = `linear-gradient(${dir}, ${stops.join(",")})`;
+    payload = { ...scaleDisplay(), gradientCss, vertical };
+  }
   mapPill.set(payload);
   const mapBox = mapPillCtl.getContainer();
   if (mapBox) {
@@ -249,12 +346,13 @@ function redraw() {
         v = segmentAlt(a, b);
         if (v == null) missingAlt++;
       }
-      return v == null ? FALLBACK : colorForValue(scale, v, max);
+      return segmentColor(a, b);
     };
     createCanvasTrack(t.coords, { colorForSegment, weight: 3.5, opacity: 0.9 }).addTo(trackLayer);
   }
 
   inspect.refresh();
+  globe?.setTracks(tracks, { colorForSegment: segmentColor });
 
   if (settings.mode === "speed" && missingSpeed && segs) {
     setStatus(`${missingSpeed} Segment(e) ohne Zeitstempel — grau.`);
@@ -305,6 +403,7 @@ async function importOverlayFiles(fileList) {
     const added = tracks.filter((o) => newIds.includes(o.id));
     const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    globe?.setTracks(tracks, { fly: true });
     setStatus(`${newIds.length} Flugspur(en) geladen`);
   } else {
     setStatus(warnings[0] || "Keine Flugspuren in der Datei.", true);
@@ -366,6 +465,15 @@ el("fixed-color").addEventListener("input", () => {
   settings.fixedColor = el("fixed-color").value;
   persist();
   redraw();
+});
+
+el("panel-toggle").addEventListener("click", () => {
+  const panel = el("panel");
+  const collapsed = panel.classList.toggle("collapsed");
+  const btn = el("panel-toggle");
+  btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  btn.textContent = collapsed ? "Ausklappen" : "Einklappen";
+  btn.title = collapsed ? "Eingaben ausklappen" : "Eingaben einklappen";
 });
 
 syncUi();

@@ -19,6 +19,7 @@ from .compute import (
     compute_trajectories,
     parse_flight_profile,
 )
+from .span import model_span
 from .response_cache import cache_key, get_response_cache, wind_cache_key
 
 MODELS = Literal["icon_d2", "icon_eu", "icon_global"]
@@ -40,7 +41,8 @@ app = FastAPI(
         "exactly one of time or times). "
         "Optional kinematic AGL flight profiles via profile_time + profile_height. "
         "DEM elevation: POST /v1/elevation/point and /v1/elevation/line (GeoJSON); "
-        "TRAJECTORIES_DEM_BACKEND=glo30|joerd|mapterhorn (default glo30)."
+        "TRAJECTORIES_DEM_BACKEND=glo30|joerd|mapterhorn (default glo30). "
+        "GET /v1/span reports each model's archive start, run, and forecast end."
     ),
     version="0.1.0",
     openapi_tags=[
@@ -85,6 +87,42 @@ async def http_error_handler(_request, exc: StarletteHTTPException):
     else:
         reason = str(detail)
     return _om_error(exc.status_code, reason)
+
+
+@app.get(
+    "/v1/span",
+    tags=["meta"],
+    summary="Archive and forecast bounds for one or more models",
+    response_model=None,
+)
+def span(
+    models: str | None = Query(
+        None,
+        description="Comma-separated model ids. Default: every configured model.",
+        examples=["icon_d2", "icon_d2,icon_eu"],
+    ),
+) -> JSONResponse | dict[str, Any]:
+    try:
+        if models is None or not str(models).strip():
+            keys = list(config.MODELS)
+        else:
+            keys = _parse_csv_models(models)
+    except ValueError as exc:
+        return _om_error(400, str(exc))
+
+    rows = []
+    reasons = []
+    for key in keys:
+        try:
+            rows.append(model_span(key))
+        except Exception as exc:  # noqa: BLE001 — one model must not hide the others
+            reasons.append(f"{key}: {exc}")
+    if not rows:
+        return _om_error(503, "; ".join(reasons) or "No model span available")
+    body: dict[str, Any] = {"models": rows}
+    if reasons:
+        body["partial"] = reasons
+    return body
 
 
 @app.get("/health", tags=["meta"])

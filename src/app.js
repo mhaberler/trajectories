@@ -1,10 +1,8 @@
 import {
-  DEFAULT_TRAJECTORY_API, DEFAULT_API_BASE,
-  MODELS, modelApiBase, modelForecastUrl, modelForecastHorizonH,
+  TRAJECTORY_API, MODELS, modelApiBase, modelForecastUrl, modelForecastHorizonH,
   SERIES_COLORS, DEFAULT_HEIGHTS,
   HEIGHT_MIN, HEIGHT_MAX, MARKER_INTERVALS, METHODS,
   OM_PUBLIC_FORECAST, OM_PRESSURE_LEVELS_HPA,
-  normalizeApiOrigin, setApiEndpoints, trajectoryApi, omApiBase,
 } from "./config.js";
 import { WindField } from "./windfield.js";
 import { computeTrajectory } from "./integrator.js";
@@ -77,10 +75,6 @@ function loadSettings() {
 }
 
 const saved = loadSettings();
-setApiEndpoints({
-  trajectoryApi: saved.trajectoryApi,
-  apiBase: saved.omApiBase,
-});
 setUnits(saved.units || {});
 let settingsReady = false; // erst nach vollständiger Wiederherstellung speichern
 /** @type {number|null} CSS `right` inset of #view3d (null = fill beside panel) */
@@ -144,8 +138,6 @@ function persist() {
     xsecHeight,
     xsecRight,
     downloadFmt: el("downloadfmt").value,
-    trajectoryApi: trajectoryApi(),
-    omApiBase: omApiBase(),
     exportOpts,
     exportOptsRev: EXPORT_OPTS_REV,
     filenamePattern,
@@ -628,7 +620,7 @@ function readHeightKnobs() {
     n,
     nBelow: clampHp(+el("hp-nbelow")?.value, 0, n - 1, 0),
     floor: heightKnobFloor,
-    ceiling: Math.max(0, snap100(+el("hp-ceiling")?.value || 1500)),
+    ceiling: Math.max(0, snap100(+el("hp-ceiling-handle")?.dataset.m || DEFAULT_HEIGHT_KNOBS.ceiling)),
     marker: Math.max(0, snap100(+el("hp-marker-handle")?.dataset.m || DEFAULT_HEIGHT_KNOBS.marker)),
   };
 }
@@ -639,37 +631,42 @@ function writeHeightKnobs(knobs) {
   el("hp-n").value = String(n);
   el("hp-nbelow").max = String(n - 1);
   el("hp-nbelow").value = String(clampHp(knobs.nBelow, 0, n - 1, 0));
-  el("hp-ceiling").value = String(Math.max(0, snap100(knobs.ceiling)));
   const floorKnob = heightKnobFloor;
-  const shown = floorKnob === 0
-    ? resolveFloor(0, el("refmode").value, state.startElevation)
-    : floorKnob;
-  el("hp-floor").value = String(shown);
+  el("hp-ceiling-handle").dataset.m = String(Math.max(0, snap100(knobs.ceiling)));
   el("hp-marker-handle").dataset.m = String(Math.max(0, snap100(knobs.marker)));
   const hint = el("hp-floor-hint");
   if (floorKnob === 0 && el("refmode").value === "amsl" && Number.isFinite(state.startElevation)) {
     hint.textContent = `Grund hier: ${Math.round(state.startElevation)} m NN`;
   } else {
-    hint.textContent = "0 = Grund am Startort";
+    hint.textContent = "Unten auf 0 = Grund am Startort";
   }
   positionHeightMarker();
 }
 
 function positionHeightMarker() {
-  const handle = el("hp-marker-handle");
-  if (!handle || typeof posPct !== "function") return;
+  const marker = el("hp-marker-handle");
+  const floor = el("hp-floor-handle");
+  const ceiling = el("hp-ceiling-handle");
+  if (!marker || typeof posPct !== "function") return;
   const knobs = readHeightKnobs();
   const resolved = fillHeightProfile(knobs, {
     mode: el("refmode").value,
     startElevation: state.startElevation,
     barMax,
   }).resolved;
-  handle.dataset.m = String(resolved.marker);
-  handle.style.bottom = `${posPct(resolved.marker)}%`;
-  handle.setAttribute("aria-valuenow", String(resolved.marker));
-  handle.setAttribute("aria-valuemin", String(resolved.floor));
-  handle.setAttribute("aria-valuemax", String(resolved.ceiling));
-  handle.title = `${resolved.marker} m`;
+  placeHeightBound(floor, resolved.floor, 0, resolved.ceiling, "Unten");
+  placeHeightBound(marker, resolved.marker, resolved.floor, resolved.ceiling, "Zwischenhöhe");
+  placeHeightBound(ceiling, resolved.ceiling, resolved.floor, barMax, "Oben");
+}
+
+function placeHeightBound(handle, metres, min, max, label) {
+  if (!handle) return;
+  handle.dataset.m = String(metres);
+  handle.style.bottom = `${posPct(metres)}%`;
+  handle.setAttribute("aria-valuenow", String(metres));
+  handle.setAttribute("aria-valuemin", String(min));
+  handle.setAttribute("aria-valuemax", String(max));
+  handle.dataset.tip = `${label} ${metres} m`;
 }
 
 function renderHeightProfileSelect(selectId = null) {
@@ -694,10 +691,22 @@ function renderHeightProfileSelect(selectId = null) {
 
 function syncSelectedHeightProfileAlts() {
   const id = el("hp-saved")?.value;
-  if (!id || !heightColors.size) return;
+  if (!id) return;
   const hit = heightProfiles.find((p) => p.id === id);
   if (!hit) return;
   hit.alts = [...heightColors.keys()].sort((a, b) => a - b);
+}
+
+function clearHeights() {
+  const ms = [...heightColors.keys()];
+  if (!ms.length) return;
+  heightColors.clear();
+  activeHeight = null;
+  for (const m of ms) dropRunsForHeight(m);
+  renderBar();
+  updateHeightContext();
+  persist();
+  maybeLive();
 }
 
 function replaceBarHeights(alts) {
@@ -795,10 +804,14 @@ function fillHeightsFromKnobs() {
 
 function onHeightMarkerPointer(e) {
   const track = el("hp-marker-track");
+  const handle = e.target.closest?.("[data-bound]") || el("hp-marker-handle");
+  const which = handle?.dataset.bound || "marker";
+  handle?.classList.add("is-drag");
   track.setPointerCapture?.(e.pointerId);
-  moveHeightMarker(e.clientY);
-  const move = (ev) => moveHeightMarker(ev.clientY);
+  moveHeightBound(which, e.clientY);
+  const move = (ev) => moveHeightBound(which, ev.clientY);
   const up = () => {
+    handle?.classList.remove("is-drag");
     track.removeEventListener("pointermove", move);
     track.removeEventListener("pointerup", up);
     persist();
@@ -807,20 +820,36 @@ function onHeightMarkerPointer(e) {
   track.addEventListener("pointerup", up);
 }
 
-function moveHeightMarker(clientY) {
+function moveHeightBound(which, clientY) {
   const r = bar.getBoundingClientRect();
   if (r.height < 1) return;
   const raw = Math.min(1, Math.max(0, 1 - (clientY - r.top) / r.height));
   const frac = Math.min(1, Math.max(0, (raw - BAR_PAD) / (1 - 2 * BAR_PAD)));
+  const metres = snap100(fracToMeters(frac));
   const knobs = readHeightKnobs();
-  knobs.marker = snap100(fracToMeters(frac));
+  if (which === "floor") {
+    const ground = resolveFloor(0, el("refmode").value, state.startElevation);
+    heightKnobFloor = (metres === 0 || metres === ground) ? 0 : metres;
+    knobs.floor = heightKnobFloor;
+  } else if (which === "ceiling") {
+    knobs.ceiling = metres;
+  } else {
+    knobs.marker = metres;
+  }
   const resolved = fillHeightProfile(knobs, {
     mode: el("refmode").value,
     startElevation: state.startElevation,
     barMax,
   }).resolved;
-  el("hp-marker-handle").dataset.m = String(resolved.marker);
-  positionHeightMarker();
+  if (which === "floor") {
+    const ground = resolveFloor(0, el("refmode").value, state.startElevation);
+    heightKnobFloor = resolved.floor === ground ? 0 : resolved.floor;
+    knobs.floor = heightKnobFloor;
+  } else if (which === "ceiling") {
+    knobs.ceiling = resolved.ceiling;
+  }
+  knobs.marker = resolved.marker;
+  writeHeightKnobs(knobs);
 }
 
 function runKey(run) {
@@ -1448,7 +1477,7 @@ async function fetchElevationLine(pts, intervalSec, signal) {
     })),
     interval_sec: Math.max(15, intervalSec),
   };
-  const resp = await fetch(`${trajectoryApi()}/v1/elevation/line`, {
+  const resp = await fetch(`${TRAJECTORY_API}/v1/elevation/line`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
@@ -3264,16 +3293,9 @@ el("hp-save").addEventListener("click", saveHeightProfile);
 el("hp-del").addEventListener("click", deleteHeightProfile);
 el("hp-saved").addEventListener("change", applySelectedHeightProfile);
 el("hp-fill").addEventListener("click", fillHeightsFromKnobs);
+el("hp-clear").addEventListener("click", clearHeights);
 el("hp-n").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
 el("hp-nbelow").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
-el("hp-ceiling").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
-el("hp-floor").addEventListener("change", () => {
-  const shown = Math.max(0, snap100(+el("hp-floor").value || 0));
-  const ground = resolveFloor(0, el("refmode").value, state.startElevation);
-  heightKnobFloor = (shown === 0 || shown === ground) ? 0 : shown;
-  writeHeightKnobs(readHeightKnobs());
-  persist();
-});
 el("hp-marker-track").addEventListener("pointerdown", onHeightMarkerPointer);
 
 // --- Markenabstand ----------------------------------------------------------
@@ -3428,34 +3450,6 @@ el("useapi").checked = saved.useApi !== false;
 if (el("useapi").checked && el("livemode").checked) {
   el("useapi").checked = false;
 }
-el("trajectoryapi").value = trajectoryApi();
-el("omapibase").value = omApiBase();
-el("trajectoryapi").placeholder = DEFAULT_TRAJECTORY_API;
-el("omapibase").placeholder = DEFAULT_API_BASE;
-
-function commitApiField(id, kind) {
-  const raw = el(id).value.trim();
-  if (!raw) {
-    if (kind === "traj") setApiEndpoints({ trajectoryApi: "" });
-    else setApiEndpoints({ apiBase: "" });
-    el(id).value = kind === "traj" ? DEFAULT_TRAJECTORY_API : DEFAULT_API_BASE;
-    persist();
-    return;
-  }
-  const n = normalizeApiOrigin(raw);
-  if (!n) {
-    el(id).value = kind === "traj" ? trajectoryApi() : omApiBase();
-    return;
-  }
-  if (kind === "traj") setApiEndpoints({ trajectoryApi: n });
-  else setApiEndpoints({ apiBase: n });
-  el(id).value = kind === "traj" ? trajectoryApi() : omApiBase();
-  persist();
-}
-for (const [id, kind] of [["trajectoryapi", "traj"], ["omapibase", "om"]]) {
-  el(id).addEventListener("change", () => commitApiField(id, kind));
-  el(id).addEventListener("blur", () => commitApiField(id, kind));
-}
 applyLiveLaunchUi();
 el("useapi").addEventListener("change", () => {
   if (el("useapi").checked && el("livemode").checked) {
@@ -3518,10 +3512,9 @@ updateHeightContext();
 
 settingsReady = true;
 
-// --- Startpunkt per Klick / Marker ziehen -----------------------------------
+// --- Startpunkt nur per Marker ziehen (Kartenklick setzt ihn nicht) ----------
 map.on("click", (e) => {
-  if (overlayInspect.handleClick(e)) return;
-  setStart(e.latlng.lat, e.latlng.lng);
+  overlayInspect.handleClick(e);
 });
 
 function setStart(lat, lon, opts = {}) {
@@ -3529,7 +3522,7 @@ function setStart(lat, lon, opts = {}) {
   if (Object.prototype.hasOwnProperty.call(opts, "placeName")) {
     state.startPlace = opts.placeName ? String(opts.placeName).trim() || null : null;
   } else {
-    // Kartenklick / Marker ziehen: kein Geocode-Text mehr gültig.
+    // Marker ziehen / neuer Punkt ohne Ortsname: Geocode-Text ungültig.
     state.startPlace = null;
     reversePlaceKey = null;
   }
@@ -3792,24 +3785,58 @@ function initTimebar() {
 }
 
 // --- Zeitschieber aus meta.json des gewählten Modells -----------------------
+let spanSeq = 0;
+
+async function loadSpan(modelKey) {
+  const resp = await fetch(`${TRAJECTORY_API}/v1/span?models=${encodeURIComponent(modelKey)}`);
+  if (!resp.ok) return null;
+  const body = await resp.json();
+  const row = (body.models || []).find((m) => m.model === modelKey);
+  if (!row || !Number.isFinite(row.history_start) || !Number.isFinite(row.data_end)) return null;
+  return row;
+}
+
 async function loadMeta() {
-  const model = MODELS[el("model").value];
+  const modelKey = el("model").value;
+  const model = MODELS[modelKey];
+  const seq = ++spanSeq;
   el("status").textContent = "Lade Modelllauf-Info …";
   el("status").className = "";
   try {
     const meta = await (await fetch(
       `${modelApiBase(model)}/data/${model.dataset}/static/meta.json`,
     )).json();
-    // Der Server hält mehrere Tage Archiv (geprüft ≥5 d) — für Rückwärts-
-    // trajektorien großzügiger Vorlauf; die echte Kante meldet der Integrator.
+    // Erst das gewohnte Fenster (72 h vor dem Lauf). Die Archivgrenze kommt
+    // danach von /v1/span und zieht die Leiste nach links, ohne den Zoom zu sprengen.
     const t0 = meta.last_run_initialisation_time - PAST_HOURS * 3600;
     const t1 = meta.data_end_time;
-    state.meta = { t0, t1 };
+    state.meta = {
+      t0,
+      t1,
+      runMs: Number.isFinite(meta.last_run_initialisation_time)
+        ? meta.last_run_initialisation_time * 1000
+        : null,
+      forecastEndMs: null,
+    };
     if (!timebar) initTimebar();
+    timebar.setLimits(null);
     timebar.setMeta(t0, t1, {
       tStartMs: Number.isFinite(saved.tStartMs) ? saved.tStartMs : undefined,
       playMs: Number.isFinite(saved.playMs) ? saved.playMs : undefined,
     });
+    void loadSpan(modelKey).then((span) => {
+      if (seq !== spanSeq || !span || !state.meta) return;
+      state.meta.t0 = span.history_start;
+      state.meta.t1 = span.data_end;
+      state.meta.runMs = span.run * 1000;
+      state.meta.forecastEndMs = span.forecast_end * 1000;
+      timebar.widenDomain(span.history_start, span.data_end);
+      timebar.setLimits({
+        runMs: state.meta.runMs,
+        forecastEndMs: state.meta.forecastEndMs,
+      });
+      updateReachHint();
+    }).catch(() => { /* 72 h Fenster bleibt */ });
     if (el("livemode").checked) timebar.setBand(timebar.playMs());
     // Clear one-shot restore so model switches keep the current playhead
     saved.tStartMs = timebar.startMs();
@@ -4135,7 +4162,7 @@ function buildTrajectoryApiParams({
 }
 
 async function fetchTrajectoryApi(params, { timeoutMs = 120000 } = {}) {
-  const url = `${trajectoryApi()}/v1/trajectory?${params}`;
+  const url = `${TRAJECTORY_API}/v1/trajectory?${params}`;
   if (DEBUG) console.debug("[traj] API", url);
   const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   const body = await resp.text();
@@ -5545,7 +5572,7 @@ async function importOverlayFiles(fileList) {
     const added = state.overlays.filter((o) => newIds.includes(o.id));
     const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-    await openOrRefresh3d({ flyToOverlayIds: newIds });
+    refreshOverlays3d();
     setStatus(`${newIds.length} Flugspur(en) geladen`);
   } else {
     setStatus(warnings[0] || "Keine Flugspuren in der Datei.", true);
@@ -5781,6 +5808,7 @@ function filenameCtxSync() {
     durationH: state.lastRuns?.duration ?? (+el("duration")?.value || 12),
     direction: state.lastRuns?.direction ?? (+el("direction")?.value || 1),
     modelLabel: model?.label || modelKey,
+    runMs: state.meta?.runMs,
   };
 }
 
@@ -5845,6 +5873,28 @@ async function buildDownloadFilename(ext) {
   return buildExportFilename(filenamePattern, filenameCtxSync(), ext);
 }
 
+for (const help of document.querySelectorAll(".ex-token-help")) {
+  const pop = help.querySelector(".ex-token-help-pop");
+  const btn = help.querySelector(".ex-token-help-btn");
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    pop.style.display = "block";
+    const w = pop.offsetWidth;
+    const h = pop.offsetHeight;
+    let left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  };
+  const hide = () => { pop.style.display = ""; };
+  help.addEventListener("mouseenter", place);
+  help.addEventListener("focusin", place);
+  help.addEventListener("mouseleave", hide);
+  help.addEventListener("focusout", (e) => {
+    if (!help.contains(e.relatedTarget)) hide();
+  });
+}
 el("exportcfg").addEventListener("click", openExportModal);
 el("ex-modal-close").addEventListener("click", closeExportModal);
 el("ex-modal").addEventListener("click", (e) => {
@@ -5968,6 +6018,7 @@ function exportCtx(key) {
         visible: true,
         coords: o.coords.map((c) => [c.lat, c.lon, c.z]),
       })),
+    filename: filenameCtxSync(),
     launchWindow: state.launchWindow?.samples?.length >= 2
       ? {
         tStartMs: state.launchWindow.tStartMs,

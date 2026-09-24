@@ -56,6 +56,16 @@ function viewerBundle() {
     },
     async load(id) {
       if (id !== resolvedId) return null;
+      // Viewer-Quellen liegen außerhalb des virtuellen Moduls. Ohne Watch
+      // behält Vite das Bündel, und der Export zeigt den alten Viewer.
+      for (const rel of [
+        "src/export/htmlExportMain.ts",
+        "src/export/htmlViewer.ts",
+        "src/export/htmlGlobe.ts",
+        "src/export/viewer.css",
+      ]) {
+        this.addWatchFile(new URL(`./${rel}`, import.meta.url).pathname);
+      }
       // Im Dev-Server bei jedem Zugriff neu bauen, damit Änderungen am Viewer
       // ohne Neustart ankommen; im Build genügt einmal.
       if (cached && process.env.NODE_ENV === "production") return cached;

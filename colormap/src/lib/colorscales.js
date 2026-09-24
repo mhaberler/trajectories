@@ -60,6 +60,46 @@ export const GROUPS = {
     ...namesFrom(CRAMERI, 'diverging'),
   ],
   Extra: ['cool', 'warm', 'Cubehelix', 'Rainbow', 'Sinebow'],
+  Wind: ['windy'],
+}
+
+/**
+ * Windy wind-speed legend: color pinned to km/h, blended to the next stop.
+ * Sampled from the standard Windy speed scale (not stretched to a data max).
+ */
+export const WINDY_STOPS = [
+  [0, '#6571b2'],
+  [4, '#42609b'],
+  [11, '#5d92a7'],
+  [18, '#5d8c7c'],
+  [25, '#68a35c'],
+  [32, '#559d44'],
+  [40, '#a69e5c'],
+  [47, '#9a8045'],
+  [54, '#9a6f5f'],
+  [61, '#783e4e'],
+  [68, '#a35686'],
+  [76, '#6f4c8f'],
+  [86, '#6b629f'],
+  [97, '#4c688a'],
+  [104, '#688f97'],
+  [130, '#7647a0'],
+  [166, '#e4d8d7'],
+  [184, '#dad491'],
+  [277, '#cdca7c'],
+  [374, '#808080'],
+]
+
+export function isWindy(name) {
+  return String(name).toLowerCase() === 'windy'
+}
+
+export function windyKmh() {
+  return WINDY_STOPS.map(([kmh]) => kmh)
+}
+
+export function windyColors() {
+  return WINDY_STOPS.map(([, hex]) => hex)
 }
 
 function d3Suffix(name) {
@@ -104,6 +144,8 @@ function largestScheme(scheme) {
  * @returns {string[]}
  */
 export function colorStops(name, n = 256) {
+  if (isWindy(name)) return windyColors()
+
   const lut = lutStops(name)
   if (lut) {
     if (n <= lut.length) {
@@ -145,6 +187,10 @@ export function colorStops(name, n = 256) {
 
 /** Ready-to-use chroma scale over `domain`. */
 export function buildScale(name, domain = [0, 1]) {
+  if (isWindy(name)) {
+    return chroma.scale(windyColors()).mode('lab').domain(windyKmh())
+  }
+
   const scheme = schemeFn(name)
   const isQualitative =
     Array.isArray(scheme) &&
@@ -160,6 +206,7 @@ export function buildScale(name, domain = [0, 1]) {
 
 export function isSupported(name) {
   return (
+    isWindy(name) ||
     !!lutStops(name) ||
     typeof interpolateFn(name) === 'function' ||
     !!schemeFn(name)

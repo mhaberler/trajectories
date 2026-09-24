@@ -1,9 +1,10 @@
 /**
  * Panel time bar (Original): Fenster squares, Start triangle, Dauer round tip.
- * Snap to Launch-Schritt; flight hatch from selected start.
+ * Startzeit snaps to 30 min UTC; launch window edges follow Launch-Schritt.
  */
 
 const HOUR_MS = 3600e3;
+const START_STEP_MS = 30 * 60e3;
 const MIN_VIEWPORT_MS = 6 * HOUR_MS;
 const BAND_GRAB_PX = 40;
 const MAX_LAUNCH_WINDOW_H = 12;
@@ -40,6 +41,8 @@ export function createTimebar(opts) {
     v0: 0, v1: 1,
     tStart: 0, tEnd: 0,
     playMs: 0,
+    runMs: null,
+    forecastEndMs: null,
   };
 
   let ready = false;
@@ -57,6 +60,13 @@ export function createTimebar(opts) {
   const needle = () => el("timebar-needle");
   const ticks = () => el("timebar-ticks");
   const metaShade = () => el("timebar-meta-shade");
+  const historyShade = () => el("timebar-history-shade");
+  const forecastShade = () => el("timebar-forecast-shade");
+  const runTick = () => el("timebar-run-tick");
+  const historyLabel = () => el("timebar-history-label");
+  const forecastLabel = () => el("timebar-forecast-label");
+  const edgeLeft = () => el("timebar-edge-left");
+  const edgeRight = () => el("timebar-edge-right");
   const reachShade = () => el("timebar-reach-shade");
   const tipWinStart = () => el("timebar-tip-win-start");
   const tipWinEnd = () => el("timebar-tip-win-end");
@@ -76,6 +86,18 @@ export function createTimebar(opts) {
   function snapStep(ms) {
     const s = stepMs();
     return Math.round(ms / s) * s;
+  }
+
+  /** Startzeit / playhead: full and half hours (UTC). */
+  function snapStart(ms) {
+    return Math.round(ms / START_STEP_MS) * START_STEP_MS;
+  }
+
+  function clampSnapStart(ms, lo = m.meta0, hi = m.meta1) {
+    let t = snapStart(ms);
+    if (t < lo) t += START_STEP_MS;
+    if (t > hi) t -= START_STEP_MS;
+    return clamp(t, lo, hi);
   }
 
   function snapDurH(h) {
@@ -166,6 +188,7 @@ export function createTimebar(opts) {
     const h = Math.min(MAX_LAUNCH_WINDOW_H, Math.round(hRaw * 4) / 4);
     m.tStart = clamp(snapStep(m.tStart), m.meta0, m.meta1);
     if (h <= 0) {
+      m.tStart = clampSnapStart(m.tStart);
       m.tEnd = m.tStart;
       m.playMs = m.tStart;
     } else {
@@ -183,7 +206,7 @@ export function createTimebar(opts) {
   function moveWindowToStart(tStart) {
     const w = windowMs() > 0 ? Math.min(maxBandMs(), Math.max(minBandMs(), windowMs())) : 0;
     if (w <= 0 || launchWindowH() <= 0) {
-      m.tStart = clamp(snapStep(tStart), m.meta0, m.meta1);
+      m.tStart = clampSnapStart(tStart);
       m.tEnd = m.tStart;
       m.playMs = m.tStart;
       return;
@@ -227,6 +250,64 @@ export function createTimebar(opts) {
     const reach0 = dir > 0 ? m.playMs : m.playMs - durMs;
     const reach1 = dir > 0 ? m.playMs + durMs : m.playMs;
     placeShade(reachShade(), reach0, reach1);
+    renderLimits();
+  }
+
+  function shortDay(ms) {
+    const d = new Date(ms);
+    const mon = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+    return `${d.getUTCDate()}. ${mon[d.getUTCMonth()]}`;
+  }
+
+  function hideLimit(node) {
+    if (node) node.hidden = true;
+  }
+
+  /** Archiv bis zum Lauf, Lauf bis zum Vorhersageende. Kanten ausserhalb des Zooms als Hinweis. */
+  function renderLimits() {
+    const hist = historyShade();
+    const fore = forecastShade();
+    const tick = runTick();
+    const hLab = historyLabel();
+    const fLab = forecastLabel();
+    const left = edgeLeft();
+    const right = edgeRight();
+    hideLimit(hist);
+    hideLimit(fore);
+    hideLimit(tick);
+    hideLimit(hLab);
+    hideLimit(fLab);
+    hideLimit(left);
+    hideLimit(right);
+    if (!Number.isFinite(m.runMs) || !Number.isFinite(m.forecastEndMs)) return;
+
+    placeShade(hist, m.meta0, m.runMs);
+    placeShade(fore, m.runMs, m.forecastEndMs);
+
+    const inside = (ms) => ms >= m.v0 && ms <= m.v1;
+    if (inside(m.runMs) && tick) {
+      tick.hidden = false;
+      tick.style.left = `${msToFrac(m.runMs) * 100}%`;
+    }
+    const hours = Math.max(0, Math.round((m.forecastEndMs - m.runMs) / HOUR_MS));
+    if (inside(m.meta0) && hLab) {
+      hLab.hidden = false;
+      hLab.textContent = shortDay(m.meta0);
+      hLab.style.left = `${msToFrac(m.meta0) * 100}%`;
+      hLab.style.right = "auto";
+    } else if (m.meta0 < m.v0 && left) {
+      left.hidden = false;
+      left.textContent = `← ${shortDay(m.meta0)}`;
+    }
+    if (inside(m.forecastEndMs) && fLab) {
+      fLab.hidden = false;
+      fLab.textContent = `${hours} h`;
+      fLab.style.left = "auto";
+      fLab.style.right = `${(1 - msToFrac(m.forecastEndMs)) * 100}%`;
+    } else if (m.forecastEndMs > m.v1 && right) {
+      right.hidden = false;
+      right.textContent = `${hours} h →`;
+    }
   }
 
   function stackedTipHtml(timeOrDur, sub) {
@@ -355,6 +436,35 @@ export function createTimebar(opts) {
     onChange?.();
   }
 
+  function ensureVisiblePlay() {
+    if (m.playMs >= m.v0 && m.playMs <= m.v1) return;
+    const span = Math.max(MIN_VIEWPORT_MS, m.v1 - m.v0);
+    m.v0 = clamp(m.playMs - span / 2, m.meta0, Math.max(m.meta0, m.meta1 - span));
+    m.v1 = Math.min(m.meta1, m.v0 + span);
+    if (m.v1 - m.v0 < span) m.v0 = Math.max(m.meta0, m.v1 - span);
+  }
+
+  function warpToNow() {
+    if (!ready) return;
+    const t = clampSnapStart(Date.now());
+    if (launchWindowH() > 0 && windowMs() > 0) {
+      const w = Math.min(maxBandMs(), Math.max(minBandMs(), windowMs()));
+      m.tStart = clamp(snapStep(t), m.meta0, Math.max(m.meta0, m.meta1 - w));
+      m.tEnd = clamp(m.tStart + w, m.tStart + minBandMs(), m.meta1);
+      m.playMs = clampSnapStart(t, m.tStart, m.tEnd);
+      writeLaunchWindowField();
+    } else {
+      m.tStart = t;
+      m.tEnd = t;
+      m.playMs = t;
+    }
+    ensureVisiblePlay();
+    ensureVisibleBand();
+    render();
+    onPlay?.();
+    emitChange();
+  }
+
   function ensureVisibleBand() {
     const wMs = windowMs();
     if (wMs <= 0 || isFullViewport()) return;
@@ -424,11 +534,11 @@ export function createTimebar(opts) {
     savedZoom = null;
 
     const prefer = Number.isFinite(restore.tStartMs) ? restore.tStartMs : m.tStart;
-    const want = Number.isFinite(prefer) && prefer > 0 ? prefer : snapStep(Date.now());
-    m.tStart = clamp(snapStep(want), m.meta0, m.meta1);
+    const want = Number.isFinite(prefer) && prefer > 0 ? prefer : Date.now();
+    m.tStart = clampSnapStart(want);
     syncWindowFromInputs();
     if (Number.isFinite(restore.playMs)) {
-      m.playMs = clamp(restore.playMs, m.tStart, m.tEnd || m.tStart);
+      m.playMs = clampSnapStart(restore.playMs, m.tStart, m.tEnd || m.tStart);
     } else {
       m.playMs = m.tStart;
     }
@@ -438,12 +548,44 @@ export function createTimebar(opts) {
     emitChange();
   }
 
+  /**
+   * Archivgrenze nachziehen, ohne die aktuelle Ansicht auf die ganze Spanne zu ziehen.
+   * Sekunden, wie setMeta.
+   */
+  function widenDomain(meta0Sec, meta1Sec) {
+    if (!ready) {
+      setMeta(meta0Sec, meta1Sec);
+      return;
+    }
+    const v0 = m.v0;
+    const v1 = m.v1;
+    m.meta0 = meta0Sec * 1000;
+    m.meta1 = meta1Sec * 1000;
+    if (m.meta1 <= m.meta0) m.meta1 = m.meta0 + HOUR_MS;
+    m.v0 = clamp(v0, m.meta0, m.meta1);
+    m.v1 = clamp(v1, m.meta0, m.meta1);
+    if (m.v1 - m.v0 < MIN_VIEWPORT_MS) {
+      m.v1 = Math.min(m.meta1, m.v0 + MIN_VIEWPORT_MS);
+      m.v0 = Math.max(m.meta0, m.v1 - MIN_VIEWPORT_MS);
+    }
+    m.tStart = clampSnapStart(m.tStart);
+    syncWindowFromInputs();
+    m.playMs = clampSnapStart(m.playMs, m.tStart, m.tEnd || m.tStart);
+    render();
+  }
+
+  function setLimits(limits) {
+    m.runMs = Number.isFinite(limits?.runMs) ? limits.runMs : null;
+    m.forecastEndMs = Number.isFinite(limits?.forecastEndMs) ? limits.forecastEndMs : null;
+    if (ready) render();
+  }
+
   function startMs() { return m.tStart; }
   function playMs() { return m.playMs; }
   function endMs() { return m.tEnd; }
 
   function setPlayMs(ms, { silent = false } = {}) {
-    m.playMs = clamp(ms, m.tStart, m.tEnd || m.tStart);
+    m.playMs = clampSnapStart(ms, m.tStart, m.tEnd || m.tStart);
     render();
     if (!silent) {
       onPlay?.();
@@ -452,8 +594,11 @@ export function createTimebar(opts) {
   }
 
   function setBand(tStart, _tEnd, { syncField = true } = {}) {
-    m.tStart = clamp(snapStep(tStart), m.meta0, m.meta1);
+    m.tStart = launchWindowH() > 0
+      ? clamp(snapStep(tStart), m.meta0, m.meta1)
+      : clampSnapStart(tStart);
     syncWindowFromInputs();
+    m.playMs = clampSnapStart(m.playMs, m.tStart, m.tEnd || m.tStart);
     if (syncField) writeLaunchWindowField();
     ensureVisibleBand();
     render();
@@ -539,7 +684,7 @@ export function createTimebar(opts) {
     if (!drag) return;
     if (mode === "track" && launchWindowH() <= 0) {
       drag.mode = "play";
-      drag.clickSnap = snapStep(xToMs(e.clientX));
+      drag.clickSnap = snapStart(xToMs(e.clientX));
       drag.play0 = drag.clickSnap;
     }
   }
@@ -559,10 +704,10 @@ export function createTimebar(opts) {
 
     if (drag.mode === "play") {
       if (launchWindowH() > 0) {
-        m.playMs = clamp(drag.play0 + dMs, m.tStart, m.tEnd);
+        m.playMs = clampSnapStart(drag.play0 + dMs, m.tStart, m.tEnd);
       } else {
         const base = Number.isFinite(drag.clickSnap) ? drag.clickSnap : drag.play0;
-        const t = clamp(base + dMs, m.meta0, m.meta1);
+        const t = clampSnapStart(base + dMs);
         m.playMs = t;
         m.tStart = t;
         m.tEnd = t;
@@ -621,7 +766,7 @@ export function createTimebar(opts) {
 
     if (!moved) {
       if (mode === "play" && Number.isFinite(clickSnap) && launchWindowH() <= 0) {
-        const t = clamp(snapStep(clickSnap), m.meta0, m.meta1);
+        const t = clampSnapStart(clickSnap);
         m.tStart = t;
         m.tEnd = t;
         m.playMs = t;
@@ -635,9 +780,9 @@ export function createTimebar(opts) {
 
     if (mode === "play") {
       if (launchWindowH() > 0) {
-        m.playMs = clamp(snapStep(m.playMs), m.tStart, m.tEnd);
+        m.playMs = clampSnapStart(m.playMs, m.tStart, m.tEnd);
       } else {
-        const t = clamp(snapStep(m.playMs), m.meta0, m.meta1);
+        const t = clampSnapStart(m.playMs);
         m.playMs = t;
         m.tStart = t;
         m.tEnd = t;
@@ -651,7 +796,7 @@ export function createTimebar(opts) {
       if (m.tEnd - m.tStart < minBandMs() && launchWindowH() > 0) {
         m.tEnd = Math.min(m.meta1, m.tStart + minBandMs());
       }
-      m.playMs = clamp(snapStep(m.playMs), m.tStart, m.tEnd);
+      m.playMs = clampSnapStart(m.playMs, m.tStart, m.tEnd);
       writeLaunchWindowField();
       ensureVisibleBand();
       render();
@@ -696,10 +841,16 @@ export function createTimebar(opts) {
       lastTapTs = 0;
       toggleViewportZoom();
     });
+    el("timebar-now")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      warpToNow();
+    });
   }
 
   return {
     setMeta,
+    widenDomain,
+    setLimits,
     startMs,
     playMs,
     endMs,

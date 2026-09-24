@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lineCoords, overlaysFromGeoJSON, parseOverlayFile } from "../src/overlays/parse.js";
+import { metricsAt } from "../src/overlays/sample.js";
 import { buildPayload, HTML_EXPORT_DEFAULTS } from "../src/export/htmlPayload.ts";
 
 let failures = 0;
@@ -104,6 +105,34 @@ const KML = `<?xml version="1.0" encoding="UTF-8"?>
   check("gpx: Zeiten übernommen", ts?.length === 3 && ts.every((t) => Number.isFinite(t)), String(ts));
   check("gpx: erste Zeit UTC", ts?.[0] === Date.parse("2024-06-01T10:00:00Z"));
   check("gpx: 60s Abstand", ts?.[1] - ts?.[0] === 60_000);
+}
+
+{
+  const GPX_CLONE = `<?xml version="1.0"?>
+<gpx version="1.1" creator="test">
+  <trk><name>Clone</name>
+    <trkseg>
+      <trkpt lat="47.1" lon="11.1"><time>2024-06-01T10:00:00Z</time></trkpt>
+      <trkpt lat="47.1" lon="11.1"><ele>1000</ele><time>2024-06-01T10:00:00Z</time></trkpt>
+      <trkpt lat="47.2" lon="11.2"><ele>1100</ele><time>2024-06-01T10:01:00Z</time></trkpt>
+      <trkpt lat="47.2" lon="11.2"><ele>1100</ele><time>2024-06-01T10:02:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>`;
+  const { drafts } = await parseOverlayFile(GPX_CLONE, "clone.gpx");
+  const coords = drafts[0]?.coords;
+  check("gpx: Klon entfernt", coords?.length === 3, `n=${coords?.length}`);
+  check("gpx: Höhe vom Klon", coords?.[0].z === 1000, String(coords?.[0].z));
+  const moved = metricsAt(coords, 0);
+  check("gpx: Speed nach Klon", moved?.speedKmh != null && moved.speedKmh > 0, String(moved?.speedKmh));
+  check("gpx: Richtung nach Klon", moved?.headingDeg != null, String(moved?.headingDeg));
+  check(
+    "gpx: Stillstand bleibt",
+    coords?.[1].lat === coords?.[2].lat && coords[2].t - coords[1].t === 60_000,
+  );
+  const hover = metricsAt(coords, 1);
+  check("gpx: Stillstand 0 km/h", hover?.speedKmh === 0, String(hover?.speedKmh));
+  check("gpx: Stillstand ohne Richtung", hover?.headingDeg == null, String(hover?.headingDeg));
 }
 
 {

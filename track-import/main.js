@@ -2,8 +2,9 @@ import { parseOverlayBytes } from "@overlays";
 import { createCanvasTrack, segmentValue } from "../src/overlays/canvasTrack.js";
 import { mountTrackInspect } from "../src/overlays/inspectControl.js";
 import { mountColormapSelect, colorStops } from "./colormapSelect.js";
-import { isWindy, windyKmh, windyColors } from "@colormap";
+import { isWindy } from "@colormap";
 import { mountScalePill, niceTicks } from "./scalePill.js";
+import { mountTrackGlobe } from "./view3d.js";
 
 const STORAGE_KEY = "track-import:v1";
 const DEFAULTS = {
@@ -57,6 +58,21 @@ const trackLayer = L.layerGroup().addTo(map);
 const inspect = mountTrackInspect(map, {
   getTracks: () => tracks.filter((t) => t.visible !== false),
 });
+
+/** @type {{ setTracks: (tracks: object[], opts?: { fly?: boolean }) => void }|null} */
+let globe = null;
+mountTrackGlobe(document.getElementById("globe")).then((g) => {
+  globe = g;
+  globe.setTracks(tracks);
+  map.invalidateSize();
+}).catch((err) => {
+  const host = document.getElementById("globe");
+  host.textContent = err?.message || String(err);
+  host.style.color = "#fff";
+  host.style.padding = "16px";
+  console.error(err);
+});
+window.addEventListener("resize", () => map.invalidateSize());
 
 const el = (id) => document.getElementById(id);
 
@@ -158,16 +174,8 @@ function windySpeedMode() {
   return settings.mode === "speed" && isWindy(settings.colormap);
 }
 
-/** Legend labels on Windy anchors, sparse enough not to collide. */
-function windyTickLabels(kmh) {
-  const max = kmh[kmh.length - 1];
-  const out = [kmh[0]];
-  for (const v of kmh) {
-    if ((v - out[out.length - 1]) / max >= 0.08) out.push(v);
-  }
-  if (out[out.length - 1] !== max) out.push(max);
-  return out;
-}
+/** On-map Windy bar: these km/h sit at equal widths; colors come from the full scale. */
+const WINDY_LEGEND_TICKS = [0, 10, 20, 35, 55, 70, 100];
 
 function syncUi() {
   for (const r of document.querySelectorAll('input[name="color-mode"]')) {
@@ -193,13 +201,13 @@ function syncUi() {
   let gradientCss;
   let payload;
   if (windySpeedMode()) {
-    const kmh = windyKmh();
-    const max = kmh[kmh.length - 1];
-    const cols = windyColors().slice();
-    if (settings.cmapReverse) cols.reverse();
-    const parts = kmh.map((v, i) => `${cols[i]} ${(v / max) * 100}%`);
+    const ticks = WINDY_LEGEND_TICKS;
+    const scale = cmap.scale();
+    const last = ticks.length - 1;
+    const parts = ticks.map((v, i) => `${scale(v).hex()} ${(i / last) * 100}%`);
+    const tickFracs = ticks.map((_, i) => i / last);
     gradientCss = `linear-gradient(${dir}, ${parts.join(", ")})`;
-    payload = { unit: "km/h", max, ticks: windyTickLabels(kmh), gradientCss, vertical };
+    payload = { unit: "km/h", max: ticks[last], ticks, tickFracs, gradientCss, vertical };
   } else {
     const stops = colorStops(settings.colormap, 16);
     if (settings.cmapReverse) stops.reverse();
@@ -284,6 +292,7 @@ function redraw() {
   }
 
   inspect.refresh();
+  globe?.setTracks(tracks);
 
   if (settings.mode === "speed" && missingSpeed && segs) {
     setStatus(`${missingSpeed} Segment(e) ohne Zeitstempel — grau.`);
@@ -334,6 +343,7 @@ async function importOverlayFiles(fileList) {
     const added = tracks.filter((o) => newIds.includes(o.id));
     const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    globe?.setTracks(tracks, { fly: true });
     setStatus(`${newIds.length} Flugspur(en) geladen`);
   } else {
     setStatus(warnings[0] || "Keine Flugspuren in der Datei.", true);

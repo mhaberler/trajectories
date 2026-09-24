@@ -34,8 +34,8 @@ export function heightFromDisplay(v: number) {
 
 export function heightSliderCfg() {
   return unitState.height === "ft"
-    ? { min: 50, max: 20000, step: 50, inputMax: 33000 }
-    : { min: 10, max: 6000, step: 10, inputMax: 10000 };
+    ? { min: 0, max: 20000, step: 50, inputMax: 33000 }
+    : { min: 0, max: 6000, step: 10, inputMax: 10000 };
 }
 
 export function fmtWind(ms: number) {

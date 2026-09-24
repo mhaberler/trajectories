@@ -127,7 +127,7 @@ export const SERIES_COLORS = [
 ];
 
 export const DEFAULT_HEIGHTS = [500, 1500, 3000];
-export const HEIGHT_MIN = 10;
+export const HEIGHT_MIN = 0;
 export const HEIGHT_MAX = 10000;
 
 // Zeitmarken-Abstände (Minuten) für die Punktmarkierungen.

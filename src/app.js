@@ -15,6 +15,7 @@ import {
 } from "./units";
 import { initGeocode, reversePlaceName } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
+import { fillHeightProfile, resolveFloor, snap100, HP_MAX, HP_SAVED_MAX } from "./heightProfile.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
 import { createTimebar } from "./timebar.js";
 import {
@@ -89,6 +90,7 @@ let view3dBottom = Number.isFinite(saved.view3dBottom) ? saved.view3dBottom : nu
 
 function persist() {
   if (!settingsReady) return;
+  syncSelectedHeightProfileAlts();
   const s = {
     model: el("model").value,
     refmode: el("refmode").value,
@@ -129,6 +131,11 @@ function persist() {
         return o;
       }),
     })),
+    heightProfiles: heightProfiles.map((p) => ({
+      id: p.id, name: p.name, alts: [...p.alts], knobs: { ...p.knobs },
+    })),
+    selectedHeightProfileId: el("hp-saved")?.value || null,
+    heightProfileKnobs: readHeightKnobs(),
     panelWidth: Math.round(el("panel").getBoundingClientRect().width),
     fpSideHeight: Math.round(el("fp-side").getBoundingClientRect().height) || 110,
     fpTableVisible: !el("fp-table-block")?.hidden,
@@ -473,6 +480,12 @@ let profileTargets = cloneTargets(FP_PRESETS.climbcruise);
 /** @type {{ id: string, name: string, targets: { tSec: number, targetAgl: number, targetAmsl?: number }[] }[]} */
 let savedProfiles = [];
 
+/** @type {{ id: string, name: string, alts: number[], knobs: { n: number, nBelow: number, floor: number, ceiling: number, marker: number } }[]} */
+let heightProfiles = [];
+
+const DEFAULT_HEIGHT_KNOBS = { n: 8, nBelow: 3, floor: 0, ceiling: 1500, marker: 500 };
+let heightKnobFloor = 0;
+
 function normalizeSavedProfiles(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -572,6 +585,242 @@ function deleteSavedProfile() {
   renderSavedProfileSelect();
   persist();
   setStatus(`Profil „${hit.name}“ gelöscht.`);
+}
+
+function normalizeHeightProfiles(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const p of raw) {
+    if (!p || typeof p.name !== "string") continue;
+    const name = p.name.trim().slice(0, 40);
+    if (!name) continue;
+    const alts = (Array.isArray(p.alts) ? p.alts : [])
+      .map((m) => Math.round(Number(m)))
+      .filter((m) => Number.isFinite(m) && m >= 0 && m <= HEIGHT_MAX)
+      .slice(0, HP_MAX);
+    if (!alts.length) continue;
+    const k = p.knobs || {};
+    out.push({
+      id: typeof p.id === "string" && p.id ? p.id : `h-${Date.now()}-${out.length}`,
+      name,
+      alts,
+      knobs: {
+        n: clampHp(+k.n, 1, HP_MAX, DEFAULT_HEIGHT_KNOBS.n),
+        nBelow: clampHp(+k.nBelow, 0, HP_MAX - 1, DEFAULT_HEIGHT_KNOBS.nBelow),
+        floor: Math.max(0, snap100(Number.isFinite(+k.floor) ? +k.floor : 0)),
+        ceiling: Math.max(0, snap100(Number.isFinite(+k.ceiling) ? +k.ceiling : 1500)),
+        marker: Math.max(0, snap100(Number.isFinite(+k.marker) ? +k.marker : 500)),
+      },
+    });
+    if (out.length >= HP_SAVED_MAX) break;
+  }
+  return out;
+}
+
+function clampHp(v, lo, hi, fallback) {
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(hi, Math.max(lo, Math.round(v)));
+}
+
+function readHeightKnobs() {
+  const n = clampHp(+el("hp-n")?.value, 1, HP_MAX, DEFAULT_HEIGHT_KNOBS.n);
+  return {
+    n,
+    nBelow: clampHp(+el("hp-nbelow")?.value, 0, n - 1, 0),
+    floor: heightKnobFloor,
+    ceiling: Math.max(0, snap100(+el("hp-ceiling")?.value || 1500)),
+    marker: Math.max(0, snap100(+el("hp-marker-handle")?.dataset.m || DEFAULT_HEIGHT_KNOBS.marker)),
+  };
+}
+
+function writeHeightKnobs(knobs) {
+  heightKnobFloor = Math.max(0, snap100(knobs.floor));
+  const n = clampHp(knobs.n, 1, HP_MAX, DEFAULT_HEIGHT_KNOBS.n);
+  el("hp-n").value = String(n);
+  el("hp-nbelow").max = String(n - 1);
+  el("hp-nbelow").value = String(clampHp(knobs.nBelow, 0, n - 1, 0));
+  el("hp-ceiling").value = String(Math.max(0, snap100(knobs.ceiling)));
+  const floorKnob = heightKnobFloor;
+  const shown = floorKnob === 0
+    ? resolveFloor(0, el("refmode").value, state.startElevation)
+    : floorKnob;
+  el("hp-floor").value = String(shown);
+  el("hp-marker-handle").dataset.m = String(Math.max(0, snap100(knobs.marker)));
+  const hint = el("hp-floor-hint");
+  if (floorKnob === 0 && el("refmode").value === "amsl" && Number.isFinite(state.startElevation)) {
+    hint.textContent = `Grund hier: ${Math.round(state.startElevation)} m NN`;
+  } else {
+    hint.textContent = "0 = Grund am Startort";
+  }
+  positionHeightMarker();
+}
+
+function positionHeightMarker() {
+  const handle = el("hp-marker-handle");
+  if (!handle || typeof posPct !== "function") return;
+  const knobs = readHeightKnobs();
+  const resolved = fillHeightProfile(knobs, {
+    mode: el("refmode").value,
+    startElevation: state.startElevation,
+    barMax,
+  }).resolved;
+  handle.dataset.m = String(resolved.marker);
+  handle.style.bottom = `${posPct(resolved.marker)}%`;
+  handle.setAttribute("aria-valuenow", String(resolved.marker));
+  handle.setAttribute("aria-valuemin", String(resolved.floor));
+  handle.setAttribute("aria-valuemax", String(resolved.ceiling));
+  handle.title = `${resolved.marker} m`;
+}
+
+function renderHeightProfileSelect(selectId = null) {
+  const sel = el("hp-saved");
+  if (!sel) return;
+  const keep = selectId ?? sel.value;
+  sel.replaceChildren();
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = heightProfiles.length ? "— wählen —" : "— keine —";
+  sel.appendChild(empty);
+  for (const p of heightProfiles) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    sel.appendChild(opt);
+  }
+  if (keep && heightProfiles.some((p) => p.id === keep)) sel.value = keep;
+  else sel.value = "";
+  el("hp-del").disabled = !sel.value;
+}
+
+function syncSelectedHeightProfileAlts() {
+  const id = el("hp-saved")?.value;
+  if (!id || !heightColors.size) return;
+  const hit = heightProfiles.find((p) => p.id === id);
+  if (!hit) return;
+  hit.alts = [...heightColors.keys()].sort((a, b) => a - b);
+}
+
+function replaceBarHeights(alts) {
+  const next = [];
+  for (const m of alts) {
+    const v = Math.round(Math.min(barMax, Math.max(HEIGHT_MIN, m)));
+    if (!next.includes(v)) next.push(v);
+  }
+  const prev = new Map(heightColors);
+  for (const m of [...heightColors.keys()]) {
+    if (!next.includes(m)) dropRunsForHeight(m);
+  }
+  heightColors.clear();
+  for (const m of next) {
+    const used = new Set(heightColors.values());
+    heightColors.set(m, prev.get(m) || SERIES_COLORS.find((c) => !used.has(c)));
+  }
+  activeHeight = next.length ? next[0] : null;
+  renderBar();
+  updateHeightContext();
+  persist();
+}
+
+function selectedHeightProfile() {
+  return heightProfiles.find((p) => p.id === el("hp-saved").value) || null;
+}
+
+function saveHeightProfile() {
+  const name = (el("hp-name").value || "").trim().slice(0, 40);
+  if (!name) {
+    setStatus("Bitte einen Namen für das Höhenprofil eingeben.", true);
+    return;
+  }
+  const alts = [...heightColors.keys()].sort((a, b) => a - b);
+  if (!alts.length) {
+    setStatus("Keine Starthöhe zum Speichern.", true);
+    return;
+  }
+  const knobs = readHeightKnobs();
+  const key = name.toLowerCase();
+  const existing = heightProfiles.find((p) => p.name.toLowerCase() === key);
+  if (existing) {
+    existing.name = name;
+    existing.alts = alts;
+    existing.knobs = knobs;
+    renderHeightProfileSelect(existing.id);
+  } else {
+    if (heightProfiles.length >= HP_SAVED_MAX) {
+      setStatus(`Maximal ${HP_SAVED_MAX} Höhenprofile.`, true);
+      return;
+    }
+    const id = `h-${Date.now()}`;
+    heightProfiles.push({ id, name, alts, knobs });
+    heightProfiles.sort((a, b) => a.name.localeCompare(b.name, "de"));
+    renderHeightProfileSelect(id);
+  }
+  persist();
+  setStatus(`Höhenprofil „${name}“ gespeichert.`);
+}
+
+function applySelectedHeightProfile() {
+  const hit = selectedHeightProfile();
+  el("hp-del").disabled = !hit;
+  if (!hit) return;
+  el("hp-name").value = hit.name;
+  writeHeightKnobs(hit.knobs);
+  replaceBarHeights(hit.alts);
+}
+
+function deleteHeightProfile() {
+  const hit = selectedHeightProfile();
+  if (!hit) return;
+  if (!confirm(`Höhenprofil „${hit.name}“ löschen?`)) return;
+  heightProfiles = heightProfiles.filter((p) => p.id !== hit.id);
+  renderHeightProfileSelect();
+  persist();
+  setStatus(`Höhenprofil „${hit.name}“ gelöscht.`);
+}
+
+function fillHeightsFromKnobs() {
+  const knobs = readHeightKnobs();
+  writeHeightKnobs(knobs);
+  const { alts, warning } = fillHeightProfile(knobs, {
+    mode: el("refmode").value,
+    startElevation: state.startElevation,
+    barMax,
+  });
+  if (!alts.length) {
+    setStatus("Keine Höhen erzeugt.", true);
+    return;
+  }
+  replaceBarHeights(alts);
+  setStatus(warning || `${alts.length} Starthöhen gesetzt.`);
+}
+
+function onHeightMarkerPointer(e) {
+  const track = el("hp-marker-track");
+  track.setPointerCapture?.(e.pointerId);
+  moveHeightMarker(e.clientY);
+  const move = (ev) => moveHeightMarker(ev.clientY);
+  const up = () => {
+    track.removeEventListener("pointermove", move);
+    track.removeEventListener("pointerup", up);
+    persist();
+  };
+  track.addEventListener("pointermove", move);
+  track.addEventListener("pointerup", up);
+}
+
+function moveHeightMarker(clientY) {
+  const r = bar.getBoundingClientRect();
+  if (r.height < 1) return;
+  const raw = Math.min(1, Math.max(0, 1 - (clientY - r.top) / r.height));
+  const frac = Math.min(1, Math.max(0, (raw - BAR_PAD) / (1 - 2 * BAR_PAD)));
+  const knobs = readHeightKnobs();
+  knobs.marker = snap100(fracToMeters(frac));
+  const resolved = fillHeightProfile(knobs, {
+    mode: el("refmode").value,
+    startElevation: state.startElevation,
+    barMax,
+  }).resolved;
+  el("hp-marker-handle").dataset.m = String(resolved.marker);
+  positionHeightMarker();
 }
 
 function runKey(run) {
@@ -2572,6 +2821,7 @@ function renderBar() {
   el("heightbar-labels").innerHTML = labelHtml;
 
   updateActiveHint();
+  positionHeightMarker();
 }
 
 // Hinweis, welcher Punkt beim Methodenvergleich verglichen wird.
@@ -2994,6 +3244,37 @@ if (Number.isFinite(saved.activeHeight) && heightColors.has(Math.round(saved.act
   activeHeight = [...heightColors.keys()].sort((a, b) => a - b)[0];
 }
 renderBar();
+
+heightProfiles = normalizeHeightProfiles(saved.heightProfiles);
+renderHeightProfileSelect(saved.selectedHeightProfileId || "");
+{
+  const selected = selectedHeightProfile();
+  const draft = saved.heightProfileKnobs;
+  if (selected) {
+    el("hp-name").value = selected.name;
+    writeHeightKnobs(selected.knobs);
+    replaceBarHeights(selected.alts);
+  } else if (draft && typeof draft === "object") {
+    writeHeightKnobs({ ...DEFAULT_HEIGHT_KNOBS, ...draft });
+  } else {
+    writeHeightKnobs(DEFAULT_HEIGHT_KNOBS);
+  }
+}
+el("hp-save").addEventListener("click", saveHeightProfile);
+el("hp-del").addEventListener("click", deleteHeightProfile);
+el("hp-saved").addEventListener("change", applySelectedHeightProfile);
+el("hp-fill").addEventListener("click", fillHeightsFromKnobs);
+el("hp-n").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
+el("hp-nbelow").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
+el("hp-ceiling").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
+el("hp-floor").addEventListener("change", () => {
+  const shown = Math.max(0, snap100(+el("hp-floor").value || 0));
+  const ground = resolveFloor(0, el("refmode").value, state.startElevation);
+  heightKnobFloor = (shown === 0 || shown === ground) ? 0 : shown;
+  writeHeightKnobs(readHeightKnobs());
+  persist();
+});
+el("hp-marker-track").addEventListener("pointerdown", onHeightMarkerPointer);
 
 // --- Markenabstand ----------------------------------------------------------
 for (const min of MARKER_INTERVALS) {
@@ -3603,6 +3884,7 @@ el("model").addEventListener("change", () => {
 // Schrittweite). Ohne bekannte Geländehöhe wird nur neu beschriftet.
 el("refmode").addEventListener("change", () => {
   convertHeightsForRefmode(el("refmode").value);
+  writeHeightKnobs(readHeightKnobs());
   updateHeightContext();
   renderBar();
   persist();

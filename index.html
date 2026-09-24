@@ -444,7 +444,38 @@
     <div id="panelcol-side">
       <div id="heights-block">
         <div class="label" id="heightslabel">Starthöhen <span class="hint">(max. 8, Balken anklicken)</span></div>
+        <div id="hp-panel">
+          <div class="hp-save-row">
+            <input type="text" id="hp-name" maxlength="40" placeholder="Profilname…"
+                   aria-label="Name für Starthöhen-Profil" />
+            <button type="button" id="hp-save" class="secondary">Speichern</button>
+            <select id="hp-saved" aria-label="Gespeicherte Starthöhen-Profile">
+              <option value="">— keine —</option>
+            </select>
+            <button type="button" id="hp-del" class="secondary">Löschen</button>
+          </div>
+          <div class="hp-knobs">
+            <label>Anzahl
+              <input type="number" id="hp-n" min="1" max="8" step="1" value="8" />
+            </label>
+            <label>Unter Marker
+              <input type="number" id="hp-nbelow" min="0" max="7" step="1" value="3" />
+            </label>
+            <label>Unten
+              <input type="number" id="hp-floor" min="0" step="100" value="0" />
+            </label>
+            <label>Oben
+              <input type="number" id="hp-ceiling" min="0" step="100" value="1500" />
+            </label>
+            <button type="button" id="hp-fill" class="secondary">Füllen</button>
+          </div>
+          <div id="hp-floor-hint" class="hint">0 = Grund am Startort</div>
+        </div>
         <div id="heightbar-wrap">
+          <div id="hp-marker-track" title="Zwischenhöhe (100 m)">
+            <div id="hp-marker-handle" role="slider" tabindex="0"
+                 aria-label="Zwischenhöhe" aria-valuemin="0" aria-valuemax="1500"></div>
+          </div>
           <div id="heightbar-carets-h" aria-hidden="true"></div>
           <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>
           <div id="heightbar-carets-p" aria-hidden="true"></div>

@@ -410,16 +410,20 @@ input[type="range"] { width: 100%; margin: 4px 0 8px; }
   cursor: pointer;
   touch-action: none;
 }
-#hp-marker-handle {
+.hp-bound {
   position: absolute;
   left: 0;
   width: 14px;
   height: 10px;
   margin-bottom: -5px;
   border-radius: 2px;
-  background: #1c5cab;
   box-shadow: 0 0 0 1px #fff;
+  cursor: grab;
+  touch-action: none;
 }
+#hp-floor-handle { background: #6b5f45; }
+#hp-marker-handle { background: #1c5cab; z-index: 1; }
+#hp-ceiling-handle { background: #2a2a28; }
 #heightbar-wrap {
   display: flex;
   gap: 4px;

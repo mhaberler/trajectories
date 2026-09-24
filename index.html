@@ -463,13 +463,18 @@
               <input type="number" id="hp-ceiling" min="0" step="100" value="1500" />
             </label>
             <button type="button" id="hp-fill" class="secondary">Füllen</button>
+            <button type="button" id="hp-clear" class="secondary" title="Alle Starthöhen entfernen">Löschen</button>
           </div>
           <div id="hp-floor-hint" class="hint">0 = Grund am Startort</div>
         </div>
         <div id="heightbar-wrap">
-          <div id="hp-marker-track" title="Zwischenhöhe (100 m)">
-            <div id="hp-marker-handle" role="slider" tabindex="0"
+          <div id="hp-marker-track" title="Unten, Zwischenhöhe und Oben (100 m)">
+            <div id="hp-floor-handle" class="hp-bound" data-bound="floor" role="slider" tabindex="0"
+                 aria-label="Unten" aria-valuemin="0" aria-valuemax="1500"></div>
+            <div id="hp-marker-handle" class="hp-bound" data-bound="marker" role="slider" tabindex="0"
                  aria-label="Zwischenhöhe" aria-valuemin="0" aria-valuemax="1500"></div>
+            <div id="hp-ceiling-handle" class="hp-bound" data-bound="ceiling" role="slider" tabindex="0"
+                 aria-label="Oben" aria-valuemin="0" aria-valuemax="1500"></div>
           </div>
           <div id="heightbar-carets-h" aria-hidden="true"></div>
           <div id="heightbar" tabindex="0" role="slider" aria-label="Starthöhen am Balken setzen"></div>

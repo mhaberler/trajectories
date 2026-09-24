@@ -70,7 +70,7 @@ mountTrackGlobe(document.getElementById("globe"), {
   },
 }).then((g) => {
   globe = g;
-  globe.setTracks(tracks);
+  globe.setTracks(tracks, { colorForSegment: segmentColor });
   map.invalidateSize();
 }).catch((err) => {
   const host = document.getElementById("globe");
@@ -175,6 +175,16 @@ function colorForValue(scale, v, max, { clamp = true } = {}) {
   if (v == null) return FALLBACK;
   const x = clamp ? clamp01(v, max) : Math.max(0, v);
   return scale(x).hex();
+}
+
+/** Same hex the 2D canvas uses for the segment from a to b. */
+function segmentColor(a, b) {
+  if (settings.mode === "fixed") return settings.fixedColor;
+  cmap.setDomain(currentDomain());
+  const scale = cmap.scale();
+  const max = currentMax();
+  const v = settings.mode === "speed" ? segmentValue("speed", a, b) : segmentAlt(a, b);
+  return v == null ? FALLBACK : colorForValue(scale, v, max, { clamp: !windySpeedMode() });
 }
 
 function windySpeedMode() {
@@ -293,13 +303,13 @@ function redraw() {
         v = segmentAlt(a, b);
         if (v == null) missingAlt++;
       }
-      return v == null ? FALLBACK : colorForValue(scale, v, max, { clamp: !windySpeedMode() });
+      return segmentColor(a, b);
     };
     createCanvasTrack(t.coords, { colorForSegment, weight: 3.5, opacity: 0.9 }).addTo(trackLayer);
   }
 
   inspect.refresh();
-  globe?.setTracks(tracks);
+  globe?.setTracks(tracks, { colorForSegment: segmentColor });
 
   if (settings.mode === "speed" && missingSpeed && segs) {
     setStatus(`${missingSpeed} Segment(e) ohne Zeitstempel — grau.`);

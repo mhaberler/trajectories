@@ -66,6 +66,8 @@ export async function mountTrackGlobe(container, opts = {}) {
   let pin = null;
   /** @type {object[]} */
   let tracks = [];
+  /** @type {((a: object, b: object) => string)|null} */
+  let colorForSegment = null;
 
   function cartesian(c) {
     const hasZ = c.z != null && Number.isFinite(c.z);
@@ -172,20 +174,38 @@ export async function mountTrackGlobe(container, opts = {}) {
 
   viewer.scene.preRender.addEventListener(placePin);
 
+  function addRun(positions, color) {
+    if (positions.length < 2) return;
+    viewer.entities.add({
+      polyline: {
+        positions,
+        width: 4,
+        material: Cesium.Color.fromCssColorString(color),
+        clampToGround: false,
+      },
+    });
+  }
+
   function draw(list) {
     viewer.entities.removeAll();
-    list.forEach((track, i) => {
+    list.forEach((track, ti) => {
       if (track.visible === false) return;
       const coords = track.coords || [];
       if (coords.length < 2) return;
-      viewer.entities.add({
-        polyline: {
-          positions: coords.map(cartesian),
-          width: 4,
-          material: Cesium.Color.fromCssColorString(COLORS[i % COLORS.length]),
-          clampToGround: false,
-        },
-      });
+      const fallback = COLORS[ti % COLORS.length];
+      const colorAt = (i) => colorForSegment?.(coords[i], coords[i + 1]) || fallback;
+      let color = colorAt(0);
+      let run = [cartesian(coords[0])];
+      for (let i = 1; i < coords.length; i++) {
+        run.push(cartesian(coords[i]));
+        const next = i < coords.length - 1 ? colorAt(i) : color;
+        if (next !== color) {
+          addRun(run, color);
+          run = [cartesian(coords[i])];
+          color = next;
+        }
+      }
+      addRun(run, color);
     });
     viewer.scene.requestRender();
   }
@@ -222,6 +242,7 @@ export async function mountTrackGlobe(container, opts = {}) {
      */
     async setTracks(next, trackOpts = {}) {
       tracks = next || [];
+      if (trackOpts.colorForSegment) colorForSegment = trackOpts.colorForSegment;
       if (pin && !trackById(pin.trackId)) pin = null;
       await calibrate(tracks);
       draw(tracks);

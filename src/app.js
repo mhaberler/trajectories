@@ -620,7 +620,7 @@ function readHeightKnobs() {
     n,
     nBelow: clampHp(+el("hp-nbelow")?.value, 0, n - 1, 0),
     floor: heightKnobFloor,
-    ceiling: Math.max(0, snap100(+el("hp-ceiling")?.value || 1500)),
+    ceiling: Math.max(0, snap100(+el("hp-ceiling-handle")?.dataset.m || DEFAULT_HEIGHT_KNOBS.ceiling)),
     marker: Math.max(0, snap100(+el("hp-marker-handle")?.dataset.m || DEFAULT_HEIGHT_KNOBS.marker)),
   };
 }
@@ -631,18 +631,14 @@ function writeHeightKnobs(knobs) {
   el("hp-n").value = String(n);
   el("hp-nbelow").max = String(n - 1);
   el("hp-nbelow").value = String(clampHp(knobs.nBelow, 0, n - 1, 0));
-  el("hp-ceiling").value = String(Math.max(0, snap100(knobs.ceiling)));
   const floorKnob = heightKnobFloor;
-  const shown = floorKnob === 0
-    ? resolveFloor(0, el("refmode").value, state.startElevation)
-    : floorKnob;
-  el("hp-floor").value = String(shown);
+  el("hp-ceiling-handle").dataset.m = String(Math.max(0, snap100(knobs.ceiling)));
   el("hp-marker-handle").dataset.m = String(Math.max(0, snap100(knobs.marker)));
   const hint = el("hp-floor-hint");
   if (floorKnob === 0 && el("refmode").value === "amsl" && Number.isFinite(state.startElevation)) {
     hint.textContent = `Grund hier: ${Math.round(state.startElevation)} m NN`;
   } else {
-    hint.textContent = "0 = Grund am Startort";
+    hint.textContent = "Unten auf 0 = Grund am Startort";
   }
   positionHeightMarker();
 }
@@ -670,7 +666,7 @@ function placeHeightBound(handle, metres, min, max, label) {
   handle.setAttribute("aria-valuenow", String(metres));
   handle.setAttribute("aria-valuemin", String(min));
   handle.setAttribute("aria-valuemax", String(max));
-  handle.title = `${label} ${metres} m`;
+  handle.dataset.tip = `${label} ${metres} m`;
 }
 
 function renderHeightProfileSelect(selectId = null) {
@@ -808,11 +804,14 @@ function fillHeightsFromKnobs() {
 
 function onHeightMarkerPointer(e) {
   const track = el("hp-marker-track");
-  const which = e.target.closest?.("[data-bound]")?.dataset.bound || "marker";
+  const handle = e.target.closest?.("[data-bound]") || el("hp-marker-handle");
+  const which = handle?.dataset.bound || "marker";
+  handle?.classList.add("is-drag");
   track.setPointerCapture?.(e.pointerId);
   moveHeightBound(which, e.clientY);
   const move = (ev) => moveHeightBound(which, ev.clientY);
   const up = () => {
+    handle?.classList.remove("is-drag");
     track.removeEventListener("pointermove", move);
     track.removeEventListener("pointerup", up);
     persist();
@@ -3297,14 +3296,6 @@ el("hp-fill").addEventListener("click", fillHeightsFromKnobs);
 el("hp-clear").addEventListener("click", clearHeights);
 el("hp-n").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
 el("hp-nbelow").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
-el("hp-ceiling").addEventListener("change", () => { writeHeightKnobs(readHeightKnobs()); persist(); });
-el("hp-floor").addEventListener("change", () => {
-  const shown = Math.max(0, snap100(+el("hp-floor").value || 0));
-  const ground = resolveFloor(0, el("refmode").value, state.startElevation);
-  heightKnobFloor = (shown === 0 || shown === ground) ? 0 : shown;
-  writeHeightKnobs(readHeightKnobs());
-  persist();
-});
 el("hp-marker-track").addEventListener("pointerdown", onHeightMarkerPointer);
 
 // --- Markenabstand ----------------------------------------------------------

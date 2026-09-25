@@ -3831,6 +3831,7 @@ async function loadMeta() {
       state.meta.runMs = span.run * 1000;
       state.meta.forecastEndMs = span.forecast_end * 1000;
       timebar.widenDomain(span.history_start, span.data_end);
+      el("modelrun").textContent = `Lauf ${fmtTime(state.meta.runMs)}`;
       timebar.setLimits({
         runMs: state.meta.runMs,
         forecastEndMs: state.meta.forecastEndMs,
@@ -3843,6 +3844,8 @@ async function loadMeta() {
     saved.playMs = timebar.playMs();
     el("runinfo").textContent =
       ` · Lauf ${fmtTime(meta.last_run_initialisation_time * 1000)}, Daten bis ${fmtTime(t1 * 1000)}`;
+    el("modelrun").textContent =
+      `Lauf ${fmtTime(state.meta.runMs)}`;
     updateTimeLabel();
     updateReachHint();
     el("status").textContent = "";
@@ -3850,6 +3853,7 @@ async function loadMeta() {
   } catch (err) {
     el("status").textContent = `Modelllauf-Info nicht erreichbar: ${err.message}`;
     el("status").className = "error";
+    el("modelrun").textContent = "";
     state.meta = null;
   }
   updateRunButton();

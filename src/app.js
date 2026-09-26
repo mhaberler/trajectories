@@ -6,7 +6,7 @@ import {
 } from "./config.js";
 import { WindField } from "./windfield.js";
 import { computeTrajectory } from "./integrator.js";
-import { renderCrossSection } from "./crosssection";
+import { renderCrossSection, zExtentOfRuns } from "./crosssection";
 import {
   setUnits, unitState, fmtHeight, fmtWind, heightUnit,
   heightToDisplay, heightFromDisplay, heightSliderCfg,
@@ -14,6 +14,7 @@ import {
 import { initGeocode, reversePlaceName } from "./geocode.js";
 import { expandProfile } from "./profileExpand.js";
 import { fillHeightProfile, resolveFloor, snap100, HP_MAX, HP_SAVED_MAX } from "./heightProfile.js";
+import { registerWebmcp } from "./webmcp.js";
 import { trackSampleKey } from "./dem/mapterhorn.js";
 import { createTimebar } from "./timebar.js";
 import {
@@ -1464,7 +1465,12 @@ function xsecViewData() {
     const series = xsecDem.get(runKey(run))?.series;
     return series && series.length >= 2 ? { ...run, terrainHi: series } : run;
   };
-  return { ...state.xsec, runs: [withDem(sel)], overlay: false };
+  return {
+    ...state.xsec,
+    runs: [withDem(sel)],
+    overlay: false,
+    zExtent: zExtentOfRuns(state.xsec.runs) || undefined,
+  };
 }
 
 async function fetchElevationLine(pts, intervalSec, signal) {
@@ -3511,6 +3517,96 @@ applyProfileUI();
 updateHeightContext();
 
 settingsReady = true;
+void registerWebmcp({
+  getState: webmcpState,
+  setStart,
+  setModel: webmcpSetModel,
+  setTime: webmcpSetTime,
+  setDurationHours: webmcpSetDuration,
+  setHeights: webmcpSetHeights,
+  fillHeightProfile: webmcpFillHeights,
+  compute: webmcpCompute,
+  flightProfileOn: () => el("flightprofile").checked,
+}).then((names) => {
+  if (!names.length) return;
+  const badge = el("webmcp-badge");
+  if (!badge) return;
+  badge.hidden = false;
+  badge.title = names.join(", ");
+});
+
+function webmcpState() {
+  const start = state.start;
+  return {
+    model: el("model").value,
+    runTime: el("modelrun").textContent || null,
+    latitude: start?.lat ?? null,
+    longitude: start?.lon ?? null,
+    startTime: state.meta ? new Date(timebarStartMs()).toISOString() : null,
+    durationHours: durationHours(),
+    heightReference: el("refmode").value,
+    heights: [...heightColors.keys()].sort((a, b) => a - b),
+    flightProfile: el("flightprofile").checked,
+    status: el("status").textContent || "",
+    hasResult: !!(state.lastRuns?.runs?.length),
+  };
+}
+
+async function webmcpSetModel(key) {
+  if (!MODELS[key]) return { error: `Unbekanntes Modell: ${key}` };
+  el("model").value = key;
+  syncDurationMax();
+  persist();
+  await loadMeta();
+  updateWDetection();
+  fetchStartElevation();
+  timebar?.render();
+  updateReachHint();
+  return webmcpState();
+}
+
+function webmcpSetTime(iso) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return { error: "Zeit ist kein ISO-8601-UTC." };
+  if (!state.meta || !timebar) return { error: "Modellspanne noch nicht geladen." };
+  const lo = state.meta.t0 * 1000;
+  const hi = state.meta.t1 * 1000;
+  if (ms < lo || ms > hi) return { error: "Zeit liegt außerhalb der Modellspanne." };
+  const windowH = Math.min(12, Math.max(0, +el("launchwindow").value || 0));
+  if (windowH === 0) {
+    timebar.setBand(ms);
+    timebar.setPlayMs(ms);
+  } else {
+    timebar.setPlayMs(ms);
+  }
+  return webmcpState();
+}
+
+function webmcpSetDuration(hours) {
+  el("duration").value = String(hours);
+  syncDurationMax();
+  persist();
+  return { durationHours: durationHours() };
+}
+
+function webmcpSetHeights(metres) {
+  replaceBarHeights(metres);
+  return webmcpState();
+}
+
+function webmcpFillHeights(knobs) {
+  writeHeightKnobs(knobs);
+  fillHeightsFromKnobs();
+  return webmcpState();
+}
+
+async function webmcpCompute() {
+  await runTrajectories();
+  return {
+    status: el("status").textContent || "",
+    tracks: state.lastRuns?.runs?.length ?? 0,
+  };
+}
 
 // --- Startpunkt nur per Marker ziehen (Kartenklick setzt ihn nicht) ----------
 map.on("click", (e) => {
@@ -5164,6 +5260,16 @@ function setPanelWidth(px, { save = false } = {}) {
 el("xsecbtn").addEventListener("click", () => showCrossSection(el("xsec").hidden));
 el("xsec-close").addEventListener("click", () => showCrossSection(false));
 el("xsec-alt")?.addEventListener("change", () => {
+  // Die Auswahl am Track zieht das Dropdown sonst auf die alte Höhe zurück,
+  // bevor der Streifen neu gezeichnet wird.
+  const key = el("xsec-alt").value;
+  const runs = state.xsec?.runs || [];
+  const current = runs.find((r) => runKey(r) === state.selectedRunKey);
+  const match = current && xsecAltitudeKey(current) === key
+    ? current
+    : runs.find((r) => xsecAltitudeKey(r) === key);
+  state.selectedRunKey = match ? runKey(match) : null;
+  highlightSelectedRun();
   drawCrossSection();
   ensureXsecDemForView();
 });

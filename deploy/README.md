@@ -7,7 +7,7 @@ Static Vite build behind Caddy Basic Auth (username **`trajectories`**).
 ```bash
 cd /home/mah/src/trajectories
 bun install
-bun run deploy:vps           # builds with base=/trajectories/ → /var/www/vps/trajectories/
+bun run deploy:vps           # builds with base=/trajectories/ → mah@vps.mah.priv.at:/var/www/vps/trajectories/
 bun run deploy:vps:coloring  # track-import → /var/www/vps/trajectories/coloring/
                              # https://vps.mah.priv.at/trajectories/coloring/
 ```

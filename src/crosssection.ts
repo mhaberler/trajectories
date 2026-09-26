@@ -37,6 +37,30 @@ interface Series {
   y?: (z: number) => number;
 }
 
+/** Min/Max der Flug- und Modellgeländehöhen, für eine stabile Skala über alle Läufe. */
+export function zExtentOfRuns(
+  runs: { r?: { points?: { z?: number | null }[] }; terrain?: (number | null)[] }[] | undefined,
+): { min: number; max: number } | null {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const run of runs || []) {
+    for (const p of run.r?.points || []) {
+      if (Number.isFinite(p.z)) {
+        min = Math.min(min, p.z as number);
+        max = Math.max(max, p.z as number);
+      }
+    }
+    for (const g of run.terrain || []) {
+      if (Number.isFinite(g)) {
+        min = Math.min(min, g as number);
+        max = Math.max(max, g as number);
+      }
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  return { min, max };
+}
+
 export function renderCrossSection(host: HTMLElement, data: XsecData) {
   host.innerHTML = "";
   const { runs, t0Ms, direction, overlay } = data;
@@ -81,6 +105,8 @@ export function renderCrossSection(host: HTMLElement, data: XsecData) {
       if (Number.isFinite(p?.z)) zAll.push(p.z);
     }
   }
+  if (Number.isFinite(data.zExtent?.min)) zAll.push(data.zExtent.min);
+  if (Number.isFinite(data.zExtent?.max)) zAll.push(data.zExtent.max);
   const zLo = Math.min(...zAll);
   const zHi = Math.max(...zAll);
   const pad = Math.max(60, (zHi - zLo) * 0.06);

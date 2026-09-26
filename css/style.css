@@ -330,6 +330,19 @@ body.panel-resizing #map { pointer-events: none; }
 
 #panelhead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
 #panel h1 { font-size: 16px; margin: 0; }
+.webmcp-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #1c5cab;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+.webmcp-badge[hidden] { display: none; }
 #paneltoggle {
   display: none;
   border: none;

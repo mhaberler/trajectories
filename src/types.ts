@@ -104,4 +104,10 @@ export interface XsecData {
    * in `run.terrainHi`; hier nur noch als Rückfall für die Flugprofil-Ansicht.
    */
   terrainHi?: TerrainSeries;
+  /**
+   * Feste Höhenskala (m NN) über alle Läufe. Ohne sie skaliert ein einzelner
+   * Streifen auf sich selbst, und der Höhenwechsel im Dropdown bewegt die
+   * Linie nicht.
+   */
+  zExtent?: { min: number; max: number };
 }

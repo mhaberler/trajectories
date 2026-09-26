@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${TRAJECTORIES_VPS_COLORING_DEST:-/var/www/vps/trajectories/coloring}"
+DEST="mah@vps.mah.priv.at:/var/www/vps/trajectories/coloring"
 if [[ "$DEST" != /* || "$DEST" == "/" ]]; then
   echo "Refusing unsafe deployment destination: $DEST" >&2
   exit 1

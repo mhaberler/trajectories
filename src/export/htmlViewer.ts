@@ -8,7 +8,7 @@
  * Leaflet liegt zur Laufzeit als globales `L` vor (davor eingebettet).
  */
 
-import { renderCrossSection } from "../crosssection";
+import { renderCrossSection, zExtentOfRuns } from "../crosssection";
 import { setUnits } from "../units";
 import type { XsecData } from "../types";
 import type { Payload, PayloadRun, PopupRow } from "./htmlPayload";
@@ -119,10 +119,11 @@ function altitudeOptionKey(run: { heightM: number; method: string }) {
 }
 
 function filterXsecByAltitude(xsec: XsecData, key: string | null): XsecData {
-  if (!key || !xsec?.runs?.length) return xsec;
+  const zExtent = zExtentOfRuns(xsec?.runs) ?? undefined;
+  if (!key || !xsec?.runs?.length) return { ...xsec, zExtent };
   const runs = xsec.runs.filter((r) => altitudeOptionKey(r) === key);
-  if (!runs.length) return { ...xsec, runs: [xsec.runs[0]], overlay: false };
-  return { ...xsec, runs, overlay: false };
+  if (!runs.length) return { ...xsec, runs: [xsec.runs[0]], overlay: false, zExtent };
+  return { ...xsec, runs, overlay: false, zExtent };
 }
 
 function trackKey(run: PayloadRun) {

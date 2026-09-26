@@ -699,10 +699,17 @@ function syncSelectedHeightProfileAlts() {
 
 function clearHeights() {
   const ms = [...heightColors.keys()];
-  if (!ms.length) return;
   heightColors.clear();
   activeHeight = null;
   for (const m of ms) dropRunsForHeight(m);
+  const knobs = readHeightKnobs();
+  const ground = resolveFloor(0, el("refmode").value, state.startElevation);
+  knobs.floor = 0;
+  knobs.ceiling = barMax;
+  knobs.marker = snap100((ground + barMax) / 2);
+  writeHeightKnobs(knobs);
+  const hit = selectedHeightProfile();
+  if (hit) hit.knobs = readHeightKnobs();
   renderBar();
   updateHeightContext();
   persist();

@@ -1,3 +1,3 @@
 # API performance measures
 
-This write-up moved with the Python service to [trajectory-api](https://github.com/mhaberler/trajectory-api) (`performance.md`).
+This write-up moved with the Python service to [trajectories-api](https://github.com/mhaberler/trajectories-api) (`performance.md`).

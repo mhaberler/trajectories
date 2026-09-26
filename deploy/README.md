@@ -27,12 +27,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' -u trajectories:YOUR_PASSWORD \
   https://vps.mah.priv.at/trajectories/coloring/
 ```
 
-The trajectory HTTP API stays on `trajectory.mah.priv.at` (no Basic Auth); the UI “API abrufen” option calls it cross-origin.
+The trajectory HTTP API is a separate repository, [trajectories-api](https://github.com/mhaberler/trajectories-api) (`/home/mah/src/trajectories-api`). The UI “API abrufen” option calls the running instance at `https://trajectory.mah.priv.at` (no Basic Auth).
 
----
+The live systemd unit on this VPS still runs `/home/mah/src/trajectories/python` until that checkout is cut over. Pulling this branch on the server removes that tree; do not pull it there until the unit points at `trajectories-api`.
 
-## Trajectories API
-
-The HTTP API, Python package, and API deploy files live in [trajectory-api](https://github.com/mhaberler/trajectory-api) (`/home/mah/src/trajectory-api`).
-
-The live systemd unit on this VPS still runs `/home/mah/src/trajectories/python` until that checkout is cut over. Pulling this branch on the server removes that tree; do not pull it there until the unit points at `trajectory-api`.

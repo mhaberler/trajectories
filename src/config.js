@@ -8,7 +8,7 @@ export const OM_PRESSURE_LEVELS_HPA = [
   1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30,
 ];
 
-/** FastAPI trajectories service (GeoJSON). Used when „API abrufen“ is checked. */
+/** Trajectory HTTP API (GeoJSON). Used when „API abrufen“ is checked. */
 export const TRAJECTORY_API = "https://trajectory.wetterheidi.de";
 
 /** Open-Meteo base URL for a model (optional per-model ``apiBase``). */

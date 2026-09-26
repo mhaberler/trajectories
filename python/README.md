@@ -13,12 +13,12 @@ playwright install chromium   # for Windy / web↔Python visual tests
 bun install                   # Vite — required for web↔Python compare
 ```
 
-For local `.om` reads and/or the HTTP API (optional):
+For local `.om` reads and DEM (optional):
 
 ```bash
 pip install -e "python/[om]"    # omfiles
-pip install -e "python/[api]"   # FastAPI + uvicorn
-# or: pip install -e "python/[dev]"  # includes om + api + test deps
+pip install -e "python/[dem]"   # Pillow, pmtiles, rasterio
+# or: pip install -e "python/[dev]"  # includes om + dem + test deps
 ```
 
 ## Data backends
@@ -73,68 +73,13 @@ gj = compute_trajectories(
 )
 ```
 
-## HTTP API (FastAPI / OpenAPI)
-
-Open-Meteo-shaped query params; response is a GeoJSON FeatureCollection.
-Errors: `{"error": true, "reason": "..."}`.
-
-```bash
-pip install -e "python/[api]"
-uvicorn trajectories.api:app --host 127.0.0.1 --port 8000
-# Swagger try-it: http://127.0.0.1:8000/docs
-# ReDoc:        http://127.0.0.1:8000/redoc
-```
-
-```bash
-curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
-  --data-urlencode 'latitude=47.23' \
-  --data-urlencode 'longitude=15.82' \
-  --data-urlencode 'models=icon_d2' \
-  --data-urlencode 'time=2026-08-02T11:00:00Z' \
-  --data-urlencode 'forecast_hours=2' \
-  --data-urlencode 'height_agl=500,1500,3000' \
-  --data-urlencode 'vertical_motion=height' \
-  --data-urlencode 'backend=http'
-
-# Launch-window batch (mutually exclusive with `time`; at most 4× model
-# forecast horizon, e.g. 192 starts for ICON-D2):
-curl -sG 'http://127.0.0.1:8000/v1/trajectory' \
-  --data-urlencode 'latitude=47.23' \
-  --data-urlencode 'longitude=15.82' \
-  --data-urlencode 'models=icon_d2' \
-  --data-urlencode 'times=2026-08-02T11:00:00Z,2026-08-02T11:15:00Z,2026-08-02T11:30:00Z' \
-  --data-urlencode 'forecast_hours=2' \
-  --data-urlencode 'height_agl=500' \
-  --data-urlencode 'vertical_motion=height'
-```
-
-Exactly one of `time` or `times` is required. Multi-start responses are still one GeoJSON FeatureCollection; group features by `properties.start_time` (present on trajectories and markers).
-
-Archive bounds (no point or time; unix seconds):
-
-```bash
-curl -sG 'http://127.0.0.1:8000/v1/span' \
-  --data-urlencode 'models=icon_d2'
-# models[].history_start, run, forecast_end, data_end
-```
-
-Client example (server must be running):
-
-```bash
-python python/examples/api_trajectory.py
-python python/examples/api_point_wind_times.py
-# local uvicorn: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
-```
-
-VPS deploy (systemd + Caddy sketch for `trajectory.mah.priv.at`): see [`deploy/README.md`](../deploy/README.md).
+The HTTP API is a separate repository: [trajectories-api](https://github.com/mhaberler/trajectories-api). This package is the library and CLI only.
 
 ## Tests
 
 ```bash
 pytest python/tests/test_integrator_unit.py
 pytest python/tests/test_backend_resolve.py
-pytest python/tests/test_api.py
-
 # Local OM smoke + loose OM↔HTTP compare (needs /open-meteo + omfiles)
 RUN_OM_TESTS=1 pytest python/tests/test_om_backend.py -m om
 

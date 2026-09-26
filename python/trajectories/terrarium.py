@@ -10,7 +10,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "Pillow is required for Terrarium DEM decode. "
-        'Install with: pip install -e "python/[api]"'
+        'Install with: pip install -e "python/[dem]"'
     ) from exc
 
 

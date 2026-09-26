@@ -6,7 +6,7 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 ## Goals
 
 - Functional parity with the browser app (`src/windfield.js`, `src/integrator.js`, `src/app.js` export).
-- Library API (`compute_trajectories`, `compute_point_wind`), CLI (`trajectories`), and HTTP API (`GET /v1/trajectory`, `GET /v1/wind`, `GET /v1/span`).
+- Library API (`compute_trajectories`, `compute_point_wind`) and CLI (`trajectories`). The HTTP service lives in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 - GeoJSON FeatureCollection with SimpleStyle (`stroke` / `marker-color`) for Placemark tools.
 - Trajectory features include `properties.terrain_m` (model orography m AMSL, parallel to coordinates) for Querschnitt / 3D after API fetch.
 - Tests that prove the port: unit (offline), near-exact vs web UI, rough vs Windy.
@@ -14,20 +14,11 @@ Same inputs → same GeoJSON trajectories (Petterssen integration over Open-Mete
 ## Layout
 
 ```text
-deploy/
-  trajectories-api.service      # systemd (user openmeteo-api, :8010)
-  Caddyfile.trajectory.snippet  # trajectory.mah.priv.at → reverse_proxy
-  trajectories-api.env.example
-  README.md                     # install checklist
 python/
   pyproject.toml          # package trajectories, CLI entry, pytest markers
-  README.md               # install / CLI / API / test recipes
+  README.md               # install / CLI / test recipes
   examples/
     basic_trajectory.py   # library smoke
-    api_trajectory.py     # HTTP client (default https://trajectory.mah.priv.at)
-    api_point_wind.py     # GET /v1/wind client
-    api_point_wind_times.py  # GET /v1/wind with times= (3 starts)
-    api_flight_profile.py # GET /v1/trajectory with AGL profile
   trajectories/
     config.py             # models, methods, API/OM backend resolution
     windfield.py          # HTTP or local OM client + 4-D interpolation
@@ -35,13 +26,10 @@ python/
     integrator.py         # Petterssen + adaptive dt + markers
     compute.py            # height × method orchestration → FeatureCollection
     geojson_export.py     # port of web buildGeoJSON
-    api.py                # FastAPI app (OpenAPI / Swagger)
-    span.py               # GET /v1/span archive and forecast bounds
     cli.py / __main__.py
   tests/
     test_integrator_unit.py   # fake-wind Petterssen (always on)
     test_backend_resolve.py   # OM/HTTP resolution (always on)
-    test_api.py               # FastAPI TestClient (mocked compute)
     test_om_backend.py        # local OM smoke + OM↔HTTP (opt-in)
     test_web_python.py        # web download vs Python (opt-in)
     test_windy_visual.py      # Python vs Windy paths (opt-in)
@@ -57,12 +45,11 @@ Default API: `https://open-meteo.mah.priv.at` (`TRAJECTORIES_API_BASE` / `--api-
 
 | Topic | Choice |
 |--------|--------|
-| Shape | Installable package + library + CLI + FastAPI under `python/` |
+| Shape | Installable package + library + CLI under `python/` |
 | Fidelity | 1:1 JS port (pure Python floats + httpx) |
 | Methods | Full set: `height`, `pressure`, `theta`, `z3d` |
 | Series | Multi-height × multi-method Cartesian product |
-| I/O | stdout GeoJSON; optional `--output`; HTTP returns bare GeoJSON |
-| HTTP | Open-Meteo-style query names; OM-style `{"error","reason"}` errors |
+| I/O | stdout GeoJSON; optional `--output` |
 | Met extras | `--met-extras` / `met_extras` off by default |
 
 ## Install & run
@@ -70,18 +57,12 @@ Default API: `https://open-meteo.mah.priv.at` (`TRAJECTORIES_API_BASE` / `--api-
 ```bash
 python3 -m venv python/.venv
 source python/.venv/bin/activate
-pip install -e "python/[dev]"   # omfiles + FastAPI/uvicorn + test deps
+pip install -e "python/[dev]"   # omfiles + DEM + test deps
 playwright install chromium   # for opt-in visual tests
 bun install                   # Vite — web↔Python compare only
 
 # Standalone library example (AGL ≤3 km, 10 min markers, met extras):
 python python/examples/basic_trajectory.py
-
-# HTTP client example (default base: https://trajectory.mah.priv.at):
-python python/examples/api_trajectory.py
-python python/examples/api_point_wind.py
-python python/examples/api_point_wind_times.py
-# local: TRAJECTORIES_API_URL=http://127.0.0.1:8010 python python/examples/api_trajectory.py
 
 trajectories \
   --lat 47.23 --lon 15.82 \
@@ -122,142 +103,9 @@ TRAJECTORIES_CACHE_MAX=0 TRAJECTORIES_BACKEND=om \
 
 Opt-in fidelity (`RUN_OM_TESTS=1`): same-physics vs HTTP with widened bound (**median &lt; 6 km**, **max &lt; 18 km**) to allow float32 slabs + Numba interp.
 
-## HTTP API (`GET /v1/trajectory`)
+## HTTP API
 
-Open-Meteo taxonomy for queries; response is the same GeoJSON FeatureCollection as the library/CLI.
-
-| Query | Role |
-|-------|------|
-| `latitude`, `longitude` | start point |
-| `models` | `icon_d2` \| `icon_eu` |
-| `time` + `timeformat` | single start: ISO-8601 (default) or `unixtime` |
-| `times` | CSV of starts (same `timeformat`); mutually exclusive with `time`; at most 4× model forecast horizon (D2 192 / EU 480 / global 720); one shared wind init |
-| `forecast_hours` | duration 1 h through the model forecast horizon (D2 48 / EU 120 / global 180) |
-| `height_agl` / `height_amsl` | comma-separated metres |
-| `vertical_motion` | comma-list of methods |
-| `direction`, `marker_interval`, `met_extras`, `backend` | as CLI |
-| `profile_time` + `profile_height` | kinematic AGL flight profile (CSV seconds / m AGL); exclusive with `height_*` |
-| `marker_interval_climbing` | denser markers on climb/descent (minutes, default 10) |
-| `clearance_m` | stop when AGL &lt; clearance (default 0) |
-
-Duration with a profile is `min(forecast_hours, last_profile_time/3600)`. One profile → one track. Web UI: **Flugprofil** (built-in presets, named saved profiles in localStorage, waypoint table + 2D side-view edit, pick a candidate track); waypoints expand client-side into `profile_*`; results draw on map, cross-section, and 3D. Optional **Mapterhorn** DEM overlay densifies terrain along the candidate track via `POST /v1/elevation/line` (server PMTiles + ≤5 GiB disk tile cache); side view / Querschnitt consume the GeoJSON samples.
-
-```bash
-curl -sG 'https://trajectory.mah.priv.at/v1/trajectory' \
-  --data-urlencode 'latitude=48.4375' \
-  --data-urlencode 'longitude=15.6181' \
-  --data-urlencode 'models=icon_eu' \
-  --data-urlencode 'time=2026-08-02T11:00:00Z' \
-  --data-urlencode 'forecast_hours=2' \
-  --data-urlencode 'profile_time=0,1200,3600,5400,7200' \
-  --data-urlencode 'profile_height=150,150,1800,1800,400' \
-  --data-urlencode 'marker_interval=60' \
-  --data-urlencode 'marker_interval_climbing=10'
-# or: python python/examples/api_flight_profile.py
-```
-
-```bash
-uvicorn trajectories.api:app --host 127.0.0.1 --port 8000
-# Swagger: /docs   ReDoc: /redoc   Health: /health
-pytest python/tests/test_api.py
-```
-
-## HTTP API (`GET /v1/wind`)
-
-Single-point wind sample (flat JSON, not GeoJSON). No trajectory integration.
-
-| Query | Role |
-|-------|------|
-| `latitude`, `longitude` | sample point |
-| `models` | CSV: `icon_d2`, `icon_eu`, `icon_global` |
-| `time` XOR `times` + `timeformat` | ISO-8601 (default) or `unixtime`. `times` is a CSV of starts (at most 4× the shortest requested model horizon) |
-| `height_agl` XOR `height_amsl` | single height (metres) |
-| `backend`, `format=json` | optional |
-
-Single-`time` response: top-level lat/lon/time/height plus `models[]` with `wind_u_ms`, `wind_v_ms`, `wind_w_ms` (null if unavailable), speeds, met “from” direction, `z_amsl_m`, `terrain_m`. Multi-model requests may return per-model `{error, reason}` entries (HTTP 200) when at least one model succeeds.
-
-`times=` batch response: same envelope without top-level `time`; `times[]` lists the ISO stamps and `samples[]` is `{time, models[]}` per start. One WindField init spans the range.
-
-```bash
-curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
-  --data-urlencode 'latitude=47.23' \
-  --data-urlencode 'longitude=15.82' \
-  --data-urlencode 'models=icon_eu,icon_d2' \
-  --data-urlencode 'time=2026-08-02T11:00:00Z' \
-  --data-urlencode 'height_agl=550'
-
-curl -sG 'https://trajectory.mah.priv.at/v1/wind' \
-  --data-urlencode 'latitude=47.23' \
-  --data-urlencode 'longitude=15.82' \
-  --data-urlencode 'models=icon_eu,icon_d2' \
-  --data-urlencode 'times=2026-08-26T11:00:00Z,2026-08-26T11:15:00Z,2026-08-26T11:30:00Z' \
-  --data-urlencode 'height_agl=550'
-```
-
-## HTTP API (`GET /v1/span`)
-
-Archive and forecast bounds for the time bar. No latitude or time. Reads the local OM dataset: the oldest `chunk_*.om` of one wind component, then the first hour in that file that still has a finite value (leading hours in a chunk can be empty).
-
-| Query | Role |
-|-------|------|
-| `models` | optional CSV (`icon_d2`, `icon_eu`, `icon_global`). Default: every configured model |
-
-Each row in `models[]` is unix seconds, same clock as `meta.json`:
-
-| Field | Role |
-|-------|------|
-| `history_start` | oldest hour that still has wind |
-| `run` | `last_run_initialisation_time` |
-| `forecast_end` | earlier of `data_end` and the run plus the model horizon (D2 48 / EU 120 / global 180 h) |
-| `data_end` | `data_end_time`, the right edge of what is on disk |
-
-A model that has no dataset is listed in `partial` and omitted from `models`. Unknown model id → HTTP 400. No model at all → HTTP 503. The web time bar pans from `history_start` through `data_end` and draws the forecast band up to `forecast_end`.
-
-```bash
-curl -sG 'https://trajectory.mah.priv.at/v1/span' \
-  --data-urlencode 'models=icon_d2'
-```
-
-### Production on this VPS (`trajectory.mah.priv.at`)
-
-Artifacts under [`deploy/`](deploy/) (full steps also in [`deploy/README.md`](deploy/README.md)):
-
-| File | Role |
-|------|------|
-| `trajectories-api.service` | systemd — uvicorn as user **`openmeteo-api`**, bind `127.0.0.1:8010` |
-| `Caddyfile.trajectory.snippet` | Caddy site block → reverse_proxy + log |
-| `trajectories-api.env.example` | optional `/etc/default/trajectories-api.env` |
-
-**Prereqs on the host**
-
-1. Editable install with API + OM extras in `python/.venv` (service `ExecStart` uses that venv).
-2. `/home/mah` is mode `700` — grant traverse for the service user:
-   ```bash
-   sudo setfacl -m u:openmeteo-api:--x /home/mah
-   ```
-3. OM data readable at `/open-meteo` (already used by Open-Meteo).
-
-**systemd**
-
-```bash
-sudo cp deploy/trajectories-api.service /etc/systemd/system/
-sudo cp deploy/trajectories-api.env.example /etc/default/trajectories-api.env   # optional
-sudo systemctl daemon-reload
-sudo systemctl enable --now trajectories-api.service
-curl -sS http://127.0.0.1:8010/health
-```
-
-Env defaults in the unit: `TRAJECTORIES_OM_ROOT=/open-meteo`, `TRAJECTORIES_BACKEND=auto`.
-
-**Caddy** — append [`deploy/Caddyfile.trajectory.snippet`](deploy/Caddyfile.trajectory.snippet) to `/etc/caddy/Caddyfile`, then:
-
-```bash
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
-
-**Public URLs:** `https://trajectory.mah.priv.at/docs`, `/health`, `/v1/trajectory`, `/v1/wind`, `/v1/span`.  
-Client example defaults to that host (`TRAJECTORIES_API_URL`).
+The HTTP service (`GET /v1/trajectory`, `/v1/wind`, `/v1/span`, elevation) is [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 ## Accelerating answer processing
 
@@ -267,9 +115,10 @@ Client example defaults to that host (`TRAJECTORIES_API_URL`).
 2. **`OmReaderCache`** — keep-open local mmap readers, **per-path mutex**, parallel var loads, **inotify** (watchdog) invalidation on cached paths only; in-flight `load_slab` **retries** on stale.
 3. **Parallel height×method tracks** — `ThreadPoolExecutor` after slab load; `WindField` point-cache lock.
 4. **Numba height-path interp** — optional `pip install 'trajectories[accel]'` (`interp_fast.py`); Python fallback if numba missing.
-5. **API response cache** (bonus) — `TRAJECTORIES_CACHE_TTL_S` / `TRAJECTORIES_CACHE_MAX` (0 disables); not counted toward the ≤1 s unique-latency bar.
 
-Install for production OM+API: `pip install -e "python/[om,api,accel]"`.
+The HTTP response cache (`TRAJECTORIES_CACHE_TTL_S` / `TRAJECTORIES_CACHE_MAX`) ships with [trajectories-api](https://github.com/mhaberler/trajectories-api).
+
+Install for local OM: `pip install -e "python/[om,accel]"`.
 
 ## Test strategies
 
@@ -284,10 +133,9 @@ Install for production OM+API: `pip install -e "python/[om,api,accel]"`.
 ```bash
 pytest python/tests/test_integrator_unit.py
 pytest python/tests/test_backend_resolve.py
-pytest python/tests/test_api.py
 ```
 
-**Result:** integrator 5/5; backend resolve 8/8; API TestClient (mocked) covered in `test_api.py`.
+**Result:** integrator 5/5; backend resolve 8/8.
 
 ### 2. Local OM vs HTTP — same physics (opt-in)
 
@@ -355,12 +203,11 @@ RUN_WINDY_TESTS=1 pytest python/tests/test_windy_visual.py -m windy
 
 ## Status
 
-- Package usable as CLI/library/HTTP; GeoJSON matches web export shape (including SimpleStyle).
-- FastAPI `GET /v1/trajectory` with Swagger at `/docs` (`pip install -e "python/[api]"`).
-- VPS: systemd unit as `openmeteo-api` on `:8010`; Caddy sketch for `trajectory.mah.priv.at`.
+- Package usable as CLI and library; GeoJSON matches web export shape (including SimpleStyle).
+- HTTP service: [trajectories-api](https://github.com/mhaberler/trajectories-api).
 - Dual backend: local OM preferred when `/open-meteo` + `omfiles` available; HTTP fallback.
 - Port fidelity vs web (HTTP path): **confirmed near-exact** (0 m on sampled points for the smoke matrix).
 - OM vs HTTP: same-physics opt-in tests pass; **OM slab ≤ HTTP** on `basic_trajectory` (~8.6 s cold / ~5.9 s warm vs ~9.0 s).
-- Acceleration shipped: OM slab preload + warm meta, parallel tracks, response cache, Numba height interp.
+- Acceleration shipped: OM slab preload + warm meta, parallel tracks, Numba height interp.
 - Windy: rough agreement only; useful for regression, not a bit-for-bit oracle.
 - Generated compare dumps live under `python/tests/artifacts/` (not committed).

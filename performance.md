@@ -1,6 +1,6 @@
 # API performance measures
 
-Summary of work on **trajectory API latency and throughput** since `origin/main` (merge-base `849478e`, branch `flight-profile-ui` as of 2026-08-03). Focus is the Python/FastAPI service behind `https://trajectory.mah.priv.at` and how the web UI uses it.
+Summary of work on **trajectory API latency and throughput** since `origin/main` (merge-base `849478e`, branch `flight-profile-ui` as of 2026-08-03). The HTTP service now lives in [trajectories-api](https://github.com/mhaberler/trajectories-api) and still runs at `https://trajectory.mah.priv.at`. This note records the compute work and how the web UI uses it.
 
 ## Problem
 
@@ -22,13 +22,13 @@ See also [`PYTHON-MODULE.md`](PYTHON-MODULE.md) § “Timing — basic_trajector
 
 ---
 
-## Server-side compute (Python / FastAPI)
+## Server-side compute
 
 ### 1. Trajectory HTTP API (`942c136`)
 
 - **`GET /v1/trajectory`** — GeoJSON FeatureCollection (same as CLI/library).
 - **`GET /v1/wind`** — single-point wind sample (`f0d96f1`).
-- Deploy: uvicorn on `:8010`, Caddy reverse proxy, systemd unit (`deploy/`).
+- The service and its deploy files live in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 Moves heavy work off the browser onto one server with shared local data.
 
@@ -80,13 +80,12 @@ Files: [`python/trajectories/om_backend.py`](python/trajectories/om_backend.py) 
 - JIT for vertical interpolation on the **height** integration path; Python fallback if Numba missing.
 - **`cache=False`** on `@njit` so editable installs (`pip -e`) do not fail on missing source locators (`767e80a`).
 
-Install: `pip install -e "python/[om,api,accel]"`.
+Install: `pip install -e "python/[om,accel]"`.
 
 ### 6. In-process API response cache (`b3bf5d0`)
 
-- [`python/trajectories/response_cache.py`](python/trajectories/response_cache.py) — TTL/LRU GeoJSON cache for `/v1/trajectory` and `/v1/wind`.
+- TTL/LRU GeoJSON cache for `/v1/trajectory` and `/v1/wind`, now in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 - Env: **`TRAJECTORIES_CACHE_TTL_S`** (default 1800), **`TRAJECTORIES_CACHE_MAX`** (default 64; **0 disables**).
-- Wired in [`python/trajectories/api.py`](python/trajectories/api.py).
 - **Not** counted toward the ≤1 s unique-latency benchmark (cache hit path is faster by design).
 
 ### 7. Fewer OM variables — Magnus RH (`627a627`)
@@ -105,9 +104,9 @@ Install: `pip install -e "python/[om,api,accel]"`.
 
 ### 9. Caddy gzip and zstd (`c7636db`)
 
-- [`deploy/Caddyfile.trajectory.snippet`](deploy/Caddyfile.trajectory.snippet): `encode gzip zstd` on `trajectory.mah.priv.at`.
-- Compresses large GeoJSON **on the wire** (no gzip middleware in FastAPI).
-- Verify: `curl -H 'Accept-Encoding: gzip, zstd' … | grep -i content-encoding` ([`deploy/README.md`](deploy/README.md)).
+- `encode gzip zstd` on `trajectory.mah.priv.at`. The site snippet moved with [trajectories-api](https://github.com/mhaberler/trajectories-api).
+- Compresses large GeoJSON **on the wire**.
+- Verify: `curl -H 'Accept-Encoding: gzip, zstd' … | grep -i content-encoding`.
 
 ---
 
@@ -167,7 +166,7 @@ TRAJECTORIES_CACHE_MAX=0 TRAJECTORIES_BACKEND=om \
 | Commit | Summary |
 |--------|---------|
 | `b584216` | Dual HTTP/local OM backend |
-| `942c136` | FastAPI `/v1/trajectory`, deploy |
+| `942c136` | HTTP `/v1/trajectory`, deploy |
 | `c2b0cfe` | OM slab preload |
 | `b3bf5d0` | Reader cache, slab LRU, parallel tracks, Numba, response cache, benchmark |
 | `767e80a` | Numba `cache=False`; UI API latency |
@@ -186,6 +185,6 @@ Later commits on `flight-profile-ui` (interactive profile editor, resize, time-d
 - Response cache as primary latency strategy for **unique** requests (benchmark bar excludes it).
 - Further Numba beyond height-path interp (Phase E “10×” items in planning notes).
 - Map-side time-drag of profile handles (no extra API pattern).
-- FastAPI-level gzip (delegated to Caddy).
+- Gzip inside the API process (delegated to Caddy).
 
 For architecture and API parameters, see [`PYTHON-MODULE.md`](PYTHON-MODULE.md).

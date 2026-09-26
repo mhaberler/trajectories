@@ -36,7 +36,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "rasterio is required for GLO-30 DEM. "
-        'Install with: pip install -e "python/[api]" '
+        'Install with: pip install -e "python/[dem]"'
         "(system GDAL required)."
     ) from exc
 

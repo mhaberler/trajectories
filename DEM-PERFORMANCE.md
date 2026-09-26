@@ -1,6 +1,6 @@
 # DEM `/v1/elevation/line` performance
 
-Cold vs warm disk-cache latency for **Joerd** (AWS Terrarium PNG, z12), **Mapterhorn** (PMTiles), and **GLO-30** (Copernicus Public 1° COG), measured 2026-08-10.
+Cold vs warm disk-cache latency for **Joerd** (AWS Terrarium PNG, z12), **Mapterhorn** (PMTiles), and **GLO-30** (Copernicus Public 1° COG), measured 2026-08-10 against the elevation endpoint. That HTTP service now lives in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 ## Method
 
@@ -9,7 +9,7 @@ Cold vs warm disk-cache latency for **Joerd** (AWS Terrarium PNG, z12), **Mapter
 - Region: Alps start ~`46.5°N, 10.5°E`; each cell offset by **+2° lat** so corridors do not share tiles/COGs
 - **Cold**: empty on-disk cache for that backend, then first request
 - **Warm**: identical request immediately after (disk + in-process open/decode LRU)
-- Isolated uvicorn instances (not production `:8010`):
+- Isolated API processes (not production `:8010`):
   - Mapterhorn → `:8011`, cache `.cache/mapterhorn-bench`
   - Joerd → `:8012`, cache `.cache/joerd-bench`
   - GLO-30 → `:8013`, cache `.cache/glo30-bench`

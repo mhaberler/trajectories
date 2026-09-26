@@ -18,7 +18,7 @@ Stubenberg `47.23, 15.82`; ICON-D2; `2026-08-02T11:00:00Z`; 2 h; heights 500/150
 | Per-request **slab preload** | ~8.6 s cold / ~5.9 s warm | ~9.0 s |
 | **Reader cache + Numba + parallel tracks** | **~1.9 s cold / ~0.92 s warm** | unchanged |
 
-See also [`PYTHON-MODULE.md`](PYTHON-MODULE.md) § “Timing — basic_trajectory inputs”.
+The library that produced these numbers now lives in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 ---
 
@@ -38,7 +38,7 @@ Moves heavy work off the browser onto one server with shared local data.
 - AGL from `static/hhl.om − HSURF.om` (no per-level `height_agl_*` on disk).
 - Horizontal wind already m/s on OM (HTTP path still converts km/h).
 
-Files: [`python/trajectories/windfield.py`](python/trajectories/windfield.py), [`python/trajectories/config.py`](python/trajectories/config.py).
+Files: `windfield.py`, `config.py` in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 ### 3. Per-request OM slab preload (`c2b0cfe`)
 
@@ -51,11 +51,11 @@ Instead of one disk read per wind query corner:
 - **`wind_at` / `request`** served from slab via `request_from_slab`; corners outside slab fall back to point-fetch.
 - **Process-warmed `OmBackend`**: meta/grid/fs reused via `get_om_backend()`.
 
-Files: [`python/trajectories/om_backend.py`](python/trajectories/om_backend.py) (`load_slab`, `request_from_slab`), [`python/trajectories/windfield.py`](python/trajectories/windfield.py).
+Files: `om_backend.py` (`load_slab`, `request_from_slab`), `windfield.py` in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 
 ### 4. Reader cache, slab LRU, parallel I/O (`b3bf5d0`)
 
-**`OmReaderCache`** ([`python/trajectories/om_reader_cache.py`](python/trajectories/om_reader_cache.py)):
+**`OmReaderCache`** (`om_reader_cache.py` in [trajectories-api](https://github.com/mhaberler/trajectories-api)):
 
 - Keep **`.om` readers open** (mmap), LRU cap (`TRAJECTORIES_OM_READER_CACHE`, default 64).
 - **Per-path mutex** for thread-safe reads.
@@ -72,15 +72,13 @@ Files: [`python/trajectories/om_backend.py`](python/trajectories/om_backend.py) 
 
 **Parallel trajectory tracks**:
 
-- After slab load, **height×method jobs** run in `ThreadPoolExecutor` (`TRACK_WORKERS=8` in [`python/trajectories/compute.py`](python/trajectories/compute.py)).
+- After slab load, **height×method jobs** run in `ThreadPoolExecutor` (`TRACK_WORKERS=8` in `compute.py`).
 
 ### 5. Numba height-path interpolation (`b3bf5d0`, `767e80a`)
 
-- Optional **`trajectories[accel]`** extra: [`python/trajectories/interp_fast.py`](python/trajectories/interp_fast.py).
+- Optional **`trajectories[accel]`** extra: `interp_fast.py` in [trajectories-api](https://github.com/mhaberler/trajectories-api).
 - JIT for vertical interpolation on the **height** integration path; Python fallback if Numba missing.
 - **`cache=False`** on `@njit` so editable installs (`pip -e`) do not fail on missing source locators (`767e80a`).
-
-Install: `pip install -e "python/[om,accel]"`.
 
 ### 6. In-process API response cache (`b3bf5d0`)
 
@@ -131,20 +129,14 @@ Install: `pip install -e "python/[om,accel]"`.
 
 ## Benchmarking and tests
 
+These live with the library in [trajectories-api](https://github.com/mhaberler/trajectories-api):
+
 | Tool | Purpose |
 |------|---------|
-| [`python/benchmarks/bench_om_strategies.py`](python/benchmarks/bench_om_strategies.py) | Manual cold/warm OM timing; `--repeats`, `--concurrent` |
-| `RUN_OM_TESTS=1 pytest python/tests/test_om_backend.py -m om` | OM vs HTTP same-physics (loose distance bounds; widened for float32/Numba) |
-| `pytest python/tests/test_om_slab.py` | Slab hit/miss, prefer-slab-over-point-readers |
-| `pytest python/tests/test_om_reader_cache.py` | Stale slab / invalidation |
-
-Example:
-
-```bash
-cd python
-TRAJECTORIES_CACHE_MAX=0 TRAJECTORIES_BACKEND=om \
-  python benchmarks/bench_om_strategies.py --repeats 3
-```
+| `benchmarks/bench_om_strategies.py` | Manual cold/warm OM timing; `--repeats`, `--concurrent` |
+| `pytest tests/test_om_backend.py -m om` | OM vs HTTP same-physics (loose distance bounds; widened for float32/Numba) |
+| `pytest tests/test_om_slab.py` | Slab hit/miss, prefer-slab-over-point-readers |
+| `pytest tests/test_om_reader_cache.py` | Stale slab / invalidation |
 
 ---
 
@@ -187,4 +179,4 @@ Later commits on `flight-profile-ui` (interactive profile editor, resize, time-d
 - Map-side time-drag of profile handles (no extra API pattern).
 - Gzip inside the API process (delegated to Caddy).
 
-For architecture and API parameters, see [`PYTHON-MODULE.md`](PYTHON-MODULE.md).
+For architecture and API parameters, see [trajectories-api](https://github.com/mhaberler/trajectories-api).

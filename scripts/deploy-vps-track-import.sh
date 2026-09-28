@@ -8,10 +8,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="mah@vps.mah.priv.at:/var/www/vps/trajectories/track-import"
-if [[ "$DEST" != /* || "$DEST" == "/" ]]; then
-  echo "Refusing unsafe deployment destination: $DEST" >&2
-  exit 1
-fi
 BASE="/trajectories/track-import/"
 
 echo "==> Baue track-import (base=${BASE}) ..."
@@ -28,7 +24,11 @@ mkdir -p "$CESIUM_DEST"
 cp -a "$CESIUM_SRC/Assets" "$CESIUM_SRC/ThirdParty" "$CESIUM_SRC/Workers" "$CESIUM_SRC/Widgets" "$CESIUM_SRC/Cesium.js" "$CESIUM_DEST/"
 
 echo "==> Synchronisiere track-import/dist/ → ${DEST}/ ..."
-if mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
+if [[ "$DEST" == *:* ]]; then
+  remote_path="${DEST#*:}"
+  ssh "${DEST%%:*}" "mkdir -p $(printf %q "$remote_path")"
+  rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/track-import/dist/" "$DEST/"
+elif mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
   rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/track-import/dist/" "$DEST/"
 else
   sudo mkdir -p "$DEST"

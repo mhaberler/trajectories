@@ -8,10 +8,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="mah@vps.mah.priv.at:/var/www/vps/trajectories/coloring"
-if [[ "$DEST" != /* || "$DEST" == "/" ]]; then
-  echo "Refusing unsafe deployment destination: $DEST" >&2
-  exit 1
-fi
 BASE="/trajectories/coloring/"
 
 echo "==> Baue track-import (base=${BASE}) ..."
@@ -19,7 +15,11 @@ cd "$PROJECT_DIR"
 bunx vite build --config track-import/vite.config.js --base="$BASE"
 
 echo "==> Synchronisiere track-import/dist/ → ${DEST}/ ..."
-if mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
+if [[ "$DEST" == *:* ]]; then
+  remote_path="${DEST#*:}"
+  ssh "${DEST%%:*}" "mkdir -p $(printf %q "$remote_path")"
+  rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/track-import/dist/" "$DEST/"
+elif mkdir -p "$DEST" 2>/dev/null && [[ -w "$DEST" ]]; then
   rsync -a --delete --exclude=.DS_Store "$PROJECT_DIR/track-import/dist/" "$DEST/"
 else
   sudo mkdir -p "$DEST"

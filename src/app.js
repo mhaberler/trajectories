@@ -371,6 +371,34 @@ function setDownloadEnabled(on) {
   if (shareBtn) shareBtn.disabled = !on;
 }
 
+function exportableOverlayCount() {
+  return state.overlays.filter((o) => o.visible !== false && o.coords?.length >= 2).length;
+}
+
+/** HTML-Download und Teilen: Trajektorien oder sichtbare Flugspuren. Andere Formate nur mit Trajektorien. */
+function syncExportButtons() {
+  const traj = (state.lastRuns?.runs?.length || 0) > 0;
+  const tracks = exportableOverlayCount() > 0;
+  const html = el("downloadfmt")?.value === "html";
+  el("download").disabled = !(traj || (html && tracks));
+  const shareBtn = el("sharehtml");
+  if (shareBtn) shareBtn.disabled = !(traj || tracks);
+}
+
+/** Platzhalter, wenn nur Flugspuren exportiert werden. */
+function tracksOnlyRuns() {
+  const t0Ms = timebarStartMs();
+  const mode = el("refmode")?.value === "amsl" ? "amsl" : "agl";
+  return {
+    runs: [],
+    modelKey: el("model")?.value || "icon_d2",
+    mode,
+    t0Ms: Number.isFinite(t0Ms) ? t0Ms : Date.now(),
+    duration: +el("duration")?.value || 0,
+    direction: +el("direction")?.value === -1 ? -1 : 1,
+  };
+}
+
 
 const state = {
   start: null,
@@ -2628,7 +2656,7 @@ function dropRunsForHeight(m) {
     state.xsec = null;
     resetRunSelection();
     el("results").innerHTML = "";
-    setDownloadEnabled(false);
+    syncExportButtons();
     el("xsecbtn").disabled = true;
     el("view3dbtn").disabled = true;
     showCrossSection(false);
@@ -4371,7 +4399,7 @@ async function runLaunchWindowViaApi({
     refreshMapTracklist();
     const g0 = first.runs[0]?.terrain?.find((g) => Number.isFinite(g));
     if (Number.isFinite(g0)) state.startElevation = g0;
-    setDownloadEnabled(true);
+    syncExportButtons();
     el("xsecbtn").disabled = false;
     el("view3dbtn").disabled = false;
     syncTimebarToLaunchWindow();
@@ -4385,6 +4413,7 @@ async function runLaunchWindowViaApi({
     if (gen === state.launchWindowGen) {
       state.running = false;
       updateRunButton();
+      syncExportButtons();
     }
   }
 }
@@ -4517,7 +4546,7 @@ async function runTrajectoriesViaApi({
 
     const g0 = (keepSiblings ? runs[0] : runs[0])?.terrain?.find((g) => Number.isFinite(g));
     if (Number.isFinite(g0)) state.startElevation = g0;
-    setDownloadEnabled(true);
+    syncExportButtons();
     el("xsecbtn").disabled = false;
     el("view3dbtn").disabled = false;
     if (view3dMod && !el("view3d").hidden) view3dMod.update(view3dData());
@@ -4532,6 +4561,7 @@ async function runTrajectoriesViaApi({
   } finally {
     state.running = false;
     updateRunButton();
+    if (profileGen == null || profileGen === state.profileRedrawGen) syncExportButtons();
   }
 }
 
@@ -4793,7 +4823,7 @@ async function runTrajectories() {
     const runs = [...activeRuns, ...pinRunList].sort((a, b) => a.heightM - b.heightM);
     for (const run of runs) reportResult(run.r, run.heightM, run.color, run.label, run);
     state.lastRuns = { runs, modelKey, mode, t0Ms, duration, direction };
-    setDownloadEnabled(runs.length > 0);
+    syncExportButtons();
     // Verwaiste hidden-Keys aufräumen; Tracklist aktualisieren.
     for (const k of [...state.hiddenRunKeys]) {
       if (!runs.some((r) => runKey(r) === k)) state.hiddenRunKeys.delete(k);
@@ -4833,6 +4863,7 @@ async function runTrajectories() {
   } finally {
     state.running = false;
     updateRunButton();
+    syncExportButtons();
     if (liveDirty && el("livemode").checked) {
       liveDirty = false;
       setTimeout(liveRun, 0);
@@ -5519,6 +5550,7 @@ function refreshMapTracklist() {
         if (side && side.checked !== cb.checked) side.checked = cb.checked;
         refreshOverlays3d();
         updateView3dButton();
+        syncExportButtons();
       });
 
       const chip = document.createElement("span");
@@ -5591,6 +5623,7 @@ function renderOverlaysList() {
       redrawOverlayMap();
       refreshOverlays3d();
       updateView3dButton();
+      syncExportButtons();
     });
 
     const name = document.createElement("input");
@@ -5623,6 +5656,7 @@ function renderOverlaysList() {
       renderOverlaysList();
       refreshOverlays3d();
       updateView3dButton();
+      syncExportButtons();
     });
 
     head.append(vis, name, color, rm);
@@ -5685,6 +5719,7 @@ async function importOverlayFiles(fileList) {
   redrawOverlayMap();
   renderOverlaysList();
   updateView3dButton();
+  syncExportButtons();
   if (newIds.length) {
     const added = state.overlays.filter((o) => newIds.includes(o.id));
     const bounds = L.latLngBounds(added.flatMap((o) => o.coords.map((c) => [c.lat, c.lon])));
@@ -6077,6 +6112,7 @@ el("ex-reset").addEventListener("click", () => {
 el("downloadfmt").addEventListener("change", () => {
   showExportSection(el("downloadfmt").value);
   updateFilenamePreview();
+  syncExportButtons();
   persist();
 });
 
@@ -6148,9 +6184,11 @@ function exportCtx(key) {
 }
 
 el("download").addEventListener("click", async () => {
-  if (!state.lastRuns) return;
   const key = DOWNLOAD_FORMATS[el("downloadfmt").value] ? el("downloadfmt").value : "geojson";
   const fmt = DOWNLOAD_FORMATS[key];
+  const traj = (state.lastRuns?.runs?.length || 0) > 0;
+  if (!traj && (key !== "html" || exportableOverlayCount() === 0)) return;
+  const data = traj ? state.lastRuns : tracksOnlyRuns();
   const ctx = exportCtx(key);
   let text;
   if (fmt.lazy) {
@@ -6158,16 +6196,16 @@ el("download").addEventListener("click", async () => {
     setStatus("Baue HTML-Karte …");
     try {
       htmlExportMod ??= await import("./export/html.ts");
-      text = htmlExportMod.buildHTML(state.lastRuns, ctx);
+      text = htmlExportMod.buildHTML(data, ctx);
       setStatus("");
     } catch (err) {
       setStatus(`HTML-Export: ${err?.message || err}`, true);
       return;
     } finally {
-      setDownloadEnabled(true);
+      syncExportButtons();
     }
   } else {
-    text = fmt.build(state.lastRuns, ctx);
+    text = fmt.build(data, ctx);
   }
   const blob = new Blob([text], { type: fmt.type });
   const a = document.createElement("a");
@@ -6178,7 +6216,8 @@ el("download").addEventListener("click", async () => {
 });
 
 el("sharehtml").addEventListener("click", async () => {
-  if (!state.lastRuns) return;
+  const traj = (state.lastRuns?.runs?.length || 0) > 0;
+  if (!traj && exportableOverlayCount() === 0) return;
   readShareGithubUI();
   readFilenamePatternUI();
   if (!shareGithub.token.trim()) {
@@ -6197,7 +6236,7 @@ el("sharehtml").addEventListener("click", async () => {
   try {
     htmlExportMod ??= await import("./export/html.ts");
     const { shareHtml, waitForPagesUrl } = await import("./export/shareGithub.ts");
-    const html = htmlExportMod.buildHTML(state.lastRuns, exportCtx("html"));
+    const html = htmlExportMod.buildHTML(traj ? state.lastRuns : tracksOnlyRuns(), exportCtx("html"));
     const filename = await buildDownloadFilename("html");
     const pagesBase = shareGithub.pagesBaseCustom && shareGithub.pagesBase
       ? shareGithub.pagesBase
@@ -6229,7 +6268,7 @@ el("sharehtml").addEventListener("click", async () => {
   } catch (err) {
     setStatus(`Teilen: ${err?.message || err}`, true);
   } finally {
-    setDownloadEnabled(true);
+    syncExportButtons();
   }
 });
 

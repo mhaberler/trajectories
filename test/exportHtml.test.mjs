@@ -168,5 +168,44 @@ function fixture({ label = "500 m AGL", legendHtml = "" } = {}) {
   check("guard: verständliche Meldung", !!threw && /Querschnitt/.test(threw.message), threw?.message);
 }
 
+// 9 — Flugspuren ohne Trajektorien
+{
+  const empty = {
+    runs: [], modelKey: "icon_d2", mode: "agl", t0Ms: T0, duration: 0, direction: 1,
+  };
+  const track = {
+    name: "Alpen",
+    color: "#c45c26",
+    note: "note",
+    visible: true,
+    coords: [[47.1, 11.2, 900.4], [47.2, 11.3, null]],
+  };
+  const base = {
+    xsec: null,
+    opts: {},
+    unitState: { height: "m", wind: "kmh" },
+    markerFields: () => [],
+    trackName: (r) => r.label,
+    now: T0,
+  };
+  let threw = null;
+  let p = null;
+  try { p = buildPayload(empty, { ...base, overlays: [track] }); } catch (e) { threw = e; }
+  check("tracks-only: kein Abbruch", !threw, threw?.message);
+  check("tracks-only: keine Läufe", p?.runs.length === 0);
+  check("tracks-only: eine Spur", p?.overlays.length === 1);
+  check("tracks-only: Höhe gerundet", p?.overlays[0].coords[0][2] === 900);
+  check("tracks-only: Titel ist der Spurname", p?.meta.title === "Alpen", p?.meta.title);
+  check("tracks-only: leerer Querschnitt", p?.xsec.runs.length === 0);
+  const many = buildPayload(empty, {
+    ...base,
+    overlays: [track, { ...track, name: "Zweite" }],
+  });
+  check("tracks-only: Sammeltitel", many.meta.title === "Flugspuren (2)", many.meta.title);
+  let bare = null;
+  try { buildPayload(empty, { ...base, overlays: [] }); } catch (e) { bare = e; }
+  check("tracks-only: ohne Spur abbrechen", !!bare);
+}
+
 console.log(failures ? `\n${failures} Fehler.` : "\nAlle HTML-Export-Tests bestanden.");
 process.exit(failures ? 1 : 0);

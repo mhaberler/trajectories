@@ -199,14 +199,11 @@ function roundSeries(s: TerrainSeries): TerrainSeries {
 }
 
 /**
- * Nutzlast des Exports. `ctx.xsec` liefert das Gelände — `state.lastRuns`
- * allein trägt es nicht, deshalb der harte Abbruch statt einer stillen Datei
- * ohne Geländeprofil.
+ * Nutzlast des Exports. Mit Trajektorien liefert `ctx.xsec` das Gelände —
+ * fehlt es, Abbruch statt einer stillen Datei ohne Höhenprofil. Flugspuren
+ * allein brauchen keinen Querschnitt.
  */
 export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
-  if (!ctx.xsec || !Array.isArray(ctx.xsec.runs) || !ctx.xsec.runs.length) {
-    throw new Error("Kein Querschnitt-Zustand — bitte Trajektorien neu berechnen.");
-  }
   const opts: HtmlExportOpts = { ...HTML_EXPORT_DEFAULTS, ...ctx.opts };
   if (ctx.filename && opts.legendHtml) {
     opts.legendHtml = expandLegendTokens(opts.legendHtml, ctx.filename);
@@ -218,6 +215,26 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
   }
   const prec = 5;
   const { runs, modelKey, mode, t0Ms, duration, direction } = data;
+  const overlays: PayloadOverlay[] = (ctx.overlays || [])
+    .filter((o) => o.visible !== false && Array.isArray(o.coords) && o.coords.length >= 2)
+    .map((o) => ({
+      name: o.name,
+      color: o.color,
+      note: o.note || "",
+      visible: true,
+      coords: o.coords.map((c) => [
+        rd(c[0], prec),
+        rd(c[1], prec),
+        Number.isFinite(c[2] as number) ? Math.round(c[2] as number) : null,
+      ] as [number, number, number | null]),
+    }));
+  if (runs.length) {
+    if (!ctx.xsec || !Array.isArray(ctx.xsec.runs) || !ctx.xsec.runs.length) {
+      throw new Error("Kein Querschnitt-Zustand — bitte Trajektorien neu berechnen.");
+    }
+  } else if (!overlays.length) {
+    throw new Error("Nichts zu exportieren — Trajektorien berechnen oder Flugspuren laden.");
+  }
 
   const packRun = (run: Run): PayloadRun => ({
     label: run.label,
@@ -268,23 +285,9 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
     : null;
   const modelElev = Number.isFinite(ctx.modelElev as number) ? Math.round(ctx.modelElev as number) : null;
 
-  const overlays: PayloadOverlay[] = (ctx.overlays || [])
-    .filter((o) => o.visible !== false && Array.isArray(o.coords) && o.coords.length >= 2)
-    .map((o) => ({
-      name: o.name,
-      color: o.color,
-      note: o.note || "",
-      visible: true,
-      coords: o.coords.map((c) => [
-        rd(c[0], prec),
-        rd(c[1], prec),
-        Number.isFinite(c[2] as number) ? Math.round(c[2] as number) : null,
-      ] as [number, number, number | null]),
-    }));
-
   let launchWindow: PayloadLaunchWindow | undefined;
   const lw = ctx.launchWindow;
-  if (lw?.samples && lw.samples.length >= 2) {
+  if (runs.length && lw?.samples && lw.samples.length >= 2) {
     launchWindow = {
       tStartMs: lw.tStartMs,
       tEndMs: lw.tEndMs,
@@ -306,12 +309,16 @@ export function buildPayload(data: LastRuns, ctx: ExportCtx): Payload {
       duration,
       direction,
       generated,
-      title: `Windtrajektorien ${modelKey} — ${new Date(t0Ms).toISOString().slice(0, 16)}Z`,
+      title: runs.length
+        ? `Windtrajektorien ${modelKey} — ${new Date(t0Ms).toISOString().slice(0, 16)}Z`
+        : (overlays.length === 1 ? overlays[0].name : `Flugspuren (${overlays.length})`),
     },
     units: { ...ctx.unitState },
     opts,
     runs: payloadRuns,
-    xsec: pickXsec(ctx.xsec, prec),
+    xsec: runs.length
+      ? pickXsec(ctx.xsec as XsecData, prec)
+      : { t0Ms, direction, overlay: false, runs: [] },
     start,
     modelElev,
     overlays,

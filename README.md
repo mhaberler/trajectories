@@ -26,7 +26,7 @@ Die Trajectories-HTTP-API liegt in einem eigenen Repo: [trajectories-api](https:
 
 Startpunkt per Kartenklick setzen (Marker ist verschiebbar), Modell, Startzeit
 (Schieber, UTC), Dauer, Richtung und Höhenreferenz (AGL/AMSL) wählen. Starthöhen
-sind frei wählbar (Schieber bis 6000 m, Zahlenfeld bis 10 000 m, 10-m-Raster,
+sind frei wählbar (Lineal anfangs 3 km, wählbar bis 10 km, Zahlenfeld bis 10 000 m, 10-m-Raster,
 max. 8 gleichzeitig): Höhe einstellen und mit „+" (oder Enter) zur Liste
 hinzufügen, „ד entfernt sie wieder. Jede Höhe behält ihre Farbe, solange sie
 in der Liste ist. Die Höhenreferenz gilt für die gesamte Trajektorie: „AGL"

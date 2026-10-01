@@ -45,7 +45,7 @@ function durationCapH() {
 }
 
 function durationHours() {
-  return Math.min(durationCapH(), Math.max(0.25, +el("duration").value || 12));
+  return Math.min(durationCapH(), Math.max(0.25, +el("duration").value || 2));
 }
 
 function syncDurationMax() {
@@ -69,13 +69,17 @@ const STORAGE_KEY = "trajectories.settings.v1";
 
 function loadSettings() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw == null) return { cold: true, data: {} };
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return { cold: true, data: {} };
+    return { cold: false, data };
   } catch {
-    return {};
+    return { cold: true, data: {} };
   }
 }
 
-const saved = loadSettings();
+const { cold: coldSettings, data: saved } = loadSettings();
 setUnits(saved.units || {});
 let settingsReady = false; // erst nach vollständiger Wiederherstellung speichern
 /** @type {number|null} CSS `right` inset of #view3d (null = fill beside panel) */
@@ -2596,10 +2600,11 @@ async function runProfileRedraw() {
   });
 }
 
-// Oberes Ende der Höhenbalken-Skala, in den Einstellungen wählbar (Default
-// 6 km). HEIGHT_MAX bleibt die absolute Obergrenze für diese Auswahl.
+// Oberes Ende der Höhenbalken-Skala, in den Einstellungen wählbar.
+// Kalter Cache: 3 km. Gespeicherter Stand ohne barMax: 6 km (siehe Migration).
+// HEIGHT_MAX bleibt die absolute Obergrenze für diese Auswahl.
 const BAR_MAX_OPTIONS = [2000, 3000, 4000, 5000, 6000, 8000, 10000];
-let barMax = BAR_MAX_OPTIONS.includes(saved.barMax) ? saved.barMax : 6000;
+let barMax = BAR_MAX_OPTIONS.includes(saved.barMax) ? saved.barMax : (coldSettings ? 3000 : 6000);
 
 function addHeight(m) {
   m = Math.round(Math.min(barMax, Math.max(HEIGHT_MIN, m)));
@@ -3100,7 +3105,7 @@ function freezeLaunchForLive() {
         modelKey: prev?.modelKey || el("model").value,
         mode: prev?.mode || el("refmode").value,
         t0Ms: t0,
-        duration: prev?.duration ?? (+el("duration").value || 12),
+        duration: prev?.duration ?? (+el("duration").value || 2),
         direction: prev?.direction ?? (+el("direction").value || 1),
       };
       morphAtStartMs(t0);
@@ -3301,9 +3306,10 @@ if (savedHeights?.length) {
 } else {
   DEFAULT_HEIGHTS.forEach(addHeight);
 }
-// Migration: ohne gespeichertes Lineal-Maximum das kleinste passende wählen,
-// damit vorhandene Höhen sichtbar bleiben (aber mindestens den 6-km-Default).
-if (!BAR_MAX_OPTIONS.includes(saved.barMax) && heightColors.size) {
+// Migration: gespeicherter Stand ohne Lineal-Maximum — kleinstes passendes
+// Maximum, damit vorhandene Höhen sichtbar bleiben (mindestens 6 km).
+// Kalter Cache behält den 3-km-Default.
+if (!coldSettings && !BAR_MAX_OPTIONS.includes(saved.barMax) && heightColors.size) {
   const maxH = Math.max(...heightColors.keys());
   barMax = Math.max(6000, BAR_MAX_OPTIONS.find((v) => v >= maxH) ?? HEIGHT_MAX);
 }
@@ -3486,7 +3492,7 @@ if (Array.isArray(saved.methods) && saved.methods.length) {
 }
 applyModeUI();
 
-if (saved.metExtras) el("metextras").checked = true;
+el("metextras").checked = coldSettings ? true : !!saved.metExtras;
 el("useapi").checked = saved.useApi !== false;
 if (el("useapi").checked && el("livemode").checked) {
   el("useapi").checked = false;
@@ -5957,7 +5963,7 @@ function filenameCtxSync() {
     place: state.startPlace,
     lat: state.start?.lat,
     lon: state.start?.lon,
-    durationH: state.lastRuns?.duration ?? (+el("duration")?.value || 12),
+    durationH: state.lastRuns?.duration ?? (+el("duration")?.value || 2),
     direction: state.lastRuns?.direction ?? (+el("direction")?.value || 1),
     modelLabel: model?.label || modelKey,
     runMs: state.meta?.runMs,
